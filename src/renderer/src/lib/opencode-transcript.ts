@@ -1,0 +1,378 @@
+export interface ToolUseInfo {
+  id: string
+  name: string
+  input: Record<string, unknown>
+  status: 'pending' | 'running' | 'success' | 'error'
+  startTime: number
+  endTime?: number
+  output?: string
+  error?: string
+  subtasks?: SubtaskInfo[]
+}
+
+export interface SubtaskInfo {
+  id: string
+  sessionID: string
+  prompt: string
+  description: string
+  agent: string
+  parts: StreamingPart[]
+  status: 'running' | 'completed' | 'error'
+}
+
+export interface StreamingPart {
+  type: 'text' | 'tool_use' | 'subtask' | 'step_start' | 'step_finish' | 'reasoning' | 'compaction'
+  text?: string
+  toolUse?: ToolUseInfo
+  subtask?: SubtaskInfo
+  stepStart?: { snapshot?: string }
+  stepFinish?: {
+    reason: string
+    cost: number
+    tokens: { input: number; output: number; reasoning: number }
+  }
+  reasoning?: string
+  compactionAuto?: boolean
+}
+
+export interface OpenCodeMessage {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  timestamp: string
+  parts?: StreamingPart[]
+}
+
+interface MappedMessage {
+  message: OpenCodeMessage
+  sortTime?: number
+  originalIndex: number
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function toNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function toTimestampMs(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string') return undefined
+
+  const numeric = Number(value)
+  if (Number.isFinite(numeric)) return numeric
+
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? undefined : parsed
+}
+
+function toIsoTimestamp(value: unknown): string | undefined {
+  const timestamp = toTimestampMs(value)
+  return timestamp === undefined ? undefined : new Date(timestamp).toISOString()
+}
+
+function mapRole(value: unknown): 'user' | 'assistant' | 'system' {
+  if (value === 'user' || value === 'assistant' || value === 'system') {
+    return value
+  }
+  return 'assistant'
+}
+
+function mapToolStatus(value: unknown): 'pending' | 'running' | 'success' | 'error' {
+  switch (value) {
+    case 'pending':
+      return 'pending'
+    case 'running':
+      return 'running'
+    case 'completed':
+    case 'success':
+      return 'success'
+    case 'error':
+      return 'error'
+    default:
+      return 'running'
+  }
+}
+
+function stringifyValue(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
+/**
+ * Normalize wire-format payloads where `content` / `text` may be structured objects (e.g. Cursor ACP).
+ * Prevents passing plain objects into React children (Markdown, bubbles, kanban summaries).
+ */
+export function coerceOpenCodeRenderableString(raw: unknown, depth = 0): string {
+  if (depth > 10) return ''
+  if (raw === null || raw === undefined) return ''
+  if (typeof raw === 'string') return raw
+  if (typeof raw === 'number' || typeof raw === 'boolean') return String(raw)
+  const rec = asRecord(raw)
+  if (rec) {
+    const asText = asString(rec.text)
+    if (asText !== undefined && asText.length > 0) {
+      return asText
+    }
+    if ('content' in rec) {
+      const inner = coerceOpenCodeRenderableString(rec.content, depth + 1)
+      if (inner !== '') return inner
+    }
+    try {
+      return JSON.stringify(raw)
+    } catch {
+      return String(raw)
+    }
+  }
+  return String(raw)
+}
+
+function mapRawSubtask(part: Record<string, unknown>, index: number): SubtaskInfo {
+  const rawParts = Array.isArray(part.parts) ? part.parts : []
+  const parts = rawParts
+    .map((rawPart, partIndex) => mapOpencodePartToStreamingPart(rawPart, partIndex))
+    .filter((mappedPart): mappedPart is StreamingPart => mappedPart !== null)
+
+  return {
+    id: asString(part.id) ?? `subtask-${index}`,
+    sessionID: asString(part.sessionID) ?? asString(part.id) ?? `subtask-${index}`,
+    prompt: asString(part.prompt) ?? '',
+    description: asString(part.description) ?? '',
+    agent: asString(part.agent) ?? 'unknown',
+    parts,
+    status:
+      part.status === 'completed' || part.status === 'error'
+        ? (part.status as 'completed' | 'error')
+        : 'running'
+  }
+}
+
+function escapeXmlAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+export function extractTextContentFromParts(parts: unknown): string {
+  if (!Array.isArray(parts)) return ''
+
+  const contentParts: string[] = []
+
+  for (const part of parts) {
+    const record = asRecord(part)
+    if (!record) continue
+
+    if (record.type === 'text') {
+      const text =
+        coerceOpenCodeRenderableString(record.text) ||
+        coerceOpenCodeRenderableString(record.content)
+      if (text.trim().length > 0) contentParts.push(text)
+    } else if (record.type === 'file') {
+      // Reconstruct data attachments as XML so images persist after refresh
+      const mime = asString(record.mime) ?? 'application/octet-stream'
+      const url = asString(record.url) ?? ''
+      const filename = asString(record.filename) ?? 'file'
+
+      if (url.startsWith('data:')) {
+        contentParts.push(
+          `<data-attachment mime="${escapeXmlAttr(mime)}" name="${escapeXmlAttr(filename)}">${url}</data-attachment>`
+        )
+      }
+    }
+  }
+
+  return contentParts.join('\n')
+}
+
+export function mapOpencodePartToStreamingPart(part: unknown, index = 0): StreamingPart | null {
+  const record = asRecord(part)
+  if (!record) return null
+
+  const type = asString(record.type)
+  if (!type) return null
+
+  if (type === 'text') {
+    const text =
+      coerceOpenCodeRenderableString(record.text) || coerceOpenCodeRenderableString(record.content)
+    const trimmed = text.trim()
+    return trimmed.length > 0 ? { type: 'text', text } : null
+  }
+
+  if (type === 'tool_use') {
+    const toolUse = asRecord(record.toolUse)
+    if (!toolUse) return null
+    const rawSubtasks = Array.isArray(toolUse.subtasks) ? toolUse.subtasks : []
+
+    return {
+      type: 'tool_use',
+      toolUse: {
+        id: asString(toolUse.id) ?? `tool-${index}`,
+        name: asString(toolUse.name) ?? 'Unknown',
+        input: asRecord(toolUse.input) ?? {},
+        status: mapToolStatus(toolUse.status),
+        startTime: toTimestampMs(toolUse.startTime) ?? Date.now(),
+        endTime: toTimestampMs(toolUse.endTime),
+        output: stringifyValue(toolUse.output),
+        error: asString(toolUse.error),
+        subtasks:
+          rawSubtasks.length > 0
+            ? rawSubtasks
+                .map((rawSubtask, subtaskIndex) => asRecord(rawSubtask))
+                .filter((rawSubtask): rawSubtask is Record<string, unknown> => rawSubtask !== null)
+                .map((rawSubtask, subtaskIndex) => mapRawSubtask(rawSubtask, subtaskIndex))
+            : undefined
+      }
+    }
+  }
+
+  if (type === 'tool') {
+    const state = asRecord(record.state) ?? {}
+    const stateTime = asRecord(state.time) ?? {}
+    const rawSubtasks = Array.isArray(record.subtasks) ? record.subtasks : []
+
+    return {
+      type: 'tool_use',
+      toolUse: {
+        id: asString(record.callID) ?? asString(record.id) ?? `tool-${index}`,
+        name: asString(record.tool) ?? asString(record.name) ?? 'Unknown',
+        input: asRecord(state.input) ?? {},
+        status: mapToolStatus(state.status),
+        startTime: toTimestampMs(stateTime.start) ?? Date.now(),
+        endTime: toTimestampMs(stateTime.end),
+        output: stringifyValue(state.output),
+        error: stringifyValue(state.error),
+        subtasks:
+          rawSubtasks.length > 0
+            ? rawSubtasks
+                .map((rawSubtask) => asRecord(rawSubtask))
+                .filter((rawSubtask): rawSubtask is Record<string, unknown> => rawSubtask !== null)
+                .map((rawSubtask, subtaskIndex) => mapRawSubtask(rawSubtask, subtaskIndex))
+            : undefined
+      }
+    }
+  }
+
+  if (type === 'subtask') {
+    return {
+      type: 'subtask',
+      subtask: mapRawSubtask(record, index)
+    }
+  }
+
+  if (type === 'step-start' || type === 'step_start') {
+    return {
+      type: 'step_start',
+      stepStart: {
+        snapshot: asString(record.snapshot)
+      }
+    }
+  }
+
+  if (type === 'step-finish' || type === 'step_finish') {
+    const tokens = asRecord(record.tokens)
+    return {
+      type: 'step_finish',
+      stepFinish: {
+        reason: asString(record.reason) ?? '',
+        cost: toNumber(record.cost) ?? 0,
+        tokens: {
+          input: toNumber(tokens?.input) ?? 0,
+          output: toNumber(tokens?.output) ?? 0,
+          reasoning: toNumber(tokens?.reasoning) ?? 0
+        }
+      }
+    }
+  }
+
+  if (type === 'reasoning') {
+    const reasoning =
+      coerceOpenCodeRenderableString(record.text) ||
+      coerceOpenCodeRenderableString(record.reasoning) ||
+      coerceOpenCodeRenderableString(record.content)
+    return reasoning.trim().length > 0 ? { type: 'reasoning', reasoning } : null
+  }
+
+  if (type === 'compaction') {
+    return { type: 'compaction', compactionAuto: record.auto === true }
+  }
+
+  return null
+}
+
+function mapMessage(rawMessage: unknown, index: number): MappedMessage {
+  const messageRecord = asRecord(rawMessage)
+  const info = asRecord(messageRecord?.info)
+
+  const id = asString(info?.id) ?? asString(messageRecord?.id) ?? `message-${index}`
+  const role = mapRole(info?.role ?? messageRecord?.role)
+
+  const rawParts = Array.isArray(messageRecord?.parts) ? messageRecord.parts : []
+  const mappedParts = rawParts
+    .map((part, partIndex) => mapOpencodePartToStreamingPart(part, partIndex))
+    .filter((part): part is StreamingPart => part !== null)
+
+  const extracted = extractTextContentFromParts(rawParts)
+  const topLevel =
+    coerceOpenCodeRenderableString(info?.content) ||
+    coerceOpenCodeRenderableString(messageRecord?.content)
+
+  const content = extracted || topLevel || ''
+
+  const sortTime =
+    toTimestampMs(info?.time && asRecord(info.time)?.created) ??
+    toTimestampMs(info?.createdAt) ??
+    toTimestampMs(info?.created_at) ??
+    toTimestampMs(messageRecord?.timestamp)
+
+  const timestamp =
+    toIsoTimestamp(info?.time && asRecord(info.time)?.created) ??
+    toIsoTimestamp(info?.createdAt) ??
+    toIsoTimestamp(info?.created_at) ??
+    toIsoTimestamp(messageRecord?.timestamp) ??
+    new Date(0).toISOString()
+
+  return {
+    message: {
+      id,
+      role,
+      content,
+      timestamp,
+      parts: mappedParts.length > 0 ? mappedParts : undefined
+    },
+    sortTime,
+    originalIndex: index
+  }
+}
+
+export function mapOpencodeMessagesToSessionViewMessages(messages: unknown[]): OpenCodeMessage[] {
+  if (!Array.isArray(messages)) return []
+
+  return messages
+    .map((message, index) => mapMessage(message, index))
+    .sort((a, b) => {
+      if (a.sortTime !== undefined && b.sortTime !== undefined && a.sortTime !== b.sortTime) {
+        return a.sortTime - b.sortTime
+      }
+
+      if (a.sortTime !== undefined && b.sortTime === undefined) return -1
+      if (a.sortTime === undefined && b.sortTime !== undefined) return 1
+
+      return a.originalIndex - b.originalIndex
+    })
+    .map((item) => item.message)
+}

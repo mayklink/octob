@@ -1,0 +1,222 @@
+name: Build and publish Octob to R2
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-r2-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-release:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: release
+        name: Match tag to package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$TAG_VERSION" != "$VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }} release assets
+    needs: validate-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            command: yarn electron-builder --win --publish never
+            cache_path: |
+              ~\AppData\Local\electron\Cache
+              ~\AppData\Local\electron-builder\Cache
+          - os: macos-latest
+            platform: macos
+            command: yarn electron-builder --mac --publish never -c.mac.notarize=false
+            cache_path: |
+              ~/Library/Caches/electron
+              ~/Library/Caches/electron-builder
+          - os: ubuntu-latest
+            platform: linux
+            command: yarn electron-builder --linux --publish never
+            cache_path: |
+              ~/.cache/electron
+              ~/.cache/electron-builder
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        if: matrix.platform != 'macos'
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ matrix.cache_path }}
+          key: ${{ runner.os }}-electron-${{ hashFiles('yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - name: Install dependencies
+        run: yarn install:ci
+
+      - name: Build application
+        run: yarn build
+
+      - name: Package application
+        run: ${{ matrix.command }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Verify Windows updater assets
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f dist/latest.yml
+          find dist -maxdepth 1 -name 'Octob-Setup-*.exe' | grep .
+          find dist -maxdepth 1 -name 'Octob-Setup-*.exe.blockmap' | grep .
+
+      - name: Verify macOS updater assets
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f dist/latest-mac.yml
+          find dist -maxdepth 1 -name 'Octob-*.dmg' | grep .
+          find dist -maxdepth 1 -name 'Octob-*.zip' | grep .
+          find dist -maxdepth 1 -name 'Octob-*.zip.blockmap' | grep .
+
+      - name: Verify Linux updater assets
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f dist/latest-linux.yml
+          find dist -maxdepth 1 -name '*.AppImage' | grep .
+          find dist -maxdepth 1 -name '*.deb' | grep .
+          find dist -maxdepth 1 -name '*.tar.gz' | grep .
+
+      - name: Upload release assets for publishing
+        uses: actions/upload-artifact@v4
+        with:
+          name: octob-${{ matrix.platform }}-${{ needs.validate-release.outputs.version }}
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.tar.gz
+            dist/*.blockmap
+            dist/latest*.yml
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish release assets to R2
+    needs: [validate-release, build]
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      R2_BUCKET: octob-releases
+
+    steps:
+      - name: Validate R2 configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${AWS_ACCESS_KEY_ID:?Missing R2_ACCESS_KEY_ID secret}"
+          : "${AWS_SECRET_ACCESS_KEY:?Missing R2_SECRET_ACCESS_KEY secret}"
+          : "${R2_ACCOUNT_ID:?Missing R2_ACCOUNT_ID secret}"
+          aws --version
+
+      - name: Download all release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: octob-*-${{ needs.validate-release.outputs.version }}
+          path: release-assets
+          merge-multiple: true
+
+      - name: Validate complete release set
+        shell: bash
+        run: |
+          set -euo pipefail
+          find release-assets -maxdepth 1 -type f -print
+          test -f release-assets/latest.yml
+          test -f release-assets/latest-mac.yml
+          test -f release-assets/latest-linux.yml
+          find release-assets -maxdepth 1 -name 'Octob-Setup-*.exe' | grep .
+          find release-assets -maxdepth 1 -name 'Octob-*.dmg' | grep .
+          find release-assets -maxdepth 1 -name '*.AppImage' | grep .
+
+      - name: Verify R2 credentials and bucket access
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws s3api head-bucket \
+            --bucket "$R2_BUCKET" \
+            --endpoint-url "$R2_ENDPOINT"
+
+      - name: Upload versioned assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            key="$(basename "$file")"
+            aws s3 cp "$file" "s3://$R2_BUCKET/$key" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --cache-control 'public,max-age=31536000,immutable'
+          done < <(find release-assets -maxdepth 1 -type f ! -name 'latest*.yml' -print0)
+
+      - name: Upload updater metadata last
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            key="$(basename "$file")"
+            aws s3 cp "$file" "s3://$R2_BUCKET/$key" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --cache-control 'no-cache, no-store, must-revalidate' \
+              --content-type 'application/x-yaml'
+          done < <(find release-assets -maxdepth 1 -type f -name 'latest*.yml' -print0)
+
+      - name: Verify published updater metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in latest.yml latest-mac.yml latest-linux.yml; do
+            aws s3api head-object \
+              --bucket "$R2_BUCKET" \
+              --key "$key" \
+              --endpoint-url "$R2_ENDPOINT" >/dev/null
+          done

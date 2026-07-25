@@ -1,0 +1,950 @@
+import { useState, useCallback, useRef, useLayoutEffect, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
+import { motion } from 'motion/react'
+import { ChevronRight, ChevronDown, Plus, Zap, Archive, CheckSquare, X } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { toast } from '@/lib/toast'
+import { lastSendMode } from '@/lib/message-send-times'
+import { Switch } from '@/components/ui/switch'
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
+import { KanbanTicketCard } from '@/components/kanban/KanbanTicketCard'
+import { TicketCreateModal } from '@/components/kanban/TicketCreateModal'
+import { WorktreePickerModal } from '@/components/kanban/WorktreePickerModal'
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogAction,
+  AlertDialogCancel
+} from '@/components/ui/alert-dialog'
+import {
+  ContextMenu,
+  ContextMenuTrigger,
+  ContextMenuContent,
+  ContextMenuItem
+} from '@/components/ui/context-menu'
+import { useKanbanStore, getKanbanDragData, setKanbanDragData, suppressLayoutAnimation, isLayoutAnimationSuppressed } from '@/stores/useKanbanStore'
+import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
+import { useUsageStore, resolveDefaultUsageProvider } from '@/stores/useUsageStore'
+import { useSettingsStore } from '@/stores/useSettingsStore'
+import { isBlockerSatisfied } from '@/lib/blocker-utils'
+import type { KanbanTicket, KanbanTicketColumn as ColumnType } from '../../../../main/db/types'
+
+// ── Layout animation spring ─────────────────────────────────────────
+const CARD_LAYOUT_SPRING = {
+  type: 'spring' as const,
+  stiffness: 350,
+  damping: 30,
+  mass: 0.8,
+}
+
+interface KanbanColumnProps {
+  column: ColumnType
+  tickets: KanbanTicket[]
+  archivedTickets?: KanbanTicket[]
+  projectId: string
+  connectionId?: string
+  isPinnedMode?: boolean
+}
+
+export function KanbanColumn({ column, tickets, archivedTickets, projectId, connectionId, isPinnedMode }: KanbanColumnProps) {
+  const { t } = useTranslation()
+  const [isCollapsed, setIsCollapsed] = useState(false)
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
+  const [isDragOver, setIsDragOver] = useState(false)
+  const [dropIndex, setDropIndex] = useState<number | null>(null)
+  const dropIndexRef = useRef<number | null>(null)
+  const [worktreePickerTicket, setWorktreePickerTicket] = useState<KanbanTicket | null>(null)
+  const [saveConfigTicket, setSaveConfigTicket] = useState<KanbanTicket | null>(null)
+  const [pendingBackwardDrag, setPendingBackwardDrag] = useState<{
+    ticketId: string
+    targetIndex: number
+  } | null>(null)
+  const [showArchiveAllConfirm, setShowArchiveAllConfirm] = useState(false)
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedTicketIds, setSelectedTicketIds] = useState<Set<string>>(() => new Set())
+
+  // ── In Progress header title fit mode ───────────────────────────
+  // 'centered'    = default; title centered with 50px left spacer
+  // 'right'       = title right-aligned with 8px gap from toggle
+  // 'abbreviated' = title shows "In Prog" right-aligned
+  type TitleMode = 'centered' | 'right' | 'abbreviated'
+  const [titleMode, setTitleMode] = useState<TitleMode>('centered')
+  const headerRef = useRef<HTMLDivElement>(null)
+  const badgeRef = useRef<HTMLSpanElement>(null)
+  const toggleRef = useRef<HTMLDivElement>(null)
+  const fullTextMeasureRef = useRef<HTMLSpanElement>(null)
+  const shortTextMeasureRef = useRef<HTMLSpanElement>(null)
+
+  const isDoneColumn = column === 'done'
+  const isTodoColumn = column === 'todo'
+  const isInProgressColumn = column === 'in_progress'
+  const isMultiProjectMode = !!connectionId || !!isPinnedMode
+  const isBulkArchiveColumn = isTodoColumn || isDoneColumn
+  const selectedCount = selectedTicketIds.size
+
+  // ── Multi-project helpers ─────────────────────────────────────────
+  // In multi-project mode (connection or pinned), tickets come from different
+  // projects, so we look up each ticket's own project_id instead of using
+  // the column-level prop.
+
+  const findTicket = useCallback(
+    (ticketId: string): KanbanTicket | undefined => {
+      if (isMultiProjectMode) {
+        // In multi-project mode (connection or pinned), search across ALL tickets
+        // (the dragged ticket may come from a different column/project)
+        const allTickets = useKanbanStore.getState().tickets
+        for (const projectTickets of allTickets.values()) {
+          const found = projectTickets.find((t) => t.id === ticketId)
+          if (found) return found
+        }
+        return undefined
+      }
+      const allTickets = useKanbanStore.getState().tickets.get(projectId) ?? []
+      return allTickets.find((t) => t.id === ticketId)
+    },
+    [isMultiProjectMode, projectId]
+  )
+
+  const findTicketProjectId = useCallback(
+    (ticketId: string): string => {
+      if (isMultiProjectMode) {
+        const ticket = findTicket(ticketId)
+        if (ticket) return ticket.project_id
+      }
+      return projectId
+    },
+    [isMultiProjectMode, projectId, findTicket]
+  )
+
+  // Global drag state — true when ANY ticket is being dragged
+  const isDragging = useKanbanStore((state) => state.isDragging)
+  const draggingTicketId = useKanbanStore((state) => state.draggingTicketId)
+
+  // ── Simple mode toggle (In Progress column only) ───────────────
+  // In connection mode, projectId is '' — acts as a single toggle for the connection board
+  const isSimpleMode = useKanbanStore(
+    useCallback(
+      (state) => state.simpleModeByProject[projectId] ?? false,
+      [projectId]
+    )
+  )
+
+  const handleSimpleModeToggle = useCallback(
+    (checked: boolean) => {
+      useKanbanStore.getState().setSimpleMode(projectId, checked)
+    },
+    [projectId]
+  )
+
+  // ── Archive toggle (Done column only) ───────────────────────────
+  // In connection mode, projectId is '' — acts as a single toggle for the connection board
+  const showArchived = useKanbanStore(
+    useCallback(
+      (state) => state.showArchivedByProject[projectId] ?? false,
+      [projectId]
+    )
+  )
+
+  // ── Measure header and pick title fit mode (In Progress column only) ─────
+  useLayoutEffect(() => {
+    if (!isInProgressColumn) return
+    const header = headerRef.current
+    const badge = badgeRef.current
+    const toggle = toggleRef.current
+    const fullMeasure = fullTextMeasureRef.current
+    if (!header || !badge || !toggle || !fullMeasure) return
+
+    const LEFT_SPACER_PX = 50
+    const TITLE_BADGE_GAP_PX = 8   // gap-2 in title group
+    const TITLE_TOGGLE_GAP_PX = 8  // ml-2 between title group and toggle
+    const RIGHT_MIN_PADDING_PX = 8 // min gap in 'right' mode
+
+    const compute = (): void => {
+      const cs = window.getComputedStyle(header)
+      const innerWidth =
+        header.clientWidth -
+        parseFloat(cs.paddingLeft || '0') -
+        parseFloat(cs.paddingRight || '0')
+
+      const fullTextW = fullMeasure.offsetWidth
+      const badgeW = badge.offsetWidth
+      const toggleW = toggle.offsetWidth
+
+      // Mode 1: centered with full text (needs left spacer)
+      const centeredNeeded =
+        LEFT_SPACER_PX + fullTextW + TITLE_BADGE_GAP_PX + badgeW +
+        TITLE_TOGGLE_GAP_PX + toggleW
+      if (centeredNeeded <= innerWidth) {
+        setTitleMode('centered')
+        return
+      }
+
+      // Mode 2: right-aligned full text (no spacer, 8px min padding on left of title)
+      const rightNeeded =
+        RIGHT_MIN_PADDING_PX + fullTextW + TITLE_BADGE_GAP_PX + badgeW +
+        TITLE_TOGGLE_GAP_PX + toggleW
+      if (rightNeeded <= innerWidth) {
+        setTitleMode('right')
+        return
+      }
+
+      // Mode 3: abbreviated, right-aligned
+      setTitleMode('abbreviated')
+    }
+
+    compute()
+
+    const ro = new ResizeObserver(compute)
+    ro.observe(header)
+    ro.observe(badge)
+    ro.observe(toggle)
+
+    // Re-measure after web fonts finish loading (fallback-metric guard)
+    let cancelled = false
+    document.fonts?.ready?.then(() => { if (!cancelled) compute() }).catch(() => {})
+    return () => { cancelled = true; ro.disconnect() }
+  }, [isInProgressColumn, tickets.length, showArchived, archivedTickets?.length])
+
+  const handleToggleShowArchived = useCallback(
+    (checked: boolean) => {
+      useKanbanStore.getState().setShowArchived(projectId, checked)
+    },
+    [projectId]
+  )
+
+  useEffect(() => {
+    setSelectedTicketIds((prev) => {
+      const visibleIds = new Set(tickets.map((ticket) => ticket.id))
+      const next = new Set([...prev].filter((ticketId) => visibleIds.has(ticketId)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [tickets])
+
+  useEffect(() => {
+    if (selectionMode && selectedTicketIds.size === 0) {
+      return
+    }
+    if (!selectionMode) {
+      setSelectedTicketIds(new Set())
+    }
+  }, [selectionMode, selectedTicketIds.size])
+
+  const handleToggleSelectionMode = useCallback(() => {
+    setSelectionMode((prev) => !prev)
+  }, [])
+
+  const handleSelectTicket = useCallback((ticketId: string, selected: boolean) => {
+    setSelectedTicketIds((prev) => {
+      const next = new Set(prev)
+      if (selected) {
+        next.add(ticketId)
+      } else {
+        next.delete(ticketId)
+      }
+      return next
+    })
+  }, [])
+
+  const handleSelectAllVisible = useCallback(() => {
+    setSelectedTicketIds(new Set(tickets.map((ticket) => ticket.id)))
+  }, [tickets])
+
+  const handleClearSelection = useCallback(() => {
+    setSelectedTicketIds(new Set())
+  }, [])
+
+  const handleArchiveSelected = useCallback(async () => {
+    const selected = tickets.filter((ticket) => selectedTicketIds.has(ticket.id))
+    if (selected.length === 0) return
+
+    try {
+      for (const ticket of selected) {
+        await useKanbanStore.getState().archiveTicket(ticket.id, ticket.project_id)
+      }
+      toast.success(`Archived ${selected.length} ticket${selected.length !== 1 ? 's' : ''}`)
+      setSelectedTicketIds(new Set())
+      setSelectionMode(false)
+    } catch {
+      toast.error('Failed to archive selected tickets')
+    }
+  }, [selectedTicketIds, tickets])
+
+  const handleArchiveAll = useCallback(async () => {
+    try {
+      if (isPinnedMode) {
+        // In pinned mode, archive done tickets across all pinned-derived projects
+        const projectIds = useKanbanStore.getState().getPinnedProjectIdsArray()
+        let total = 0
+        for (const pid of projectIds) {
+          total += await useKanbanStore.getState().archiveAllDone(pid)
+        }
+        toast.success(`Archived ${total} ticket${total !== 1 ? 's' : ''}`)
+      } else if (connectionId) {
+        // In connection mode, archive done tickets across all member projects.
+        const projectIds = useKanbanStore.getState().getConnectionProjectIds(connectionId)
+        let total = 0
+        for (const pid of projectIds) {
+          total += await useKanbanStore.getState().archiveAllDone(pid)
+        }
+        toast.success(`Archived ${total} ticket${total !== 1 ? 's' : ''}`)
+      } else {
+        const count = await useKanbanStore.getState().archiveAllDone(projectId)
+        toast.success(`Archived ${count} ticket${count !== 1 ? 's' : ''}`)
+      }
+    } catch {
+      toast.error('Failed to archive tickets')
+    }
+    setShowArchiveAllConfirm(false)
+  }, [projectId, connectionId, isPinnedMode])
+
+  const handleToggleCollapse = useCallback(() => {
+    setIsCollapsed((prev) => !prev)
+  }, [])
+
+  // ── Drag & Drop handlers ──────────────────────────────────────────
+
+  const handleDragOver = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      setIsDragOver(true)
+
+      // Calculate drop index from cursor Y position relative to card elements
+      const container = e.currentTarget
+      const cards = container.querySelectorAll<HTMLElement>('[data-card-index]')
+      let index = tickets.length // default: end of list
+
+      for (const card of cards) {
+        const rect = card.getBoundingClientRect()
+        const midY = rect.top + rect.height / 2
+        if (e.clientY < midY) {
+          index = parseInt(card.getAttribute('data-card-index')!, 10)
+          break
+        }
+      }
+
+      dropIndexRef.current = index
+      setDropIndex(index)
+    },
+    [tickets.length]
+  )
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    // Only reset when truly leaving the drop area (not entering a child)
+    const container = e.currentTarget
+    const relatedTarget = e.relatedTarget as Node | null
+    if (!relatedTarget || !container.contains(relatedTarget)) {
+      setIsDragOver(false)
+      setDropIndex(null)
+      dropIndexRef.current = null
+    }
+  }, [])
+
+  const handleDrop = useCallback(
+    async (e: React.DragEvent) => {
+      e.preventDefault()
+      setIsDragOver(false)
+      setDropIndex(null)
+
+      // Suppress layout animation for drag-and-drop (instant placement across all columns)
+      suppressLayoutAnimation()
+
+      // Read drag data from module-level state (avoids DataTransfer issues in Electron)
+      const dragData = getKanbanDragData()
+      if (!dragData) return
+
+      const { ticketId, sourceColumn, sourceIndex } = dragData
+      setKanbanDragData(null) // Clear after reading
+
+      const targetIndex = dropIndexRef.current ?? tickets.length
+      dropIndexRef.current = null
+
+      const store = useKanbanStore.getState()
+
+      if (sourceColumn !== column) {
+        // ── Cross-column move ─────────────────────────────────
+        const ticketProjectId = findTicketProjectId(ticketId)
+        const isSimpleMode = store.simpleModeByProject[projectId] ?? false
+
+        // S9: when dropping on In Progress and simple mode is off,
+        //   open the worktree picker modal instead of moving directly.
+        if (isInProgressColumn && !isSimpleMode) {
+          const draggedTicket = findTicket(ticketId)
+          if (draggedTicket) {
+            // Check if ticket has unresolved blockers
+            const blockerIds = store.dependencyMap.get(ticketId)
+            const triggerColumn = useSettingsStore.getState().followUpTriggerColumn
+            let isBlocked = false
+            if (blockerIds?.size) {
+              for (const [, projTickets] of store.tickets) {
+                for (const t of projTickets) {
+                  if (blockerIds.has(t.id) && !isBlockerSatisfied(t.column, t.mode, triggerColumn)) {
+                    isBlocked = true
+                    break
+                  }
+                }
+                if (isBlocked) break
+              }
+            }
+
+            if (isBlocked) {
+              // Blocked ticket — open picker in save-config-only mode
+              setSaveConfigTicket(draggedTicket)
+            } else {
+              // Normal unblocked ticket — open regular picker
+              setWorktreePickerTicket(draggedTicket)
+            }
+            return // Don't move yet — modal handles the move
+          }
+        }
+
+        // S11: backward drag from In Progress to To Do — confirm if ticket has active session
+        if (isTodoColumn && sourceColumn === 'in_progress') {
+          const draggedTicket = findTicket(ticketId)
+          if (draggedTicket?.current_session_id) {
+            // Show confirmation dialog
+            setPendingBackwardDrag({ ticketId, targetIndex })
+            return
+          }
+        }
+
+        // Merge-on-done: intercept drops to Done for feature-branch worktrees
+        if (column === 'done') {
+          const draggedTicket = findTicket(ticketId)
+          if (draggedTicket?.worktree_id) {
+            try {
+              const worktree = await window.db.worktree.get(draggedTicket.worktree_id)
+              if (worktree) {
+                // Resolve the effective base branch
+                const defaultWorktrees = await window.db.worktree.getActiveByProject(ticketProjectId)
+                const defaultWt = defaultWorktrees.find((w) => w.is_default)
+                const resolvedBaseBranch = worktree.base_branch ?? defaultWt?.branch_name
+
+                if (resolvedBaseBranch && worktree.branch_name !== resolvedBaseBranch) {
+                  const baseDedicated = defaultWorktrees.find(
+                    (w) => w.branch_name === resolvedBaseBranch && w.status === 'active'
+                  )
+                  const defaultWt = defaultWorktrees.find((w) => w.is_default && w.status === 'active')
+                  let canAttemptMerge = false
+                  if (baseDedicated) {
+                    canAttemptMerge = true
+                  } else if (defaultWt) {
+                    const unclean = await window.gitOps.hasUncommittedChanges(defaultWt.path)
+                    if (!unclean) canAttemptMerge = true
+                  }
+
+                  if (canAttemptMerge) {
+                    // Pre-check: does the feature branch actually have work to merge?
+                    const [hasUncommitted, branchStatResult] = await Promise.all([
+                      window.gitOps.hasUncommittedChanges(worktree.path),
+                      window.gitOps.branchDiffShortStat(worktree.path, resolvedBaseBranch)
+                    ])
+
+                    const commitsAhead = branchStatResult.success
+                      ? branchStatResult.commitsAhead
+                      : 0
+
+                    if (!branchStatResult.success) {
+                      toast.warning(
+                        `Could not verify merge status: ${branchStatResult.error ?? 'unknown error'}`
+                      )
+                      return
+                    }
+
+                    if (hasUncommitted || commitsAhead > 0) {
+                      const sortOrder = store.computeSortOrder(tickets, targetIndex)
+                      store.setPendingDoneMove({ ticketId, projectId: ticketProjectId, sortOrder })
+                      return
+                    }
+                  } else if (!baseDedicated && defaultWt) {
+                    toast.warning(
+                      `Cannot open merge: check out ${resolvedBaseBranch} on a workspace, or commit/stash changes in your default workspace (${defaultWt.branch_name}) first.`
+                    )
+                    return
+                  } else if (!baseDedicated && !defaultWt) {
+                    toast.warning(
+                      `Cannot open merge: no workspace on ${resolvedBaseBranch} and no default workspace in this project.`
+                    )
+                    return
+                  }
+                  // No merge path OR nothing to commit/merge — fall through to normal move
+                }
+              }
+            } catch (err) {
+              toast.warning(
+                `Could not verify merge status: ${err instanceof Error ? err.message : String(err)}`
+              )
+              return
+            }
+          }
+        }
+
+        // Default: move directly
+        const sortOrder = store.computeSortOrder(tickets, targetIndex)
+        store.moveTicket(ticketId, ticketProjectId, column, sortOrder)
+
+        // Trigger usage refresh when simple-mode drops a ticket into In Progress
+        if (column === 'in_progress') {
+          const sdk = useSettingsStore.getState().defaultAgentSdk ?? 'opencode'
+          useUsageStore.getState().fetchUsageForProvider(resolveDefaultUsageProvider(sdk))
+        }
+      } else {
+        // ── Same-column reorder ───────────────────────────────
+        const ticketProjectId = findTicketProjectId(ticketId)
+        const filteredTickets = tickets.filter((t) => t.id !== ticketId)
+        const adjustedIndex =
+          targetIndex > sourceIndex ? targetIndex - 1 : targetIndex
+        const sortOrder = store.computeSortOrder(filteredTickets, adjustedIndex)
+        store.reorderTicket(ticketId, ticketProjectId, sortOrder)
+      }
+    },
+    [column, projectId, tickets, isInProgressColumn, isTodoColumn, findTicketProjectId, findTicket]
+  )
+
+  // ── Backward drag confirmation handler ───────────────────────────
+  const handleConfirmBackwardDrag = useCallback(async () => {
+    if (!pendingBackwardDrag) return
+    // Suppress layout animation for drag-and-drop (instant placement across all columns)
+    suppressLayoutAnimation()
+    const { ticketId, targetIndex } = pendingBackwardDrag
+
+    const store = useKanbanStore.getState()
+    const ticketProjectId = findTicketProjectId(ticketId)
+
+    try {
+      // Stop the actual session
+      const draggedTicket = findTicket(ticketId)
+      if (draggedTicket?.current_session_id) {
+        // Abort the running agent process (not just the DB status)
+        const session = await window.db.session.get(draggedTicket.current_session_id)
+        if (session?.opencode_session_id && session.worktree_id) {
+          const worktree = await window.db.worktree.get(session.worktree_id)
+          if (worktree?.path) {
+            try {
+              await window.opencodeOps.abort(worktree.path, session.opencode_session_id)
+            } catch {
+              // Non-critical — session may already be idle
+            }
+          }
+        }
+
+        await window.db.session.update(draggedTicket.current_session_id, {
+          status: 'completed',
+          completed_at: new Date().toISOString()
+        })
+        useWorktreeStatusStore.getState().clearSessionStatus(draggedTicket.current_session_id)
+        lastSendMode.delete(draggedTicket.current_session_id)
+      }
+
+      // Clear session link on the ticket
+      await store.updateTicket(ticketId, ticketProjectId, {
+        current_session_id: null,
+        worktree_id: null,
+        mode: null,
+        plan_ready: false
+      })
+
+      // Move to todo
+      const sortOrder = store.computeSortOrder(
+        store.getTicketsByColumn(ticketProjectId, 'todo'),
+        targetIndex
+      )
+      await store.moveTicket(ticketId, ticketProjectId, 'todo', sortOrder)
+
+      toast.success(t('kanban.sessionStoppedMovedTodo'))
+    } catch {
+      toast.error(t('kanban.failedMoveTicket'))
+    }
+
+    setPendingBackwardDrag(null)
+  }, [pendingBackwardDrag, findTicketProjectId, findTicket, t])
+
+  // ── Drop indicator element ────────────────────────────────────────
+  const dropIndicator = (
+    <div
+      data-testid={`drop-indicator-${column}`}
+      className="h-0.5 rounded-full bg-primary mx-1 shrink-0 transition-opacity duration-150"
+    />
+  )
+
+  return (
+    <div
+      data-testid={`kanban-column-${column}`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className={cn(
+        'flex flex-1 min-w-[220px] max-w-[300px] flex-col rounded-lg border-2 bg-card/50 p-2 transition-all duration-200',
+        isDragOver
+          ? 'border-dashed border-primary bg-primary/[0.03]'
+          : isDragging
+            ? 'border-dashed border-muted-foreground/25'
+            : 'border-solid border-border/20'
+      )}
+    >
+      {/* Column header */}
+      <ContextMenu>
+        <ContextMenuTrigger asChild disabled={!isDoneColumn}>
+          <div
+            ref={headerRef}
+            data-title-mode={isInProgressColumn ? titleMode : 'centered'}
+            className="relative flex items-center px-2 pb-3"
+          >
+            {/* Left spacer — mirrors right toggle width to keep title centered.
+                For In Progress, only rendered in 'centered' mode so that
+                'right'/'abbreviated' modes can reclaim that space. */}
+            {(isDoneColumn || (isInProgressColumn && titleMode === 'centered')) && (
+              <div className="w-[50px] shrink" aria-hidden="true" />
+            )}
+
+            {/* Title group — centered, or right-aligned when In Progress can't fit centered */}
+            <div
+              className={cn(
+                'flex flex-1 items-center gap-2',
+                isInProgressColumn && titleMode !== 'centered'
+                  ? 'justify-end'
+                  : 'justify-center'
+              )}
+            >
+              {/* Collapse toggle for Done column */}
+              {isDoneColumn && (
+                <button
+                  data-testid="kanban-column-done-toggle"
+                  onClick={handleToggleCollapse}
+                  className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-muted/40 transition-colors"
+                >
+                  {isCollapsed ? (
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  )}
+                </button>
+              )}
+
+              <h3 className="whitespace-nowrap text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                {isInProgressColumn && titleMode === 'abbreviated'
+                  ? t('kanban.columns.in_progressAbbrev')
+                  : t(`kanban.columns.${column}`)}
+              </h3>
+
+              <span
+                ref={badgeRef}
+                className="inline-flex h-5 min-w-[20px] items-center justify-center gap-0.5 rounded-full bg-muted/40 px-1.5 text-[11px] font-medium text-muted-foreground"
+              >
+                {showArchived && archivedTickets && archivedTickets.length > 0
+                  ? <>{tickets.length}+<span className="italic">{archivedTickets.length}</span></>
+                  : tickets.length}
+              </span>
+            </div>
+
+            {/* Flow mode toggle — right of title, vertically centered.
+                ON (default) = flow mode: automated worktree picker on drop.
+                OFF = simple mode: direct drop, no modal. */}
+            {isInProgressColumn && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div ref={toggleRef} className="ml-2 flex shrink-0 items-center gap-1.5">
+                    <Zap className={cn('h-3 w-3', !isSimpleMode ? 'text-amber-500' : 'text-muted-foreground/50')} />
+                    <Switch
+                      data-testid="simple-mode-toggle"
+                      size="sm"
+                      checked={!isSimpleMode}
+                      onCheckedChange={(checked) => handleSimpleModeToggle(!checked)}
+                    />
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>
+                  {t('kanban.simpleModeTooltip')}
+                </TooltipContent>
+              </Tooltip>
+            )}
+
+            {/* Archive toggle — right of title, vertically centered */}
+            {isDoneColumn && (
+              <div className="ml-2 flex shrink-0 items-center gap-1.5">
+                <Archive className={cn('h-3 w-3', showArchived ? 'text-muted-foreground' : 'text-muted-foreground/50')} />
+                <Switch
+                  data-testid="archive-toggle"
+                  size="sm"
+                  checked={showArchived}
+                  onCheckedChange={handleToggleShowArchived}
+                />
+              </div>
+            )}
+
+            {isBulkArchiveColumn && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    data-testid={`bulk-select-toggle-${column}`}
+                    onClick={handleToggleSelectionMode}
+                    className={cn(
+                      'ml-2 flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground',
+                      selectionMode && 'bg-primary/15 text-primary'
+                    )}
+                  >
+                    {selectionMode ? <X className="h-3.5 w-3.5" /> : <CheckSquare className="h-3.5 w-3.5" />}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={8}>
+                  {selectionMode ? 'Cancel selection' : 'Select tickets'}
+                </TooltipContent>
+              </Tooltip>
+            )}
+
+            {/* Hidden measurement spans — inherit font styles via cascade; used
+                by useLayoutEffect to decide titleMode. Absolute-positioned off-screen. */}
+            {isInProgressColumn && (
+              <span
+                aria-hidden="true"
+                className="pointer-events-none invisible absolute -left-[9999px] top-0 whitespace-nowrap"
+              >
+                <span
+                  ref={fullTextMeasureRef}
+                  className="text-xs font-semibold uppercase tracking-wider"
+                >
+                  {t('kanban.columns.in_progress')}
+                </span>
+                <span
+                  ref={shortTextMeasureRef}
+                  className="text-xs font-semibold uppercase tracking-wider"
+                >
+                  {t('kanban.columns.in_progressAbbrev')}
+                </span>
+              </span>
+            )}
+          </div>
+        </ContextMenuTrigger>
+
+        {isDoneColumn && (
+          <ContextMenuContent>
+            <ContextMenuItem
+              data-testid="ctx-archive-all"
+              disabled={tickets.length === 0}
+              onClick={() => setShowArchiveAllConfirm(true)}
+              className="gap-2"
+            >
+              <Archive className="h-3.5 w-3.5" />
+              {t('kanban.archiveAllCtx')}
+            </ContextMenuItem>
+          </ContextMenuContent>
+        )}
+      </ContextMenu>
+
+      {isBulkArchiveColumn && selectionMode && (
+        <div className="mb-2 flex items-center gap-1 rounded-md border border-border/40 bg-muted/20 px-2 py-1.5">
+          <span className="min-w-0 flex-1 text-xs text-muted-foreground">
+            {selectedCount} selected
+          </span>
+          <button
+            type="button"
+            onClick={handleSelectAllVisible}
+            disabled={tickets.length === 0 || selectedCount === tickets.length}
+            className="rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground disabled:opacity-40"
+          >
+            All
+          </button>
+          <button
+            type="button"
+            onClick={handleArchiveSelected}
+            disabled={selectedCount === 0}
+            className="inline-flex items-center gap-1 rounded bg-primary/15 px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/25 disabled:opacity-40"
+          >
+            <Archive className="h-3 w-3" />
+            Archive
+          </button>
+          <button
+            type="button"
+            onClick={handleClearSelection}
+            disabled={selectedCount === 0}
+            className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground disabled:opacity-40"
+            aria-label="Clear selection"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
+
+      {/* Drop area — scrollable card list, doubles as drop target */}
+      {!(isDoneColumn && isCollapsed) && (
+        <motion.div
+          layoutScroll
+          data-testid={`kanban-drop-area-${column}`}
+          className="flex flex-1 flex-col gap-2 overflow-y-auto px-1 pb-2 rounded-md min-h-[60px]"
+        >
+          {tickets.length === 0 && !(isDoneColumn && showArchived && archivedTickets && archivedTickets.length > 0) ? (
+            isDragOver ? (
+              dropIndicator
+            ) : (
+              /* Empty state: show the add-ticket card as the only item */
+              isTodoColumn ? (
+                <button
+                  data-testid="kanban-add-ticket-card"
+                  onClick={() => setIsCreateModalOpen(true)}
+                  className="flex items-center justify-center gap-1.5 rounded-md border border-dashed border-border/60 p-2 text-sm text-muted-foreground/60 hover:border-primary/40 hover:text-muted-foreground hover:bg-muted/20 transition-colors cursor-pointer"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span>{t('kanban.newTicket')}</span>
+                </button>
+              ) : (
+                <p className="px-2 py-4 text-center text-xs text-muted-foreground/60">
+                  {t('kanban.noTickets')}
+                </p>
+              )
+            )
+          ) : (
+            <>
+              {tickets.map((ticket, index) => (
+                <motion.div
+                  key={ticket.id}
+                  data-card-index={index}
+                  layoutId={ticket.id}
+                  layout
+                  transition={isLayoutAnimationSuppressed() ? { duration: 0 } : CARD_LAYOUT_SPRING}
+                >
+                  {isDragOver && dropIndex === index && dropIndicator}
+                  <div data-card-index={index} className={draggingTicketId === ticket.id ? 'h-0 min-h-0 overflow-hidden' : undefined}>
+                    <KanbanTicketCard
+                      ticket={ticket}
+                      index={index}
+                      selectionMode={selectionMode && isBulkArchiveColumn}
+                      selected={selectedTicketIds.has(ticket.id)}
+                      onSelectedChange={handleSelectTicket}
+                      connectionId={connectionId}
+                      isPinnedMode={isPinnedMode}
+                    />
+                  </div>
+                </motion.div>
+              ))}
+              {isDragOver && dropIndex === tickets.length && dropIndicator}
+
+              {/* Archived tickets (Done column, toggle ON) */}
+              {isDoneColumn && showArchived && archivedTickets && archivedTickets.length > 0 && (
+                <>
+                  <div className="flex items-center gap-2 px-2 py-1">
+                    <div className="flex-1 border-t border-border/40" />
+                    <span className="text-[10px] font-medium text-muted-foreground/50 uppercase tracking-wider">{t('kanban.archived')}</span>
+                    <div className="flex-1 border-t border-border/40" />
+                  </div>
+                  {archivedTickets.map((ticket) => (
+                    <div key={ticket.id}>
+                      <KanbanTicketCard ticket={ticket} index={-1} isArchived connectionId={connectionId} isPinnedMode={isPinnedMode} />
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {/* Add-ticket card at the end of the To Do column */}
+              {isTodoColumn && (
+                <button
+                  data-testid="kanban-add-ticket-card"
+                  onClick={() => setIsCreateModalOpen(true)}
+                  className="flex items-center justify-center gap-1.5 rounded-md border border-dashed border-border/60 p-2 text-sm text-muted-foreground/60 hover:border-primary/40 hover:text-muted-foreground hover:bg-muted/20 transition-colors cursor-pointer"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span>{t('kanban.newTicket')}</span>
+                </button>
+              )}
+            </>
+          )}
+        </motion.div>
+      )}
+
+      {/* Ticket creation modal — To Do column */}
+      {isTodoColumn && (
+        <TicketCreateModal
+          open={isCreateModalOpen}
+          onOpenChange={setIsCreateModalOpen}
+          projectId={projectId}
+          connectionId={connectionId}
+          isPinnedMode={isPinnedMode}
+        />
+      )}
+
+      {/* Worktree picker modal — for In Progress column drops */}
+      {isInProgressColumn && worktreePickerTicket && (
+        <WorktreePickerModal
+          ticket={worktreePickerTicket}
+          projectId={isMultiProjectMode ? worktreePickerTicket.project_id : projectId}
+          open={true}
+          onOpenChange={(open) => {
+            if (!open) setWorktreePickerTicket(null)
+          }}
+          connectionId={connectionId}
+        />
+      )}
+
+      {/* Worktree picker modal — save-config-only for blocked tickets */}
+      {saveConfigTicket && (
+        <WorktreePickerModal
+          ticket={saveConfigTicket}
+          projectId={saveConfigTicket.project_id}
+          open={!!saveConfigTicket}
+          onOpenChange={(open) => { if (!open) setSaveConfigTicket(null) }}
+          saveConfigOnly
+        />
+      )}
+
+      {/* Backward drag confirmation dialog — To Do column */}
+      {isTodoColumn && (
+        <AlertDialog
+          open={!!pendingBackwardDrag}
+          onOpenChange={(open) => {
+            if (!open) setPendingBackwardDrag(null)
+          }}
+        >
+          <AlertDialogContent data-testid="backward-drag-confirm-dialog">
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t('kanban.stopSessionTitle')}</AlertDialogTitle>
+              <AlertDialogDescription>
+                {t('kanban.stopSessionDescription')}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel data-testid="backward-drag-cancel-btn">{t('common.cancel')}</AlertDialogCancel>
+              <AlertDialogAction
+                data-testid="backward-drag-confirm-btn"
+                onClick={handleConfirmBackwardDrag}
+              >
+                {t('kanban.stopAndMove')}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
+
+      {/* Archive All confirmation dialog — Done column */}
+      {isDoneColumn && (
+        <AlertDialog
+          open={showArchiveAllConfirm}
+          onOpenChange={setShowArchiveAllConfirm}
+        >
+          <AlertDialogContent data-testid="archive-all-confirm-dialog">
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t('kanban.archiveAllTitle')}</AlertDialogTitle>
+              <AlertDialogDescription>
+                {tickets.length === 1
+                  ? t('kanban.archiveAllDescriptionSingular')
+                  : t('kanban.archiveAllDescriptionPlural', { count: tickets.length })}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel data-testid="archive-all-cancel-btn">{t('common.cancel')}</AlertDialogCancel>
+              <AlertDialogAction
+                data-testid="archive-all-confirm-btn"
+                onClick={handleArchiveAll}
+              >
+                {t('kanban.archiveAllConfirm')}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
+    </div>
+  )
+}

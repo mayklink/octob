@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out/
+*.tsbuildinfo
+
+# Environment
+.env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Cached vendor binaries (e.g. libghostty.a)
+vendor/
+
+# Database files
+*.sqlite
+*.sqlite3
+*.db
+
+# Certificates and keys
+*.pem
+*.key
+*.p12
+*.cert
+*.crt
+*.pfx
+
+# Local debug/playground scripts
+scripts/*
+# Electron native install / rebuild (postinstall + dev/build gates)
+!scripts/run-install-app-deps.cjs
+!scripts/run-electron-native-rebuild.cjs
+!scripts/ensure-electron-native-modules.cjs
+!scripts/electron-native-fingerprint.cjs
+
+# Claude worktrees
+.claude/worktrees/

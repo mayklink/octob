@@ -1,0 +1,191 @@
+import { useCallback, useMemo, useRef } from 'react'
+import { useLayoutStore } from '@/stores/useLayoutStore'
+import { LAYOUT_CONSTRAINTS } from '@/stores/useLayoutStore'
+import { useWorktreeStore } from '@/stores/useWorktreeStore'
+import { useConnectionStore } from '@/stores/useConnectionStore'
+import { useFileViewerStore } from '@/stores/useFileViewerStore'
+import { ResizeHandle } from './ResizeHandle'
+import { FileSidebar } from '@/components/file-tree'
+import { BottomPanel } from './BottomPanel'
+import { useTerminalPortal } from '@/contexts/TerminalPortalContext'
+import { useSettingsStore } from '@/stores/useSettingsStore'
+import { ErrorBoundary, ErrorFallback } from '@/components/error'
+import { cn } from '@/lib/utils'
+import { EnvironmentPanel } from './EnvironmentPanel'
+
+export function RightSidebar(): React.JSX.Element {
+  const { rightSidebarWidth, rightSidebarCollapsed, setRightSidebarWidth, toggleRightSidebar } =
+    useLayoutStore()
+  const splitFractionByEntity = useLayoutStore((s) => s.splitFractionByEntity)
+  const setSplitFraction = useLayoutStore((s) => s.setSplitFraction)
+  const collapsedPanel = useLayoutStore((s) => s.collapsedPanel)
+  const toggleTopPanel = useLayoutStore((s) => s.toggleTopPanel)
+  const toggleBottomPanel = useLayoutStore((s) => s.toggleBottomPanel)
+
+  const { selectedWorktreeId, worktreesByProject } = useWorktreeStore()
+  const selectedConnectionId = useConnectionStore((s) => s.selectedConnectionId)
+  const selectedConnection = useConnectionStore((s) =>
+    s.selectedConnectionId ? s.connections.find((c) => c.id === s.selectedConnectionId) : null
+  )
+  const isConnectionMode = !!selectedConnectionId && !selectedWorktreeId
+
+  const { registerTarget } = useTerminalPortal()
+  const terminalPosition = useSettingsStore((s) => s.terminalPosition)
+  const visualizationMode = useLayoutStore((s) => s.visualizationMode)
+
+  const sidebarTargetRef = useCallback(
+    (el: HTMLDivElement | null) => registerTarget('sidebar', el),
+    [registerTarget]
+  )
+
+  const entityKey = selectedWorktreeId || selectedConnectionId
+  const splitFraction = entityKey
+    ? (splitFractionByEntity[entityKey] ?? LAYOUT_CONSTRAINTS.splitFraction.default)
+    : LAYOUT_CONSTRAINTS.splitFraction.default
+
+  const sidebarRef = useRef<HTMLElement>(null)
+
+  // Get the selected worktree path by searching all projects' worktrees
+  const selectedWorktreePath = useMemo(() => {
+    // In connection mode, use the connection's folder path
+    if (isConnectionMode && selectedConnection?.path) {
+      return selectedConnection.path
+    }
+
+    if (!selectedWorktreeId) return null
+
+    // Search through all projects' worktrees to find the selected one
+    for (const [, worktrees] of worktreesByProject) {
+      const worktree = worktrees.find((w) => w.id === selectedWorktreeId)
+      if (worktree) {
+        return worktree.path
+      }
+    }
+    return null
+  }, [selectedWorktreeId, worktreesByProject, isConnectionMode, selectedConnection?.path])
+
+  const handleResize = (delta: number): void => {
+    setRightSidebarWidth(rightSidebarWidth + delta)
+  }
+
+  const handleVerticalResize = useCallback(
+    (delta: number) => {
+      if (!entityKey || !sidebarRef.current) return
+      const totalHeight = sidebarRef.current.clientHeight
+      if (totalHeight <= 0) return
+      const fractionDelta = delta / totalHeight
+      const current = splitFractionByEntity[entityKey] ?? LAYOUT_CONSTRAINTS.splitFraction.default
+      setSplitFraction(entityKey, current + fractionDelta)
+    },
+    [entityKey, splitFractionByEntity, setSplitFraction]
+  )
+
+  const handleFileClick = (node: { path: string; name: string; isDirectory: boolean }): void => {
+    // Open file in the file viewer tab
+    const contextId = selectedWorktreeId || selectedConnectionId
+    if (!node.isDirectory && contextId) {
+      useFileViewerStore.getState().openFile(node.path, node.name, contextId)
+    }
+  }
+
+  // CRITICAL: when collapsed, do NOT early-return / unmount the sidebar tree.
+  // Doing so unmounts BottomPanel and the terminal portal target div, which
+  // detaches the createPortal container that TerminalManagerPortal points to.
+  // The Ghostty backends would survive (their NSViews live on the Electron
+  // contentView, not in the DOM), but the prop-change → useEffect →
+  // setVisible(false) chain has been observed to leave previously-active
+  // tabs' NSViews on-screen across collapse. Keeping the tree mounted with
+  // CSS `display:none` keeps the portal target alive, preserves PTY state,
+  // and lets visibility flow through normally on collapse.
+  return (
+    <div
+      className={cn(
+        'flex flex-shrink-0',
+        rightSidebarCollapsed && 'hidden'
+      )}
+      data-testid={rightSidebarCollapsed ? 'right-sidebar-collapsed' : 'right-sidebar-container'}
+    >
+      <ResizeHandle onResize={handleResize} direction="right" />
+      <aside
+        ref={sidebarRef}
+        className="bg-sidebar text-sidebar-foreground border-l flex flex-col overflow-hidden"
+        style={{ width: rightSidebarWidth }}
+        data-testid="right-sidebar"
+        data-width={rightSidebarWidth}
+        role="complementary"
+        aria-label="File sidebar"
+      >
+        {visualizationMode === 'advanced' && !isConnectionMode && selectedWorktreePath && (
+          <EnvironmentPanel worktreePath={selectedWorktreePath} />
+        )}
+
+        {/* Top half: Tabbed sidebar (Changes / Files) */}
+        <div
+          className="flex flex-col min-h-0 overflow-hidden"
+          style={{
+            flex:
+              (isConnectionMode && terminalPosition === 'bottom')
+                ? '1 1 0%'
+                : collapsedPanel === 'top'
+                  ? '0 0 auto'
+                  : collapsedPanel === 'bottom'
+                    ? '1 1 0%'
+                    : `${splitFraction} 1 0%`
+          }}
+          data-testid="right-sidebar-top"
+        >
+          <ErrorBoundary
+            componentName="FileSidebar"
+            fallback={
+              <div className="flex-1 p-2">
+                <ErrorFallback compact title="File sidebar error" />
+              </div>
+            }
+          >
+            <FileSidebar
+              worktreePath={selectedWorktreePath}
+              isConnectionMode={isConnectionMode}
+              connectionMembers={selectedConnection?.members}
+              onClose={toggleRightSidebar}
+              onFileClick={handleFileClick}
+              className="flex-1 min-h-0"
+              isCollapsed={collapsedPanel === 'top'}
+              onToggleCollapse={(isConnectionMode && terminalPosition === 'bottom') ? undefined : toggleTopPanel}
+            />
+          </ErrorBoundary>
+        </div>
+
+        {!(isConnectionMode && terminalPosition === 'bottom') && (
+          <>
+            {/* Draggable divider between top and bottom panels */}
+            {collapsedPanel === 'none' && (
+              <ResizeHandle onResize={handleVerticalResize} direction="up" />
+            )}
+
+            {/* Bottom half: Tab panel */}
+            <div
+              className="flex flex-col min-h-0 overflow-hidden"
+              style={{
+                flex:
+                  collapsedPanel === 'bottom'
+                    ? '0 0 auto'
+                    : collapsedPanel === 'top'
+                      ? '1 1 0%'
+                      : `${1 - splitFraction} 1 0%`
+              }}
+              data-testid="right-sidebar-bottom"
+            >
+              <BottomPanel
+                terminalContainerRef={sidebarTargetRef}
+                terminalPosition={terminalPosition}
+                isConnectionMode={isConnectionMode}
+                isCollapsed={collapsedPanel === 'bottom'}
+                onToggleCollapse={toggleBottomPanel}
+              />
+            </div>
+          </>
+        )}
+      </aside>
+    </div>
+  )
+}

@@ -1,0 +1,606 @@
+@import 'tailwindcss';
+@import 'diff2html/bundles/css/diff2html.min.css';
+@import 'highlight.js/styles/github-dark-dimmed.css';
+@import './xterm.css';
+
+@font-face {
+  font-family: 'DM Sans';
+  src: url('../assets/fonts/DMSans-Variable.woff2') format('woff2');
+  font-weight: 100 1000;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'SF Mono', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+}
+
+:root {
+  color-scheme: light;
+  --radius: 0.625rem;
+  /* Light theme — purple-tinted surfaces (HSL 260° purple) */
+  --background: hsl(260 20% 99%);
+  --foreground: hsl(260 15% 12%);
+  --card: hsl(260 20% 99%);
+  --card-foreground: hsl(260 15% 12%);
+  --popover: hsl(260 20% 99%);
+  --popover-foreground: hsl(260 15% 12%);
+  /* OctoB violet accent — #a855f7 */
+  --primary: #a855f7;
+  --primary-foreground: #fafafa;
+  --secondary: hsl(260 15% 95%);
+  --secondary-foreground: hsl(260 15% 20%);
+  --muted: hsl(260 15% 95%);
+  --muted-foreground: hsl(260 10% 45%);
+  --accent: hsl(260 15% 95%);
+  --accent-foreground: hsl(260 15% 20%);
+  --destructive: var(--color-red-500);
+  --destructive-foreground: var(--color-white);
+  --border: hsl(260 10% 90%);
+  --input: hsl(260 10% 88%);
+  --ring: var(--primary);
+  --chart-1: oklch(64.62% 0.171 250.71);
+  --chart-2: oklch(60.04% 0.118 184.7);
+  --chart-3: oklch(39.87% 0.07 227.39);
+  --chart-4: oklch(74.37% 0.144 85.12);
+  --chart-5: oklch(64.47% 0.222 41.12);
+  --sidebar: hsl(260 15% 97%);
+  --sidebar-foreground: hsl(260 10% 45%);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--color-white);
+  --sidebar-accent: hsl(260 15% 93%);
+  --sidebar-accent-foreground: hsl(260 15% 20%);
+  --sidebar-border: hsl(260 10% 90%);
+  --sidebar-ring: var(--primary);
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #090d14;
+  --foreground: #e6edf7;
+  --card: #111823;
+  --card-foreground: #edf3fb;
+  --popover: #111823;
+  --popover-foreground: #edf3fb;
+  --primary: #2f7dff;
+  --primary-foreground: #fafafa;
+  --secondary: #151d29;
+  --secondary-foreground: #dbe6f5;
+  --muted: #151d29;
+  --muted-foreground: #8290a3;
+  --accent: #1a2534;
+  --accent-foreground: #e5edf8;
+  --destructive: var(--color-red-500);
+  --destructive-foreground: var(--color-white);
+  --border: #253244;
+  --input: #263346;
+  --ring: var(--primary);
+  --chart-1: oklch(70.34% 0.127 227.39);
+  --chart-2: oklch(69.26% 0.128 184.7);
+  --chart-3: oklch(98.48% 0.001 285.98);
+  --chart-4: oklch(74.11% 0.164 68.11);
+  --chart-5: oklch(65.91% 0.204 41.12);
+  --sidebar: #0d131d;
+  --sidebar-foreground: #93a0b3;
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--color-white);
+  --sidebar-accent: #172131;
+  --sidebar-accent-foreground: #e5edf8;
+  --sidebar-border: #253244;
+  --sidebar-ring: var(--primary);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    outline-color: color-mix(in srgb, var(--ring) 50%, transparent);
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-size: 14px;
+    font-feature-settings:
+      'rlig' 1,
+      'calt' 1;
+  }
+  pre, code, kbd, samp {
+    font-family: var(--font-mono);
+  }
+
+  /* Native-feeling scrollbars — thin, transparent, theme-aware */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
+  }
+
+  *:hover {
+    scrollbar-color: rgba(0, 0, 0, 0.25) transparent;
+  }
+
+  /* WebKit scrollbar styling (Electron/Chromium) */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.25);
+  }
+
+  ::-webkit-scrollbar-thumb:active {
+    background: rgba(0, 0, 0, 0.35);
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* Dark mode scrollbar overrides */
+  .dark * {
+    scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+  }
+
+  .dark *:hover {
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  }
+
+  .dark ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+  }
+
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.18);
+  }
+
+  .dark ::-webkit-scrollbar-thumb:active {
+    background: rgba(255, 255, 255, 0.25);
+  }
+}
+
+/* Subtle grain texture overlay */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 256px 256px;
+}
+
+.dark body {
+  background:
+    linear-gradient(180deg, rgba(31, 49, 77, 0.26) 0%, rgba(9, 13, 20, 0) 180px),
+    var(--background);
+}
+
+/* Electron window drag utilities */
+.drag-region {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Prevent text selection during resize operations */
+.resize-active {
+  user-select: none;
+}
+
+/* diff2html styles */
+.diff-viewer {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.diff-viewer .d2h-empty,
+.diff-viewer .d2h-error {
+  padding: 2rem;
+  text-align: center;
+  color: var(--muted-foreground);
+}
+
+.diff-viewer .d2h-error {
+  color: var(--destructive);
+}
+
+/* Scroll containment — prevent diff table from overflowing */
+.diff-viewer .d2h-file-diff {
+  overflow: hidden;
+  position: relative;
+}
+
+/* Dark mode overrides for diff2html — uses theme-aware CSS custom properties */
+.dark .diff-viewer .d2h-wrapper {
+  background-color: transparent;
+}
+
+.dark .diff-viewer .d2h-file-header {
+  background-color: var(--muted);
+  border-color: var(--border);
+}
+
+.dark .diff-viewer .d2h-file-header,
+.dark .diff-viewer .d2h-file-name {
+  color: var(--foreground);
+}
+
+.dark .diff-viewer .d2h-code-line,
+.dark .diff-viewer .d2h-code-side-line {
+  background-color: var(--background);
+}
+
+.dark .diff-viewer .d2h-code-linenumber {
+  background-color: var(--muted);
+  color: var(--muted-foreground);
+  border-color: var(--border);
+}
+
+/* Dark mode — added lines: green tinted background (text color from syntax highlighting) */
+.dark .diff-viewer .d2h-ins {
+  background-color: rgba(46, 160, 67, 0.15);
+}
+
+.dark .diff-viewer .d2h-ins .d2h-code-line-ctn {
+  background-color: rgba(46, 160, 67, 0.15);
+}
+
+/* Dark mode — removed lines: red tinted background (text color from syntax highlighting) */
+.dark .diff-viewer .d2h-del {
+  background-color: rgba(248, 81, 73, 0.15);
+}
+
+.dark .diff-viewer .d2h-del .d2h-code-line-ctn {
+  background-color: rgba(248, 81, 73, 0.15);
+}
+
+/* Dark mode — word-level inline diff highlights (<ins>/<del> within code lines).
+   diff2html defaults to bright light-mode colors (#97f295 / #ffb6ba) because
+   our .dark class doesn't match its built-in .d2h-dark-color-scheme. Override. */
+.dark .diff-viewer .d2h-code-line ins,
+.dark .diff-viewer .d2h-code-side-line ins {
+  background-color: rgba(46, 160, 67, 0.3);
+  border-radius: 0.2em;
+}
+
+.dark .diff-viewer .d2h-code-line del,
+.dark .diff-viewer .d2h-code-side-line del {
+  background-color: rgba(248, 81, 73, 0.3);
+  border-radius: 0.2em;
+}
+
+.dark .diff-viewer .d2h-info {
+  background-color: var(--muted);
+  color: var(--muted-foreground);
+  border-color: var(--border);
+}
+
+.dark .diff-viewer .d2h-file-diff {
+  border-color: var(--border);
+}
+
+.dark .diff-viewer .d2h-diff-table {
+  border-color: var(--border);
+}
+
+.dark .diff-viewer .d2h-diff-tbody tr {
+  border-color: var(--border);
+}
+
+/* Ensure line numbers and content align properly */
+.diff-viewer .d2h-code-line-ctn {
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+/* Split view specific adjustments */
+.diff-viewer .d2h-file-side-diff {
+  width: 50%;
+}
+
+/* Scope highlight.js styles to only apply inside diff viewer */
+.diff-viewer .d2h-code-line-ctn.hljs {
+  background: transparent;
+  padding: 0;
+}
+
+/*
+ * Fix syntax highlighting contrast on diff backgrounds.
+ * Some hljs token colors clash with the green/red diff tints:
+ *   - Red keywords (#f47067) disappear on red deletion backgrounds
+ *   - Green entity tags (#8ddb8c) disappear on green addition backgrounds
+ *   - Orange built-ins (#f69d50) have low contrast on red backgrounds
+ * We override only the clashing tokens on each diff line type, shifting
+ * them to a higher-contrast color while keeping full syntax highlighting
+ * on context lines.
+ */
+
+/* --- Added lines (green background): neutralize green-ish tokens --- */
+.dark .diff-viewer .d2h-ins .d2h-code-line-ctn .hljs-name,
+.dark .diff-viewer .d2h-ins .d2h-code-line-ctn .hljs-selector-tag,
+.dark .diff-viewer .d2h-ins .d2h-code-line-ctn .hljs-selector-pseudo,
+.dark .diff-viewer .d2h-ins .d2h-code-line-ctn .hljs-quote {
+  /* green #8ddb8c -> light cyan, still visible on green bg */
+  color: #6cb6ff;
+}
+
+.dark .diff-viewer .d2h-ins .d2h-code-line-ctn .hljs-addition {
+  color: #adbac7;
+  background-color: transparent;
+}
+
+/* --- Deleted lines (red background): neutralize red/orange tokens --- */
+.dark .diff-viewer .d2h-del .d2h-code-line-ctn .hljs-doctag,
+.dark .diff-viewer .d2h-del .d2h-code-line-ctn .hljs-keyword,
+.dark .diff-viewer .d2h-del .d2h-code-line-ctn .hljs-meta .hljs-keyword,
+.dark .diff-viewer .d2h-del .d2h-code-line-ctn .hljs-template-tag,
+.dark .diff-viewer .d2h-del .d2h-code-line-ctn .hljs-template-variable,
+.dark .diff-viewer .d2h-del .d2h-code-line-ctn .hljs-type,
+.dark .diff-viewer .d2h-del .d2h-code-line-ctn .hljs-variable.language_ {
+  /* red #f47067 -> light pink, readable on red bg */
+  color: #ffb4a8;
+}
+
+.dark .diff-viewer .d2h-del .d2h-code-line-ctn .hljs-built_in,
+.dark .diff-viewer .d2h-del .d2h-code-line-ctn .hljs-symbol {
+  /* orange #f69d50 -> light peach, readable on red bg */
+  color: #f0c999;
+}
+
+.dark .diff-viewer .d2h-del .d2h-code-line-ctn .hljs-deletion {
+  color: #adbac7;
+  background-color: transparent;
+}
+
+/* --- Light mode: same clashes apply with lighter backgrounds --- */
+.diff-viewer .d2h-ins .d2h-code-line-ctn .hljs-addition {
+  background-color: transparent;
+}
+
+.diff-viewer .d2h-del .d2h-code-line-ctn .hljs-deletion {
+  background-color: transparent;
+}
+
+/* Marquee scroll animation for overflow text on hover */
+@keyframes marquee-scroll {
+  0%,
+  20% {
+    transform: translateX(0);
+  }
+  80%,
+  100% {
+    transform: translateX(var(--scroll-distance));
+  }
+}
+
+/* Indeterminate progress bar bounce animation for agent working indicator.
+   6-phase bouncing worm: grow → slide → shrink → grow → slide back → shrink.
+   Uses left/right on position:absolute to animate width + position together.
+   NOTE: Primary animation is driven via Web Animations API in IndeterminateProgressBar.tsx
+   for reliable cross-instance synchronization. These keyframes are retained as documentation. */
+@keyframes progress-bounce {
+  0% {
+    left: 0;
+    right: 100%;
+  }
+  12% {
+    left: 0;
+    right: 75%;
+  }
+  38% {
+    left: 75%;
+    right: 0;
+  }
+  50% {
+    left: 100%;
+    right: 0;
+  }
+  62% {
+    left: 75%;
+    right: 0;
+  }
+  88% {
+    left: 0;
+    right: 75%;
+  }
+  100% {
+    left: 0;
+    right: 100%;
+  }
+}
+
+/* Safety-net defaults: bar is visible even if JS animation fails to start */
+.progress-bounce-bar {
+  left: 0;
+  right: 75%;
+}
+
+/* PR review comment HTML body styling (GitHub bodyHTML) */
+.pr-comment-html p {
+  margin: 0.25em 0;
+}
+.pr-comment-html code {
+  font-size: 0.85em;
+  padding: 0.15em 0.35em;
+  border-radius: 4px;
+  background: var(--muted);
+  font-family: var(--font-mono);
+}
+.pr-comment-html pre {
+  margin: 0.5em 0;
+  padding: 0.5em 0.75em;
+  border-radius: 6px;
+  background: var(--muted);
+  overflow-x: auto;
+  font-size: 0.85em;
+  font-family: var(--font-mono);
+}
+.pr-comment-html pre code {
+  padding: 0;
+  background: none;
+}
+.pr-comment-html a {
+  color: var(--primary);
+  text-decoration: underline;
+}
+.pr-comment-html ul,
+.pr-comment-html ol {
+  padding-left: 1.25em;
+  margin: 0.25em 0;
+}
+.pr-comment-html blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 0.75em;
+  margin: 0.25em 0;
+  color: var(--muted-foreground);
+}
+.pr-comment-html strong {
+  font-weight: 600;
+}
+.pr-comment-html em {
+  font-style: italic;
+}
+.pr-comment-html img {
+  max-width: 100%;
+  border-radius: 4px;
+}
+.pr-comment-html details {
+  margin: 0.5em 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.pr-comment-html details summary {
+  cursor: pointer;
+  padding: 0.25em 0.5em;
+  font-size: 0.9em;
+  color: var(--muted-foreground);
+  user-select: none;
+}
+.pr-comment-html details summary:hover {
+  color: var(--foreground);
+}
+.pr-comment-html details[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+.pr-comment-html details > *:not(summary) {
+  margin-left: 0.5em;
+  margin-right: 0.5em;
+}
+
+/* Monaco decoration: diff comment range highlight (violet tint) */
+.diff-comment-range-highlight {
+  background-color: rgba(139, 92, 246, 0.15);
+}
+
+/* Monaco decoration: outdated diff comment range highlight (yellow tint) */
+.diff-comment-range-highlight-outdated {
+  background-color: rgba(234, 179, 8, 0.10);
+}
+
+/* Monaco decoration: flash highlight when jumping to a comment */
+.diff-comment-jump-flash {
+  background-color: rgba(139, 92, 246, 0.35);
+  transition: background-color 1.5s ease-out;
+}
+
+/* Sparkle border animation for SUPER toggle when active.
+   Rotating conic-gradient masked to border-only ring via mask-composite.
+   @property enables CSS transition of custom angle (Chromium/Electron). */
+@property --sparkle-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes sparkle-rotate {
+  to {
+    --sparkle-angle: 360deg;
+  }
+}
+
+.super-sparkle {
+  position: relative;
+  z-index: 0;
+}
+
+.super-sparkle::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--sparkle-angle),
+    transparent 0%,
+    rgba(249, 115, 22, 0.9) 10%,
+    transparent 20%,
+    transparent 33%,
+    rgba(251, 191, 36, 0.9) 43%,
+    transparent 53%,
+    transparent 66%,
+    rgba(249, 115, 22, 0.9) 76%,
+    transparent 86%
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: sparkle-rotate 3s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .super-sparkle::before {
+    animation: none;
+  }
+}

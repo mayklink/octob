@@ -1,0 +1,426 @@
+import type { TerminalBackend, TerminalOpts, TerminalBackendCallbacks } from './types'
+import { useSettingsStore } from '@/stores/useSettingsStore'
+import { hasFocusedEditableElement } from '@/lib/focus-utils'
+
+/**
+ * Native Ghostty terminal backend (macOS only).
+ * Renders via Metal through a native NSView overlay on the Electron window.
+ * Delegates all I/O to the Ghostty runtime — no node-pty involvement.
+ */
+export class GhosttyBackend implements TerminalBackend {
+  readonly type = 'ghostty' as const
+  readonly supportsSearch = false // Ghostty handles its own search natively
+
+  private static readonly HIDDEN_RECT = { x: -10000, y: -10000, w: 400, h: 300 }
+
+  /** Fallback font size when the setting is unavailable (points). */
+  private static readonly FALLBACK_FONT_SIZE = 14
+
+  private terminalId: string = ''
+  private container: HTMLDivElement | null = null
+  private resizeObserver: ResizeObserver | null = null
+  private windowResizeHandler: (() => void) | null = null
+  private mounted = false
+  private syncFrameTimer: ReturnType<typeof requestAnimationFrame> | null = null
+  private lastVisibleRect: { x: number; y: number; w: number; h: number } | null = null
+  private opts: TerminalOpts | null = null
+  private callbacks: TerminalBackendCallbacks | null = null
+  private visible = true
+  private runtimeReady = false
+  private runtimeInitPromise: Promise<boolean> | null = null
+  private createSurfacePromise: Promise<void> | null = null
+  private surfaceCreated = false
+  private failed = false
+
+  mount(container: HTMLDivElement, opts: TerminalOpts, callbacks: TerminalBackendCallbacks): void {
+    this.terminalId = opts.terminalId
+    this.container = container
+    this.opts = opts
+    this.callbacks = callbacks
+    this.mounted = true
+    // Seed visibility from the host's current UI state. If the host (e.g. the
+    // bottom-panel terminal) is collapsed at recreation time — common after a
+    // cwd/fontSize/backend-setting change or a React StrictMode double-mount —
+    // defaulting to `true` would let ensureSurface() run the on-screen
+    // syncFrame branch and pin the NSView to a stale on-screen rect that no
+    // later setVisible(false) can move (because effectiveVisible never
+    // changes). Honoring opts.initialVisible avoids that "ghost terminal"
+    // state on collapse.
+    this.visible = opts.initialVisible ?? true
+    this.runtimeReady = false
+    this.runtimeInitPromise = null
+    this.createSurfacePromise = null
+    this.surfaceCreated = false
+    this.failed = false
+    this.lastVisibleRect = null
+
+    // The container acts as a transparent "hole" — the native NSView renders behind it.
+    // We need pointer-events: none so mouse events pass through to the native view.
+    container.innerHTML = ''
+    container.style.pointerEvents = 'none'
+    container.style.position = 'relative'
+
+    callbacks.onStatusChange('creating')
+    void this.ensureSurface()
+
+    // Track container position/size and update the native NSView frame.
+    // Debounced via requestAnimationFrame to avoid rapid-fire IPC during resizing.
+    this.resizeObserver = new ResizeObserver(() => {
+      this.debouncedSyncFrame()
+    })
+    this.resizeObserver.observe(container)
+
+    // Also listen for window resize — the container's position within the window
+    // changes when the window is resized, but ResizeObserver only fires on
+    // dimension changes, not position changes.
+    this.windowResizeHandler = () => this.debouncedSyncFrame()
+    window.addEventListener('resize', this.windowResizeHandler)
+  }
+
+  /**
+   * Initialize the Ghostty runtime once.
+   */
+  private async ensureRuntimeReady(): Promise<boolean> {
+    if (this.runtimeReady) return true
+    if (this.runtimeInitPromise) return this.runtimeInitPromise
+
+    this.runtimeInitPromise = (async () => {
+      try {
+        const initResult = await window.terminalOps.ghosttyInit()
+        if (!initResult.success) {
+          console.error('Failed to initialize Ghostty:', initResult.error)
+          return false
+        }
+        this.runtimeReady = true
+        return true
+      } catch (err) {
+        console.error('Error initializing Ghostty:', err)
+        return false
+      } finally {
+        this.runtimeInitPromise = null
+      }
+    })()
+
+    return this.runtimeInitPromise
+  }
+
+  /**
+   * Create the native Ghostty surface once the container has a measurable rect.
+   * Hidden or zero-sized containers are treated as "not ready yet", not terminal failure.
+   */
+  private async ensureSurface(): Promise<void> {
+    if (
+      !this.mounted ||
+      this.failed ||
+      this.surfaceCreated ||
+      this.createSurfacePromise ||
+      !this.opts
+    ) {
+      return
+    }
+
+    const initialRect = this.getContainerRect()
+    if (!initialRect) return
+
+    this.createSurfacePromise = (async () => {
+      const runtimeReady = await this.ensureRuntimeReady()
+      if (!runtimeReady) {
+        this.fail()
+        return
+      }
+      if (!this.mounted || this.failed || this.surfaceCreated || !this.opts) return
+
+      const rect = this.getContainerRect()
+      if (!rect) return
+      this.lastVisibleRect = rect
+
+      // If we already know the backend should be hidden (e.g., user collapsed
+      // the panel before this surface finished creating, or initialVisible was
+      // false from mount because the panel was already collapsed), pass
+      // off-screen x/y to ghosttyCreateSurface so the native NSView is BORN
+      // off-screen instead of flashing at the container's last on-screen
+      // position before our follow-up hideSurface IPC arrives. We keep w/h
+      // from the real rect so the PTY grid sizes correctly for when the
+      // surface eventually becomes visible.
+      const createRect = this.visible
+        ? rect
+        : {
+            x: GhosttyBackend.HIDDEN_RECT.x,
+            y: GhosttyBackend.HIDDEN_RECT.y,
+            w: rect.w,
+            h: rect.h
+          }
+
+      try {
+        const result = await window.terminalOps.ghosttyCreateSurface(this.terminalId, createRect, {
+          cwd: this.opts.cwd,
+          shell: this.opts.shell,
+          scaleFactor: window.devicePixelRatio || 2.0,
+          fontSize: useSettingsStore.getState().ghosttyFontSize || GhosttyBackend.FALLBACK_FONT_SIZE
+        })
+
+        if (!result.success) {
+          console.error('Failed to create Ghostty surface:', result.error)
+          this.fail()
+          return
+        }
+
+        if (!this.mounted || this.failed) {
+          // Disposed or failed between the create call and its resolution.
+          // The native surface exists but we never stored it as surfaceCreated,
+          // so dispose() skipped cleanup — destroy it here to avoid leaking.
+          window.terminalOps.ghosttyDestroySurface(this.terminalId).catch(() => {
+            // Best-effort cleanup
+          })
+          return
+        }
+
+        this.surfaceCreated = true
+        this.callbacks?.onStatusChange('running')
+
+        if (this.visible) {
+          this.syncFrame()
+          if (!hasFocusedEditableElement()) {
+            await window.terminalOps.ghosttySetFocus(this.terminalId, true)
+          }
+        } else {
+          this.hideSurface()
+        }
+      } catch (err) {
+        console.error('Error creating Ghostty surface:', err)
+        this.fail()
+      } finally {
+        this.createSurfacePromise = null
+      }
+    })()
+
+    await this.createSurfacePromise
+  }
+
+  private fail(): void {
+    if (!this.mounted || this.failed) return
+    this.failed = true
+    this.callbacks?.onStatusChange('exited')
+  }
+
+  private hideSurface(): void {
+    if (!this.surfaceCreated) return
+
+    // Drop any rAF-scheduled syncFrame so a ResizeObserver firing that
+    // landed microseconds before setVisible(false) cannot race the hide
+    // IPC and leave the NSView on-screen with a shrinking height.
+    if (this.syncFrameTimer !== null) {
+      cancelAnimationFrame(this.syncFrameTimer)
+      this.syncFrameTimer = null
+    }
+
+    window.terminalOps.ghosttySetFocus(this.terminalId, false).catch(() => {
+      // Ignore focus errors
+    })
+    const hiddenRect = this.lastVisibleRect
+      ? {
+          x: GhosttyBackend.HIDDEN_RECT.x,
+          y: GhosttyBackend.HIDDEN_RECT.y,
+          w: this.lastVisibleRect.w,
+          h: this.lastVisibleRect.h
+        }
+      : GhosttyBackend.HIDDEN_RECT
+
+    window.terminalOps.ghosttySetFrame(this.terminalId, hiddenRect).catch(() => {
+      // Ignore frame sync errors during teardown
+    })
+  }
+
+  private showSurface(): void {
+    if (!this.surfaceCreated) {
+      void this.ensureSurface()
+      return
+    }
+
+    this.syncFrame()
+    // Restore macOS first responder so focusedSurfaceId() returns this surface
+    // and the menu paste handler routes Cmd+V correctly. Without this, focus
+    // restoration depends on a fragile setTimeout in TerminalView that can be
+    // cancelled by rapid effectiveVisible changes (e.g. overlay suppression race).
+    if (!hasFocusedEditableElement()) {
+      window.terminalOps.ghosttySetFocus(this.terminalId, true).catch(() => {
+        // Ignore focus errors
+      })
+    }
+  }
+
+  /**
+   * Get the container's bounding rect in screen coordinates for the native NSView.
+   *
+   * getBoundingClientRect() returns CSS pixels which are inflated by the Electron
+   * zoom factor (Cmd+/-). The native NSView frame needs AppKit points, so we
+   * divide out the zoom factor to avoid double-scaling that makes fonts giant.
+   */
+  private getContainerRect(): { x: number; y: number; w: number; h: number } | null {
+    if (!this.container) return null
+
+    const bounds = this.container.getBoundingClientRect()
+    if (bounds.width === 0 || bounds.height === 0) return null
+
+    // Compensate for Electron zoom: CSS pixels → AppKit points.
+    // devicePixelRatio includes both display scale and Electron zoom;
+    // the native layer already accounts for display backingScaleFactor,
+    // so we only need to undo the Electron zoom portion.
+    // Electron zoom factor = devicePixelRatio / backingScaleFactor.
+    // Since we can't query backingScaleFactor from the renderer, we use
+    // the fact that screen.deviceXDPI / screen.logicalXDPI is the zoom,
+    // but the simplest reliable approach is:
+    //   zoomFactor = devicePixelRatio / (base DPR without zoom)
+    // On Retina Mac, base DPR is 2.0. On non-Retina, it's 1.0.
+    // However, there's no reliable way to know the "base" DPR from the
+    // renderer alone. Instead, we note that Electron gives us
+    // visualViewport.scale which IS the zoom factor on Electron >= 28.
+    const zoomFactor = window.visualViewport?.scale ?? 1.0
+
+    return {
+      x: Math.round(bounds.left / zoomFactor),
+      y: Math.round(bounds.top / zoomFactor),
+      w: Math.round(bounds.width / zoomFactor),
+      h: Math.round(bounds.height / zoomFactor)
+    }
+  }
+
+  /**
+   * Schedule a syncFrame on the next animation frame.
+   * Coalesces rapid ResizeObserver firings into a single update.
+   *
+   * Defense-in-depth: while hidden, don't even schedule — avoids a race
+   * where a rAF scheduled by the ResizeObserver during a collapse
+   * transition could land between hideSurface()'s cancel and the actual
+   * setFrame IPC, re-positioning the NSView back on-screen.
+   */
+  private debouncedSyncFrame(): void {
+    if (!this.visible) return
+    if (this.syncFrameTimer !== null) return
+    this.syncFrameTimer = requestAnimationFrame(() => {
+      this.syncFrameTimer = null
+      this.syncFrame()
+    })
+  }
+
+  /**
+   * Sync the native NSView frame with the current container position.
+   * Called on resize and scroll events.
+   *
+   * setFrame in the native bridge already calls ghostty_surface_set_size
+   * internally, so we only need the single setFrame call here.
+   */
+  private syncFrame(): void {
+    if (!this.mounted || this.failed) return
+
+    if (!this.surfaceCreated) {
+      if (this.visible) {
+        void this.ensureSurface()
+      }
+      return
+    }
+
+    // While hidden, never update the native frame. Without this guard, a
+    // ResizeObserver firing during a collapse transition (or the window
+    // resize listener, or resize(cols,rows)) would re-position the NSView
+    // back on-screen after hideSurface() moved it off-screen — leaving a
+    // thin strip of terminal visible below the collapsed bottom bar.
+    if (!this.visible) return
+
+    const rect = this.getContainerRect()
+    if (!rect) return
+
+    this.lastVisibleRect = rect
+
+    window.terminalOps.ghosttySetFrame(this.terminalId, rect).catch(() => {
+      // Ignore frame sync errors during teardown
+    })
+  }
+
+  /** Not used — Ghostty handles its own I/O */
+  write(): void {
+    // No-op: Ghostty manages its own PTY internally
+  }
+
+  resize(_cols: number, _rows: number): void {
+    // Ghostty calculates its own grid from pixel dimensions
+    this.syncFrame()
+  }
+
+  focus(): void {
+    if (!this.mounted) return
+    if (!this.surfaceCreated) {
+      void this.ensureSurface()
+      return
+    }
+    window.terminalOps.ghosttySetFocus(this.terminalId, true).catch(() => {
+      // Ignore focus errors
+    })
+  }
+
+  setVisible(visible: boolean): void {
+    if (!this.mounted) return
+    this.visible = visible
+
+    if (!visible) {
+      this.hideSurface()
+      return
+    }
+
+    this.showSurface()
+  }
+
+  clear(): void {
+    // Ghostty doesn't expose a clear API through our bridge yet
+    // This is a known limitation of the native backend
+  }
+
+  dispose(): void {
+    this.mounted = false
+
+    if (this.syncFrameTimer !== null) {
+      cancelAnimationFrame(this.syncFrameTimer)
+      this.syncFrameTimer = null
+    }
+
+    this.resizeObserver?.disconnect()
+    this.resizeObserver = null
+
+    if (this.windowResizeHandler) {
+      window.removeEventListener('resize', this.windowResizeHandler)
+      this.windowResizeHandler = null
+    }
+
+    if (this.container) {
+      this.container.style.pointerEvents = ''
+      this.container = null
+    }
+
+    if (this.surfaceCreated) {
+      window.terminalOps.ghosttyDestroySurface(this.terminalId).catch(() => {
+        // Best-effort cleanup
+      })
+    }
+
+    this.opts = null
+    this.callbacks = null
+    this.runtimeReady = false
+    this.runtimeInitPromise = null
+    this.createSurfacePromise = null
+    this.surfaceCreated = false
+    this.failed = false
+  }
+}
+
+/**
+ * Check if the Ghostty native backend is available on this system.
+ * Returns false on non-macOS platforms or if the addon isn't built.
+ */
+export async function isGhosttyAvailable(): Promise<boolean> {
+  try {
+    const result = await window.terminalOps.ghosttyIsAvailable()
+    return result.available
+  } catch {
+    return false
+  }
+}

@@ -1,0 +1,1881 @@
+import type {
+  PetManifest,
+  PetPosition,
+  PetSettings,
+  PetStatusPayload
+} from '../shared/types/pet'
+import type {
+  AutomaticPullRequestReviewEvent,
+  AutomaticPullRequestReviewSettings,
+  AutomaticPullRequestReviewSnapshot,
+  PullRequestInboxRequest,
+  PullRequestInboxResponse
+} from '../shared/types/pull-request-inbox'
+
+// Database types for renderer
+interface Connection {
+  id: string
+  name: string
+  custom_name: string | null
+  status: 'active' | 'archived'
+  path: string
+  color: string | null // JSON-serialised ConnectionColorQuad
+  pinned: number // 0 = not pinned, 1 = pinned
+  created_at: string
+  updated_at: string
+}
+
+interface ConnectionMember {
+  id: string
+  connection_id: string
+  worktree_id: string
+  project_id: string
+  symlink_name: string
+  added_at: string
+}
+
+interface ConnectionWithMembers extends Connection {
+  members: (ConnectionMember & {
+    worktree_name: string
+    worktree_branch: string
+    worktree_path: string
+    project_name: string
+  })[]
+}
+
+interface Project {
+  id: string
+  name: string
+  path: string
+  description: string | null
+  tags: string | null
+  language: string | null
+  custom_icon: string | null
+  setup_script: string | null
+  run_script: string | null
+  archive_script: string | null
+  auto_assign_port: boolean
+  sort_order: number
+  created_at: string
+  last_accessed_at: string
+}
+
+interface Worktree {
+  id: string
+  project_id: string
+  name: string
+  branch_name: string
+  path: string
+  status: 'active' | 'archived'
+  is_default: boolean
+  branch_renamed: number // 0 = auto-named (city), 1 = user/auto renamed
+  last_message_at: number | null // epoch ms of last AI message activity
+  session_titles: string // JSON array of session title strings
+  last_model_provider_id: string | null
+  last_model_id: string | null
+  last_model_variant: string | null
+  attachments: string // JSON array of Attachment objects
+  pinned: number // 0 = not pinned, 1 = pinned
+  context: string | null
+  github_pr_number: number | null
+  github_pr_url: string | null
+  base_branch: string | null
+  created_at: string
+  last_accessed_at: string
+}
+
+interface Session {
+  id: string
+  worktree_id: string | null
+  project_id: string
+  connection_id: string | null
+  name: string | null
+  status: 'active' | 'completed' | 'error'
+  opencode_session_id: string | null
+  agent_sdk: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
+  mode: 'build' | 'plan'
+  model_provider_id: string | null
+  model_id: string | null
+  model_variant: string | null
+  created_at: string
+  updated_at: string
+  completed_at: string | null
+  pinned_to_board: boolean
+}
+
+interface Setting {
+  key: string
+  value: string
+}
+
+interface SessionMessage {
+  id: string
+  session_id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  opencode_message_id: string | null
+  opencode_message_json: string | null
+  opencode_parts_json: string | null
+  opencode_timeline_json: string | null
+  created_at: string
+}
+
+type SessionActivityKind =
+  | 'tool.started'
+  | 'tool.updated'
+  | 'tool.completed'
+  | 'tool.failed'
+  | 'approval.requested'
+  | 'approval.resolved'
+  | 'user-input.requested'
+  | 'user-input.resolved'
+  | 'task.started'
+  | 'task.updated'
+  | 'task.completed'
+  | 'plan.ready'
+  | 'plan.resolved'
+  | 'session.error'
+  | 'session.retry'
+  | 'session.info'
+
+type SessionActivityTone = 'tool' | 'approval' | 'info' | 'error'
+
+type UpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+
+interface UpdateState {
+  status: UpdateStatus
+  version: string | null
+  error: string | null
+  percent: number | null
+}
+
+interface UpdateProgress {
+  percent: number
+  bytesPerSecond: number
+  transferred: number
+  total: number
+}
+
+interface SessionActivity {
+  id: string
+  session_id: string
+  agent_session_id: string | null
+  thread_id: string | null
+  turn_id: string | null
+  item_id: string | null
+  request_id: string | null
+  kind: SessionActivityKind
+  tone: SessionActivityTone
+  summary: string
+  payload_json: string | null
+  sequence: number | null
+  created_at: string
+}
+
+interface SessionWithWorktree extends Session {
+  worktree_name?: string
+  worktree_branch_name?: string
+  project_name?: string
+}
+
+interface SessionSearchOptions {
+  keyword?: string
+  project_id?: string
+  worktree_id?: string
+  dateFrom?: string
+  dateTo?: string
+  includeArchived?: boolean
+}
+
+type KanbanTicketColumn = 'todo' | 'in_progress' | 'review' | 'done'
+
+interface KanbanTicket {
+  id: string
+  project_id: string
+  title: string
+  description: string | null
+  attachments: unknown[]
+  column: KanbanTicketColumn
+  sort_order: number
+  current_session_id: string | null
+  worktree_id: string | null
+  mode: 'build' | 'plan' | null
+  plan_ready: boolean
+  created_at: string
+  updated_at: string
+  archived_at: string | null
+  github_pr_number: number | null
+  github_pr_url: string | null
+  mark: string | null
+}
+
+interface KanbanTicketCreate {
+  project_id: string
+  title: string
+  description?: string | null
+  attachments?: unknown[]
+  column?: KanbanTicketColumn
+  sort_order?: number
+  current_session_id?: string | null
+  worktree_id?: string | null
+  mode?: 'build' | 'plan' | null
+  plan_ready?: boolean
+  github_pr_number?: number | null
+  github_pr_url?: string | null
+}
+
+interface KanbanTicketUpdate {
+  title?: string
+  description?: string | null
+  attachments?: unknown[]
+  column?: KanbanTicketColumn
+  sort_order?: number
+  current_session_id?: string | null
+  worktree_id?: string | null
+  mode?: 'build' | 'plan' | null
+  plan_ready?: boolean
+  github_pr_number?: number | null
+  github_pr_url?: string | null
+  mark?: string | null
+}
+
+interface KanbanTicketBatchCreateItem {
+  draft_key: string
+  project_id: string
+  title: string
+  description?: string | null
+  attachments?: unknown[]
+  column?: KanbanTicketColumn
+  sort_order?: number
+  current_session_id?: string | null
+  worktree_id?: string | null
+  mode?: 'build' | 'plan' | 'super-plan' | null
+  plan_ready?: boolean
+  external_provider?: string | null
+  external_id?: string | null
+  external_url?: string | null
+  github_pr_number?: number | null
+  github_pr_url?: string | null
+  mark?: string | null
+  depends_on?: string[]
+}
+
+interface KanbanTicketBatchCreateResult {
+  tickets: KanbanTicket[]
+  dependencies: Array<{ dependent_id: string; blocker_id: string; created_at: string }>
+}
+
+declare global {
+  interface GhosttyTerminalConfig {
+    fontFamily?: string
+    fontSize?: number
+    background?: string
+    foreground?: string
+    cursorStyle?: 'block' | 'bar' | 'underline'
+    cursorColor?: string
+    shell?: string
+    scrollbackLimit?: number
+    palette?: Record<number, string>
+    selectionBackground?: string
+    selectionForeground?: string
+  }
+
+  interface Space {
+    id: string
+    name: string
+    icon_type: string
+    icon_value: string
+    sort_order: number
+    created_at: string
+  }
+
+  interface ProjectSpaceAssignment {
+    project_id: string
+    space_id: string
+  }
+
+  // Bash run snapshot (ephemeral in-memory state from main process)
+  interface BashRunSnapshot {
+    sessionId: string
+    id: string
+    command: string
+    cwd: string
+    startedAt: number
+    status: 'running' | 'exited' | 'killed' | 'truncated' | 'error'
+    outputBuffer: string
+    outputBytes: number
+    exitCode?: number
+  }
+
+  // Bash stream event (sent from main process via 'bash:stream' channel)
+  type BashStreamEvent =
+    | { type: 'start'; sessionId: string; runId: string; command: string; cwd: string; startedAt: number }
+    | { type: 'output'; sessionId: string; runId: string; data: string }
+    | { type: 'end'; sessionId: string; runId: string; status: 'exited' | 'killed' | 'truncated' | 'error'; exitCode?: number }
+
+  interface DiffComment {
+    id: string
+    worktree_id: string
+    file_path: string
+    line_start: number
+    line_end: number | null
+    anchor_text: string | null
+    anchor_context_before: string | null
+    anchor_context_after: string | null
+    body: string
+    is_outdated: boolean
+    created_at: string
+    updated_at: string
+  }
+
+
+  interface Window {
+    automaticPRReview: {
+      getSnapshot: () => Promise<AutomaticPullRequestReviewSnapshot>
+      updateSettings: (
+        settings: AutomaticPullRequestReviewSettings
+      ) => Promise<AutomaticPullRequestReviewSettings>
+      pollNow: () => Promise<AutomaticPullRequestReviewSnapshot>
+      onEvent: (callback: (event: AutomaticPullRequestReviewEvent) => void) => () => void
+    }
+    db: {
+      setting: {
+        get: (key: string) => Promise<string | null>
+        set: (key: string, value: string) => Promise<boolean>
+        delete: (key: string) => Promise<boolean>
+        getAll: () => Promise<Setting[]>
+      }
+      project: {
+        create: (data: {
+          name: string
+          path: string
+          description?: string | null
+          tags?: string[] | null
+        }) => Promise<Project>
+        get: (id: string) => Promise<Project | null>
+        getByPath: (path: string) => Promise<Project | null>
+        getAll: () => Promise<Project[]>
+        update: (
+          id: string,
+          data: {
+            name?: string
+            description?: string | null
+            tags?: string[] | null
+            language?: string | null
+            custom_icon?: string | null
+            setup_script?: string | null
+            run_script?: string | null
+            archive_script?: string | null
+            auto_assign_port?: boolean
+            last_accessed_at?: string
+          }
+        ) => Promise<Project | null>
+        delete: (id: string) => Promise<boolean>
+        touch: (id: string) => Promise<boolean>
+        reorder: (orderedIds: string[]) => Promise<boolean>
+        sortByLastMessage: () => Promise<string[]>
+      }
+      worktree: {
+        create: (data: {
+          project_id: string
+          name: string
+          branch_name: string
+          path: string
+        }) => Promise<Worktree>
+        get: (id: string) => Promise<Worktree | null>
+        getByProject: (projectId: string) => Promise<Worktree[]>
+        getActiveByProject: (projectId: string) => Promise<Worktree[]>
+        getRecentlyActive: (cutoffMs: number) => Promise<Worktree[]>
+        update: (
+          id: string,
+          data: {
+            name?: string
+            status?: 'active' | 'archived'
+            last_message_at?: number | null
+            last_accessed_at?: string
+          }
+        ) => Promise<Worktree | null>
+        delete: (id: string) => Promise<boolean>
+        archive: (id: string) => Promise<Worktree | null>
+        touch: (id: string) => Promise<boolean>
+        appendSessionTitle: (
+          worktreeId: string,
+          title: string
+        ) => Promise<{ success: boolean; error?: string }>
+        updateModel: (params: {
+          worktreeId: string
+          modelProviderId: string
+          modelId: string
+          modelVariant: string | null
+        }) => Promise<{ success: boolean; error?: string }>
+        addAttachment: (
+          worktreeId: string,
+          attachment: { type: 'jira' | 'figma'; url: string; label: string }
+        ) => Promise<{ success: boolean; error?: string }>
+        removeAttachment: (
+          worktreeId: string,
+          attachmentId: string
+        ) => Promise<{ success: boolean; error?: string }>
+        attachPR: (
+          worktreeId: string,
+          prNumber: number,
+          prUrl: string
+        ) => Promise<{ success: boolean; error?: string }>
+        detachPR: (
+          worktreeId: string
+        ) => Promise<{ success: boolean; error?: string }>
+        setPinned: (
+          worktreeId: string,
+          pinned: boolean
+        ) => Promise<{ success: boolean; error?: string }>
+        getPinned: () => Promise<Worktree[]>
+      }
+      session: {
+        create: (data: {
+          worktree_id: string | null
+          project_id: string
+          connection_id?: string | null
+          name?: string | null
+          opencode_session_id?: string | null
+          agent_sdk?: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
+          session_type?: 'default' | 'board-assistant'
+          model_provider_id?: string | null
+          model_id?: string | null
+          model_variant?: string | null
+        }) => Promise<Session>
+        get: (id: string) => Promise<Session | null>
+        getByWorktree: (worktreeId: string) => Promise<Session[]>
+        getByProject: (projectId: string) => Promise<Session[]>
+        getActiveByWorktree: (worktreeId: string) => Promise<Session[]>
+        update: (
+          id: string,
+          data: {
+            name?: string | null
+            status?: 'active' | 'completed' | 'error'
+            opencode_session_id?: string | null
+            agent_sdk?: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
+            mode?: 'build' | 'plan'
+            model_provider_id?: string | null
+            model_id?: string | null
+            model_variant?: string | null
+            updated_at?: string
+            completed_at?: string | null
+          }
+        ) => Promise<Session | null>
+        delete: (id: string) => Promise<boolean>
+        search: (options: SessionSearchOptions) => Promise<SessionWithWorktree[]>
+        getDraft: (sessionId: string) => Promise<string | null>
+        updateDraft: (sessionId: string, draft: string | null) => Promise<void>
+        getByConnection: (connectionId: string) => Promise<Session[]>
+        getActiveByConnection: (connectionId: string) => Promise<Session[]>
+        setPinnedToBoard: (sessionId: string, pinned: boolean) => Promise<Session | null>
+        getPinnedSessions: (worktreeId: string) => Promise<Session[]>
+        getActiveBoardAssistant: (projectId: string) => Promise<Session | null>
+      }
+      sessionMessage: {
+        list: (sessionId: string) => Promise<SessionMessage[]>
+      }
+      sessionActivity: {
+        list: (sessionId: string) => Promise<SessionActivity[]>
+      }
+      space: {
+        list: () => Promise<Space[]>
+        create: (data: { name: string; icon_type?: string; icon_value?: string }) => Promise<Space>
+        update: (
+          id: string,
+          data: {
+            name?: string
+            icon_type?: string
+            icon_value?: string
+            sort_order?: number
+          }
+        ) => Promise<Space | null>
+        delete: (id: string) => Promise<boolean>
+        assignProject: (projectId: string, spaceId: string) => Promise<boolean>
+        removeProject: (projectId: string, spaceId: string) => Promise<boolean>
+        getProjectIds: (spaceId: string) => Promise<string[]>
+        getAllAssignments: () => Promise<ProjectSpaceAssignment[]>
+        reorder: (orderedIds: string[]) => Promise<boolean>
+      }
+      diffComment: {
+        create: (data: {
+          worktree_id: string
+          file_path: string
+          line_start: number
+          line_end?: number | null
+          anchor_text?: string | null
+          anchor_context_before?: string | null
+          anchor_context_after?: string | null
+          body: string
+        }) => Promise<DiffComment>
+        list: (worktreeId: string) => Promise<DiffComment[]>
+        update: (id: string, data: {
+          body?: string
+          line_start?: number
+          line_end?: number | null
+          anchor_text?: string | null
+          anchor_context_before?: string | null
+          anchor_context_after?: string | null
+          is_outdated?: boolean
+        }) => Promise<DiffComment | null>
+        setOutdated: (id: string, isOutdated: boolean) => Promise<DiffComment | null>
+        delete: (id: string) => Promise<boolean>
+        clearAll: (worktreeId: string) => Promise<number>
+      }
+      schemaVersion: () => Promise<number>
+      tableExists: (tableName: string) => Promise<boolean>
+      getIndexes: () => Promise<{ name: string; tbl_name: string }[]>
+    }
+    projectOps: {
+      openDirectoryDialog: () => Promise<string | null>
+      isGitRepository: (path: string) => Promise<boolean>
+      validateProject: (path: string) => Promise<{
+        success: boolean
+        path?: string
+        name?: string
+        error?: string
+      }>
+      showInFolder: (path: string) => Promise<void>
+      openPath: (path: string) => Promise<string>
+      copyToClipboard: (text: string) => Promise<void>
+      readFromClipboard: () => Promise<string>
+      detectLanguage: (projectPath: string) => Promise<string | null>
+      findXcworkspace: (projectPath: string) => Promise<string | null>
+      isAndroidProject: (projectPath: string) => Promise<boolean>
+      loadLanguageIcons: () => Promise<Record<string, string>>
+      initRepository: (path: string) => Promise<{ success: boolean; error?: string }>
+      pickProjectIcon: (projectId: string) => Promise<{
+        success: boolean
+        filename?: string
+        error?: string
+      }>
+      removeProjectIcon: (projectId: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      getProjectIconPath: (filename: string) => Promise<string | null>
+      detectFavicon: (projectPath: string) => Promise<string | null>
+      getAbsoluteIconDataUrl: (absolutePath: string) => Promise<string | null>
+    }
+    worktreeOps: {
+      hasCommits: (projectPath: string) => Promise<boolean>
+      create: (params: { projectId: string; projectPath: string; projectName: string }) => Promise<{
+        success: boolean
+        worktree?: Worktree
+        error?: string
+        pullInfo?: {
+          pulled: boolean
+          updated: boolean
+        }
+      }>
+      delete: (params: {
+        worktreeId: string
+        worktreePath: string
+        branchName: string
+        projectPath: string
+        archive: boolean
+      }) => Promise<{
+        success: boolean
+        error?: string
+        warning?: string
+      }>
+      sync: (params: { projectId: string; projectPath: string }) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      exists: (worktreePath: string) => Promise<boolean>
+      openInTerminal: (worktreePath: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      openInEditor: (worktreePath: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      getBranches: (projectPath: string) => Promise<{
+        success: boolean
+        branches?: string[]
+        currentBranch?: string
+        error?: string
+      }>
+      branchExists: (projectPath: string, branchName: string) => Promise<boolean>
+      duplicate: (params: {
+        projectId: string
+        projectPath: string
+        projectName: string
+        sourceBranch: string
+        sourceWorktreePath: string
+        nameHint?: string
+      }) => Promise<{
+        success: boolean
+        worktree?: Worktree
+        error?: string
+      }>
+      renameBranch: (
+        worktreeId: string,
+        worktreePath: string,
+        oldBranch: string,
+        newBranch: string
+      ) => Promise<{ success: boolean; error?: string }>
+      createFromBranch: (
+        projectId: string,
+        projectPath: string,
+        projectName: string,
+        branchName: string,
+        prNumber?: number,
+        nameHint?: string,
+        reviewSource?: { remoteUrl: string; ref: string }
+      ) => Promise<{
+        success: boolean
+        worktree?: Worktree
+        error?: string
+        pullInfo?: {
+          pulled: boolean
+          updated: boolean
+        }
+      }>
+      // Subscribe to branch-renamed events (auto-rename from main process)
+      onBranchRenamed: (
+        callback: (data: { worktreeId: string; newBranch: string }) => void
+      ) => () => void
+      getContext: (worktreeId: string) => Promise<{
+        success: boolean
+        context?: string | null
+        error?: string
+      }>
+      updateContext: (
+        worktreeId: string,
+        context: string | null
+      ) => Promise<{ success: boolean; error?: string }>
+    }
+    systemOps: {
+      getLogDir: () => Promise<string>
+      getAppVersion: () => Promise<string>
+      getAppPaths: () => Promise<{
+        userData: string
+        home: string
+        logs: string
+      }>
+      isLogMode: () => Promise<boolean>
+      detectAgentSdks: () => Promise<{
+        opencode: boolean
+        claude: boolean
+        codex: boolean
+        mistralVibe: boolean
+        cursorCli: boolean
+        antigravity: boolean
+        antigravityVersion: string | null
+      }>
+      configureCodexBinaryPath: (
+        binaryPath: string
+      ) => Promise<{ success: boolean; path: string | null; error?: string }>
+      quitApp: () => Promise<void>
+      openInApp: (appName: string, path: string) => Promise<{ success: boolean; error?: string }>
+      openInChrome: (
+        url: string,
+        customCommand?: string
+      ) => Promise<{ success: boolean; error?: string }>
+      onNewSessionShortcut: (callback: () => void) => () => void
+      onCloseSessionShortcut: (callback: () => void) => () => void
+      onFileSearchShortcut: (callback: () => void) => () => void
+      onEditPaste: (callback: (text: string) => void) => () => void
+      onNotificationNavigate: (
+        callback: (data: { projectId: string; worktreeId: string; sessionId: string }) => void
+      ) => () => void
+      onWindowFocused: (callback: () => void) => () => void
+      updateMenuState: (state: {
+        hasActiveSession: boolean
+        hasActiveWorktree: boolean
+        canUndo?: boolean
+        canRedo?: boolean
+      }) => Promise<void>
+      onMenuAction: (channel: string, callback: () => void) => () => void
+      isPackaged: () => Promise<boolean>
+      getPlatform: () => Promise<string>
+      setKeepAwake: (active: boolean) => Promise<void>
+      setSessionQueuedState: (sessionId: string, hasQueued: boolean) => Promise<void>
+    }
+    petOps: {
+      show: () => Promise<void>
+      hide: () => Promise<void>
+      publishStatus: (payload: PetStatusPayload) => void
+      setIgnoreMouse: (ignore: boolean) => void
+      move: (position: PetPosition) => void
+      focusMain: (payload: { worktreeId: string | null }) => Promise<void>
+      getConfig: () => Promise<{
+        settings: PetSettings
+        position: PetPosition
+        manifest: PetManifest
+      }>
+      getCurrentStatus: () => Promise<PetStatusPayload>
+      updateSettings: (partial: Partial<PetSettings>) => void
+      markHatched: () => void
+      onStatus: (callback: (payload: PetStatusPayload) => void) => () => void
+      onSettingsUpdated: (callback: (settings: PetSettings) => void) => () => void
+      onJumpToWorktree: (callback: (payload: { worktreeId: string }) => void) => () => void
+    }
+    loggingOps: {
+      createResponseLog: (sessionId: string) => Promise<string>
+      appendResponseLog: (filePath: string, data: unknown) => Promise<void>
+    }
+    opencodeOps: {
+      // Connect to OpenCode for a worktree (lazy starts server if needed)
+      connect: (
+        worktreePath: string,
+        octobSessionId: string
+      ) => Promise<{ success: boolean; sessionId?: string; error?: string }>
+      // Reconnect to existing OpenCode session
+      reconnect: (
+        worktreePath: string,
+        opencodeSessionId: string,
+        octobSessionId: string
+      ) => Promise<{
+        success: boolean
+        sessionStatus?: 'idle' | 'busy' | 'retry'
+        revertMessageID?: string | null
+      }>
+      // Send a prompt (response streams via onStream)
+      // Accepts either a string message or a MessagePart[] array for rich content (text + file attachments)
+      prompt: (
+        worktreePath: string,
+        opencodeSessionId: string,
+        messageOrParts: string | MessagePart[],
+        model?: { providerID: string; modelID: string; variant?: string },
+        options?: { codexFastMode?: boolean }
+      ) => Promise<{ success: boolean; error?: string }>
+      // Abort a streaming session
+      abort: (
+        worktreePath: string,
+        opencodeSessionId: string
+      ) => Promise<{ success: boolean; error?: string }>
+      // Steer a running Codex turn and return the inserted boundary metadata
+      steer: (
+        worktreePath: string,
+        opencodeSessionId: string,
+        message: string
+      ) => Promise<{
+        success: boolean
+        error?: string
+        insertedMessageId?: string
+        nextAssistantMessageId?: string
+        turnId?: string
+      }>
+      // Disconnect session (may kill server if last session for worktree)
+      disconnect: (
+        worktreePath: string,
+        opencodeSessionId: string
+      ) => Promise<{ success: boolean; error?: string }>
+      // Get messages from an OpenCode session
+      getMessages: (
+        worktreePath: string,
+        opencodeSessionId: string
+      ) => Promise<{ success: boolean; messages: unknown[]; error?: string }>
+      // List available models from all configured providers
+      listModels: (opts?: {
+        agentSdk?: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
+      }) => Promise<{
+        success: boolean
+        providers: Record<string, unknown>
+        error?: string
+      }>
+      // Set the selected model for prompts
+      setModel: (model: {
+        providerID: string
+        modelID: string
+        variant?: string
+        agentSdk?: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
+      }) => Promise<{ success: boolean; error?: string }>
+      // Get model info (name, context limit)
+      modelInfo: (
+        worktreePath: string,
+        modelId: string,
+        agentSdk?: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
+      ) => Promise<{
+        success: boolean
+        model?: { id: string; name: string; limit: { context: number } }
+        error?: string
+      }>
+      // Reply to a pending question from the AI
+      questionReply: (
+        requestId: string,
+        answers: string[][],
+        worktreePath?: string
+      ) => Promise<{ success: boolean; error?: string }>
+      // Reject/dismiss a pending question from the AI
+      questionReject: (
+        requestId: string,
+        worktreePath?: string
+      ) => Promise<{ success: boolean; error?: string }>
+      // Approve a pending plan (ExitPlanMode) — unblocks the SDK to implement
+      planApprove: (
+        worktreePath: string,
+        octobSessionId: string,
+        requestId?: string
+      ) => Promise<{ success: boolean; error?: string }>
+      // Reject a pending plan with user feedback — Claude will revise
+      planReject: (
+        worktreePath: string,
+        octobSessionId: string,
+        feedback: string,
+        requestId?: string
+      ) => Promise<{ success: boolean; error?: string }>
+      // Reply to a pending permission request (allow once, allow always, or reject)
+      permissionReply: (
+        requestId: string,
+        reply: 'once' | 'always' | 'reject',
+        worktreePath?: string,
+        message?: string
+      ) => Promise<{ success: boolean; error?: string }>
+      // List all pending permission requests
+      permissionList: (
+        worktreePath?: string
+      ) => Promise<{ success: boolean; permissions: PermissionRequest[]; error?: string }>
+      // Reply to a pending command approval request (approve or deny, optionally add to allowlist/blocklist)
+      commandApprovalReply: (
+        requestId: string,
+        approved: boolean,
+        remember?: 'allow' | 'block',
+        pattern?: string,
+        worktreePath?: string,
+        patterns?: string[]
+      ) => Promise<{ success: boolean; error?: string }>
+      // Get session info (revert state)
+      sessionInfo: (
+        worktreePath: string,
+        opencodeSessionId: string
+      ) => Promise<{
+        success: boolean
+        revertMessageID?: string | null
+        revertDiff?: string | null
+        error?: string
+      }>
+      // Undo the last assistant turn/message range
+      undo: (
+        worktreePath: string,
+        opencodeSessionId: string
+      ) => Promise<{
+        success: boolean
+        revertMessageID?: string
+        restoredPrompt?: string
+        revertDiff?: string | null
+        error?: string
+      }>
+      // Redo the last undone message range
+      redo: (
+        worktreePath: string,
+        opencodeSessionId: string
+      ) => Promise<{ success: boolean; revertMessageID?: string | null; error?: string }>
+      // Send a slash command to a session via the SDK command endpoint
+      command: (
+        worktreePath: string,
+        opencodeSessionId: string,
+        command: string,
+        args: string,
+        model?: { providerID: string; modelID: string; variant?: string }
+      ) => Promise<{ success: boolean; error?: string }>
+      // List available slash commands from the SDK
+      commands: (
+        worktreePath: string,
+        sessionId?: string
+      ) => Promise<{ success: boolean; commands: OpenCodeCommand[]; error?: string }>
+      // Rename a session's title via the OpenCode PATCH API
+      renameSession: (
+        opencodeSessionId: string,
+        title: string,
+        worktreePath?: string
+      ) => Promise<{ success: boolean; error?: string }>
+      // Get SDK capabilities for the current session
+      capabilities: (opencodeSessionId?: string) => Promise<{
+        success: boolean
+        capabilities?: {
+          supportsUndo: boolean
+          supportsRedo: boolean
+          supportsCommands: boolean
+          supportsPermissionRequests: boolean
+          supportsQuestionPrompts: boolean
+          supportsModelSelection: boolean
+          supportsReconnect: boolean
+          supportsPartialStreaming: boolean
+          supportsSteer: boolean
+        }
+        error?: string
+      }>
+      // Fork an existing session at an optional message boundary
+      fork: (
+        worktreePath: string,
+        opencodeSessionId: string,
+        messageId?: string
+      ) => Promise<{ success: boolean; sessionId?: string; error?: string }>
+      // Subscribe to streaming events
+      onStream: (callback: (event: OpenCodeStreamEvent) => void) => () => void
+    }
+    fileTreeOps: {
+      // Scan a directory and return the file tree
+      scan: (dirPath: string) => Promise<{
+        success: boolean
+        tree?: FileTreeNode[]
+        error?: string
+      }>
+      // Scan a directory and return a flat list of all files (via git ls-files)
+      scanFlat: (dirPath: string) => Promise<{
+        success: boolean
+        files?: FlatFile[]
+        error?: string
+      }>
+      // Lazy load children for a directory
+      loadChildren: (
+        dirPath: string,
+        rootPath: string
+      ) => Promise<{
+        success: boolean
+        children?: FileTreeNode[]
+        error?: string
+      }>
+      // Start watching a directory for changes
+      watch: (worktreePath: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Stop watching a directory
+      unwatch: (worktreePath: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Subscribe to file tree change events
+      onChange: (callback: (event: FileTreeChangeEvent) => void) => () => void
+    }
+    fileOps: {
+      readFile: (filePath: string) => Promise<{
+        success: boolean
+        content?: string
+        error?: string
+      }>
+      writeFile: (filePath: string, content: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      createFile: (
+        worktreePath: string,
+        relativePath: string,
+        content?: string
+      ) => Promise<{
+        success: boolean
+        filePath?: string
+        error?: string
+      }>
+      readImageAsBase64: (filePath: string) => Promise<{
+        success: boolean
+        data?: string
+        mimeType?: string
+        error?: string
+      }>
+      getPathForFile: (file: File) => string
+    }
+    attachmentOps: {
+      saveImage: (
+        buffer: ArrayBuffer,
+        originalName: string
+      ) => Promise<{ success: boolean; filePath?: string; error?: string }>
+      deleteImage: (
+        filePath: string
+      ) => Promise<{ success: boolean; error?: string }>
+    }
+    settingsOps: {
+      detectEditors: () => Promise<DetectedApp[]>
+      detectTerminals: () => Promise<DetectedApp[]>
+      openWithEditor: (
+        worktreePath: string,
+        editorId: string,
+        customCommand?: string
+      ) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      openWithTerminal: (
+        worktreePath: string,
+        terminalId: string,
+        customCommand?: string
+      ) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      testMcpServer: (
+        server: import('../shared/types/mcp').McpServerConfig
+      ) => Promise<{
+        success: boolean
+        message: string
+        toolCount?: number
+      }>
+      onSettingsUpdated: (callback: (data: unknown) => void) => () => void
+    }
+    scriptOps: {
+      runSetup: (
+        commands: string[],
+        cwd: string,
+        worktreeId: string
+      ) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      runProject: (
+        commands: string[],
+        cwd: string,
+        worktreeId: string
+      ) => Promise<{
+        success: boolean
+        pid?: number
+        error?: string
+      }>
+      kill: (worktreeId: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      getRunState: (worktreeId: string) => Promise<{
+        events: ScriptOutputEvent[]
+        running: boolean
+        pid: number | null
+      }>
+      runArchive: (
+        commands: string[],
+        cwd: string
+      ) => Promise<{
+        success: boolean
+        output: string
+        error?: string
+      }>
+      onOutput: (channel: string, callback: (event: ScriptOutputEvent) => void) => () => void
+      offOutput: (channel: string) => void
+      getPort: (cwd: string) => Promise<{ port: number | null }>
+    }
+    terminalOps: {
+      create: (
+        terminalId: string,
+        cwd: string,
+        shell?: string
+      ) => Promise<{ success: boolean; cols?: number; rows?: number; error?: string }>
+      write: (terminalId: string, data: string) => void
+      resize: (terminalId: string, cols: number, rows: number) => Promise<void>
+      destroy: (terminalId: string) => Promise<void>
+      onData: (terminalId: string, callback: (data: string) => void) => () => void
+      onExit: (terminalId: string, callback: (code: number) => void) => () => void
+      getConfig: () => Promise<GhosttyTerminalConfig>
+
+      // Native Ghostty backend methods
+      ghosttyInit: () => Promise<{ success: boolean; version?: string; error?: string }>
+      ghosttyIsAvailable: () => Promise<{
+        available: boolean
+        initialized: boolean
+        platform: string
+      }>
+      ghosttyCreateSurface: (
+        terminalId: string,
+        rect: { x: number; y: number; w: number; h: number },
+        opts?: { cwd?: string; shell?: string; scaleFactor?: number; fontSize?: number }
+      ) => Promise<{ success: boolean; surfaceId?: number; error?: string }>
+      ghosttySetFrame: (
+        terminalId: string,
+        rect: { x: number; y: number; w: number; h: number }
+      ) => Promise<void>
+      ghosttySetSize: (terminalId: string, width: number, height: number) => Promise<void>
+      ghosttyKeyEvent: (
+        terminalId: string,
+        event: {
+          action: number
+          keycode: number
+          mods: number
+          consumedMods?: number
+          text?: string
+          unshiftedCodepoint?: number
+          composing?: boolean
+        }
+      ) => Promise<boolean>
+      ghosttyMouseButton: (
+        terminalId: string,
+        state: number,
+        button: number,
+        mods: number
+      ) => Promise<void>
+      ghosttyMousePos: (terminalId: string, x: number, y: number, mods: number) => Promise<void>
+      ghosttyMouseScroll: (
+        terminalId: string,
+        dx: number,
+        dy: number,
+        mods: number
+      ) => Promise<void>
+      ghosttySetFocus: (terminalId: string, focused: boolean) => Promise<void>
+      ghosttyPasteText: (terminalId: string, text: string) => Promise<void>
+      ghosttyDestroySurface: (terminalId: string) => Promise<void>
+      ghosttyShutdown: () => Promise<void>
+    }
+    gitOps: {
+      listPullRequestInbox: (
+        request: PullRequestInboxRequest
+      ) => Promise<PullRequestInboxResponse>
+      // Get file statuses for a worktree
+      getFileStatuses: (worktreePath: string) => Promise<{
+        success: boolean
+        files?: GitFileStatus[]
+        error?: string
+      }>
+      // Stage a file
+      stageFile: (
+        worktreePath: string,
+        filePath: string
+      ) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Unstage a file
+      unstageFile: (
+        worktreePath: string,
+        filePath: string
+      ) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Discard changes in a file
+      discardChanges: (
+        worktreePath: string,
+        filePath: string
+      ) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Add to .gitignore
+      addToGitignore: (
+        worktreePath: string,
+        pattern: string
+      ) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Open file in default editor
+      openInEditor: (filePath: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Show file in Finder
+      showInFinder: (filePath: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Subscribe to git status change events
+      onStatusChanged: (callback: (event: GitStatusChangedEvent) => void) => () => void
+      // Start watching a worktree for git changes (filesystem + .git metadata)
+      watchWorktree: (worktreePath: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Stop watching a worktree
+      unwatchWorktree: (worktreePath: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Start watching a worktree's .git/HEAD for branch changes (lightweight, sidebar use)
+      watchBranch: (worktreePath: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Stop watching a worktree's branch
+      unwatchBranch: (worktreePath: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Subscribe to branch change events (lightweight, from branch-watcher)
+      onBranchChanged: (callback: (event: { worktreePath: string }) => void) => () => void
+      // Get branch info (name, tracking, ahead/behind)
+      getBranchInfo: (worktreePath: string) => Promise<{
+        success: boolean
+        branch?: GitBranchInfo
+        error?: string
+      }>
+      // Stage all modified and untracked files
+      stageAll: (worktreePath: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Unstage all staged files
+      unstageAll: (worktreePath: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Commit staged changes
+      commit: (
+        worktreePath: string,
+        message: string
+      ) => Promise<{
+        success: boolean
+        commitHash?: string
+        error?: string
+      }>
+      // Push to remote
+      push: (
+        worktreePath: string,
+        remote?: string,
+        branch?: string,
+        force?: boolean
+      ) => Promise<{
+        success: boolean
+        pushed?: boolean
+        error?: string
+      }>
+      // Pull from remote
+      pull: (
+        worktreePath: string,
+        remote?: string,
+        branch?: string,
+        rebase?: boolean
+      ) => Promise<{
+        success: boolean
+        updated?: boolean
+        error?: string
+      }>
+      // Refresh a PR worktree from its provider before opening a review session
+      syncPullRequestBranch: (
+        worktreePath: string,
+        options: { prNumber?: number; headRefName: string; sourceRepositoryUrl?: string }
+      ) => Promise<{
+        success: boolean
+        updated?: boolean
+        error?: string
+      }>
+      // Get diff for a file
+      getDiff: (
+        worktreePath: string,
+        filePath: string,
+        staged: boolean,
+        isUntracked: boolean,
+        contextLines?: number
+      ) => Promise<{
+        success: boolean
+        diff?: string
+        fileName?: string
+        error?: string
+      }>
+      // List all branches with their worktree checkout status
+      listBranchesWithStatus: (projectPath: string) => Promise<{
+        success: boolean
+        branches: Array<{
+          name: string
+          isRemote: boolean
+          isCheckedOut: boolean
+          worktreePath?: string
+        }>
+        error?: string
+      }>
+      // Check out a branch (clean tree only; no-op if already there)
+      checkoutBranch: (
+        worktreePath: string,
+        branch: string
+      ) => Promise<{ success: boolean; error?: string }>
+      // Merge a branch into the current branch
+      merge: (
+        worktreePath: string,
+        sourceBranch: string
+      ) => Promise<{
+        success: boolean
+        error?: string
+        conflicts?: string[]
+      }>
+      // Abort an in-progress merge
+      mergeAbort: (worktreePath: string) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Check if a worktree has uncommitted changes
+      hasUncommittedChanges: (worktreePath: string) => Promise<boolean>
+      // Get branch divergence stats vs base branch
+      branchDiffShortStat: (
+        worktreePath: string,
+        baseBranch: string
+      ) => Promise<{
+        success: boolean
+        filesChanged: number
+        insertions: number
+        deletions: number
+        commitsAhead: number
+        error?: string
+      }>
+      // Get raw file content from disk
+      getFileContent: (
+        worktreePath: string,
+        filePath: string
+      ) => Promise<{
+        success: boolean
+        content: string | null
+        error?: string
+      }>
+      // Get raw file content as base64 from disk (for binary/image files)
+      getFileContentBase64: (
+        worktreePath: string,
+        filePath: string
+      ) => Promise<{
+        success: boolean
+        data?: string
+        mimeType?: string
+        error?: string
+      }>
+      // Get remote URL for a worktree
+      getRemoteUrl: (
+        worktreePath: string,
+        remote?: string
+      ) => Promise<{
+        success: boolean
+        url: string | null
+        remote: string | null
+        error?: string
+      }>
+      // Get diff stat (additions/deletions per file) for all uncommitted changes
+      getDiffStat: (worktreePath: string) => Promise<{
+        success: boolean
+        files?: GitDiffStatFile[]
+        error?: string
+      }>
+      // Merge a PR on GitHub via gh CLI and sync the local target branch
+      prMerge: (
+        worktreePath: string,
+        prNumber: number
+      ) => Promise<{ success: boolean; error?: string }>
+      // Check if a branch has been fully merged into HEAD
+      isBranchMerged: (
+        worktreePath: string,
+        branch: string
+      ) => Promise<{ success: boolean; isMerged: boolean }>
+      // Delete a local branch
+      deleteBranch: (
+        worktreePath: string,
+        branchName: string
+      ) => Promise<{ success: boolean; error?: string }>
+      // List open pull requests from GitHub via gh CLI
+      listPRs: (projectPath: string) => Promise<{
+        success: boolean
+        prs: Array<{
+          number: number
+          title: string
+          author: string
+          headRefName: string
+        }>
+        error?: string
+      }>
+      // Get the state of a specific PR via gh CLI
+      getPRState: (
+        projectPath: string,
+        prNumber: number
+      ) => Promise<{
+        success: boolean
+        state?: string
+        title?: string
+        error?: string
+      }>
+      // Fetch inline review comments for a PR
+      getPRReviewComments: (
+        projectPath: string,
+        prNumber: number
+      ) => Promise<{
+        success: boolean
+        comments?: Array<{
+          id: number
+          body: string
+          bodyHTML: string
+          path: string
+          line: number | null
+          originalLine: number | null
+          side: 'LEFT' | 'RIGHT'
+          diffHunk: string
+          user: { login: string; avatarUrl: string }
+          createdAt: string
+          updatedAt: string
+          inReplyToId: number | null
+          pullRequestReviewId: number | null
+          subjectType: 'line' | 'file'
+        }>
+        baseBranch?: string
+        error?: string
+      }>
+      // Get file content from a specific git ref (HEAD, index)
+      getRefContent: (
+        worktreePath: string,
+        ref: string,
+        filePath: string
+      ) => Promise<{
+        success: boolean
+        content?: string
+        error?: string
+      }>
+      // Get file content as base64 from a specific git ref (for binary/image files)
+      getRefContentBase64: (
+        worktreePath: string,
+        ref: string,
+        filePath: string
+      ) => Promise<{
+        success: boolean
+        data?: string
+        mimeType?: string
+        error?: string
+      }>
+      // Stage a single hunk by applying a patch to the index
+      stageHunk: (
+        worktreePath: string,
+        patch: string
+      ) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Unstage a single hunk by reverse-applying a patch from the index
+      unstageHunk: (
+        worktreePath: string,
+        patch: string
+      ) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Revert a single hunk in the working tree
+      revertHunk: (
+        worktreePath: string,
+        patch: string
+      ) => Promise<{
+        success: boolean
+        error?: string
+      }>
+      // Create a pull request via gh CLI
+      createPR: (
+        worktreePath: string,
+        baseBranch: string,
+        title: string,
+        body: string
+      ) => Promise<{
+        success: boolean
+        url?: string
+        number?: number
+        error?: string
+      }>
+      // Generate PR content (title + body) using AI
+      generatePRContent: (
+        worktreePath: string,
+        baseBranch: string,
+        provider: string
+      ) => Promise<{
+        success: boolean
+        title?: string
+        body?: string
+        error?: string
+      }>
+      // Get range diff between base branch and HEAD
+      getRangeDiff: (
+        worktreePath: string,
+        baseBranch: string
+      ) => Promise<{
+        commitSummary: string
+        diffSummary: string
+        diffPatch: string
+        commitCount: number
+      }>
+      // Check if current branch needs push
+      needsPush: (worktreePath: string) => Promise<boolean>
+      // Get list of files changed between current worktree and a branch
+      getBranchDiffFiles: (
+        worktreePath: string,
+        branch: string
+      ) => Promise<{
+        success: boolean
+        files?: Array<{
+          relativePath: string
+          status: string
+          additions: number
+          deletions: number
+          binary: boolean
+        }>
+        error?: string
+      }>
+      // Get file content at the merge-base between a branch and HEAD
+      getBranchBaseContent: (
+        worktreePath: string,
+        branch: string,
+        filePath: string
+      ) => Promise<{
+        success: boolean
+        content?: string
+        error?: string
+      }>
+      // Get file content as base64 at the merge-base between a branch and HEAD (for binary files)
+      getBranchBaseContentBase64: (
+        worktreePath: string,
+        branch: string,
+        filePath: string
+      ) => Promise<{
+        success: boolean
+        data?: string
+        mimeType?: string
+        error?: string
+      }>
+      // Get unified diff between current worktree and a branch for a specific file
+      getBranchFileDiff: (
+        worktreePath: string,
+        branch: string,
+        filePath: string
+      ) => Promise<{
+        success: boolean
+        diff?: string
+        error?: string
+      }>
+    }
+    connectionOps: {
+      create: (
+        worktreeIds: string[]
+      ) => Promise<{ success: boolean; connection?: ConnectionWithMembers; error?: string }>
+      delete: (
+        connectionId: string
+      ) => Promise<{ success: boolean; warning?: string; error?: string }>
+      addMember: (
+        connectionId: string,
+        worktreeId: string
+      ) => Promise<{ success: boolean; member?: ConnectionMember; error?: string }>
+      removeMember: (
+        connectionId: string,
+        worktreeId: string
+      ) => Promise<{ success: boolean; connectionDeleted?: boolean; error?: string }>
+      getAll: () => Promise<{
+        success: boolean
+        connections?: ConnectionWithMembers[]
+        error?: string
+      }>
+      get: (
+        connectionId: string
+      ) => Promise<{ success: boolean; connection?: ConnectionWithMembers; error?: string }>
+      openInTerminal: (connectionPath: string) => Promise<{ success: boolean; error?: string }>
+      openInEditor: (connectionPath: string) => Promise<{ success: boolean; error?: string }>
+      removeWorktreeFromAll: (worktreeId: string) => Promise<{ success: boolean; error?: string }>
+      rename: (
+        connectionId: string,
+        customName: string | null
+      ) => Promise<{ success: boolean; connection?: ConnectionWithMembers; error?: string }>
+      setPinned: (
+        connectionId: string,
+        pinned: boolean
+      ) => Promise<{ success: boolean; error?: string }>
+      getPinned: () => Promise<ConnectionWithMembers[]>
+    }
+    usageOps: {
+      fetch: () => Promise<import('../shared/types/usage').UsageResult>
+      fetchOpenai: () => Promise<import('../shared/types/usage').OpenAIUsageResult>
+      fetchAntigravity: () => Promise<import('../shared/types/usage').UsageResult>
+    }
+    accountOps: {
+      getClaudeEmail: () => Promise<string | null>
+      getOpenAIEmail: () => Promise<string | null>
+    }
+    analyticsOps: {
+      track: (event: string, properties?: Record<string, unknown>) => Promise<void>
+      setEnabled: (enabled: boolean) => Promise<void>
+      isEnabled: () => Promise<boolean>
+    }
+    perfDiagnosticsOps: {
+      enable: (enabled: boolean) => Promise<void>
+      getSnapshot: () => Promise<{
+        timestamp: string
+        uptimeMs: number
+        cpu: { userMs: number; systemMs: number; percentSinceLastSample: number }
+        memory: { rss: number; heapUsed: number; heapTotal: number; external: number; arrayBuffers: number }
+        processes: { ptyActive: number; scriptsActive: number; scriptsTotalOpened: number; scriptsTotalClosed: number }
+        watchers: { fileTree: number; worktree: number; branch: number }
+        sessions: { active: number }
+        handles: { active: number; requests: number }
+        eventLoopLagMs: number
+      }>
+    }
+    codexDebugLoggerOps: {
+      configure: (enabled: boolean, resetPerSession: boolean) => Promise<void>
+    }
+    kanban: {
+      ticket: {
+        create: (data: KanbanTicketCreate) => Promise<KanbanTicket>
+        createBatch: (data: { drafts: KanbanTicketBatchCreateItem[] }) => Promise<KanbanTicketBatchCreateResult>
+        get: (id: string) => Promise<KanbanTicket | null>
+        getByProject: (projectId: string) => Promise<KanbanTicket[]>
+        update: (id: string, data: KanbanTicketUpdate) => Promise<KanbanTicket | null>
+        delete: (id: string) => Promise<boolean>
+        archive: (id: string) => Promise<KanbanTicket | null>
+        archiveAllDone: (projectId: string) => Promise<number>
+        unarchive: (id: string) => Promise<KanbanTicket | null>
+        move: (
+          id: string,
+          column: KanbanTicketColumn,
+          sortOrder: number
+        ) => Promise<KanbanTicket | null>
+        reorder: (id: string, sortOrder: number) => Promise<void>
+        getBySession: (sessionId: string) => Promise<KanbanTicket[]>
+        addTokens: (id: string, tokens: number) => Promise<KanbanTicket | null>
+        syncPR: (worktreeId: string, prNumber: number, prUrl: string) => Promise<void>
+        clearPR: (worktreeId: string) => Promise<void>
+        attachPR: (ticketId: string, projectId: string, prNumber: number, prUrl: string) => Promise<void>
+        detachPR: (ticketId: string, projectId: string) => Promise<void>
+        detachWorktree: (worktreeId: string) => Promise<number>
+      }
+      simpleMode: {
+        toggle: (projectId: string, enabled: boolean) => Promise<void>
+      }
+      dependency: {
+        add: (dependentId: string, blockerId: string) => Promise<{ success: boolean; error?: string }>
+        remove: (dependentId: string, blockerId: string) => Promise<boolean>
+        getBlockers: (ticketId: string) => Promise<KanbanTicket[]>
+        getDependents: (ticketId: string) => Promise<KanbanTicket[]>
+        getForProject: (projectId: string) => Promise<Array<{ dependent_id: string; blocker_id: string; created_at: string }>>
+        removeAll: (ticketId: string) => Promise<number>
+      }
+      board: {
+        export: (projectId: string, projectName: string) => Promise<{ success: boolean; ticketCount: number; path?: string }>
+        openImportFile: () => Promise<{
+          tickets: Array<{
+            id: string
+            title: string
+            description?: string | null
+            attachments?: unknown[]
+            column?: string
+          }>
+          dependencies?: Array<{
+            dependentId: string
+            blockerId: string
+          }>
+          projectName?: string
+        } | null>
+        importTickets: (
+          projectId: string,
+          tickets: Array<{
+            id: string
+            title: string
+            description?: string | null
+            attachments?: unknown[]
+            column?: string
+          }>,
+          dependencies?: Array<{
+            dependentId: string
+            blockerId: string
+          }>
+        ) => Promise<{ created: number; updated: number; dependencyCount: number; ignoredDependencyCount: number }>
+      }
+    }
+    ticketImport: {
+      listProviders: () => Promise<Array<{ id: string; name: string; icon: string }>>
+      getSettingsSchema: (
+        providerId: string
+      ) => Promise<Array<{ key: string; label: string; type: string; required: boolean; placeholder?: string }>>
+      authenticate: (
+        providerId: string,
+        settings: Record<string, string>
+      ) => Promise<{ success: boolean; error: string | null }>
+      detectRepo: (
+        providerId: string,
+        projectPath: string
+      ) => Promise<{ repo: string | null }>
+      listIssues: (
+        providerId: string,
+        repo: string,
+        options: { page: number; perPage: number; state: 'open' | 'closed' | 'all'; search?: string; nextPageToken?: string },
+        settings: Record<string, string>
+      ) => Promise<{
+        issues: Array<{
+          externalId: string
+          title: string
+          body: string | null
+          state: 'open' | 'closed' | 'in_progress'
+          url: string
+          createdAt: string
+          updatedAt: string
+        }>
+        hasNextPage: boolean
+        totalCount: number
+        nextPageToken?: string
+      }>
+      importIssues: (
+        providerId: string,
+        projectId: string,
+        repo: string,
+        issues: Array<{ externalId: string; title: string; body: string | null; state: string; url: string }>
+      ) => Promise<{ imported: string[]; skipped: string[] }>
+      getAvailableStatuses: (
+        providerId: string,
+        repo: string,
+        externalId: string,
+        settings: Record<string, string>
+      ) => Promise<Array<{ id: string; label: string }>>
+      updateRemoteStatus: (
+        providerId: string,
+        repo: string,
+        externalId: string,
+        statusId: string,
+        settings: Record<string, string>
+      ) => Promise<{ success: boolean; error?: string }>
+      azureDevOpsListProjects: (settings: Record<string, string>) => Promise<string[]>
+      azureDevOpsListStates: (settings: Record<string, string>) => Promise<string[]>
+      azureDevOpsListWorkItemTypes: (settings: Record<string, string>) => Promise<string[]>
+      azureDevOpsSearchUsers: (
+        settings: Record<string, string>,
+        query: string
+      ) => Promise<Array<{ displayName: string; uniqueName: string }>>
+    }
+    bash: {
+      run: (sessionId: string, command: string, cwd: string) => Promise<{ success: boolean; runId?: string; error?: string }>
+      abort: (sessionId: string) => Promise<boolean>
+      getRun: (sessionId: string) => Promise<BashRunSnapshot | null>
+      onStream: (callback: (event: BashStreamEvent) => void) => () => void
+    }
+    updates: {
+      getState: () => Promise<UpdateState>
+      check: () => Promise<UpdateState>
+      download: () => Promise<UpdateState>
+      install: () => Promise<void>
+      onState: (callback: (state: UpdateState) => void) => () => void
+      onAvailable: (callback: (info: { version: string | null }) => void) => () => void
+      onDownloaded: (callback: (info: { version: string | null }) => void) => () => void
+      onProgress: (callback: (progress: UpdateProgress) => void) => () => void
+      onError: (callback: (error: { message: string }) => void) => () => void
+    }
+  }
+
+  interface GitDiffStatFile {
+    path: string
+    additions: number
+    deletions: number
+    binary: boolean
+  }
+
+  // Message part type for prompt API (text + file attachments)
+  type MessagePart =
+    | { type: 'text'; text: string }
+    | { type: 'file'; mime: string; url: string; filename?: string }
+
+  // Script output event type
+  interface ScriptOutputEvent {
+    type: 'command-start' | 'output' | 'error' | 'done' | 'long-running'
+    command?: string
+    data?: string
+    exitCode?: number
+    elapsed?: number
+  }
+
+  // OpenCode command type (slash commands)
+  interface OpenCodeCommand {
+    name: string
+    description?: string
+    template: string
+    agent?: string
+    model?: string
+    source?: 'command' | 'mcp' | 'skill'
+    subtask?: boolean
+    hints?: string[]
+  }
+
+  // OpenCode permission request type
+  interface PermissionRequest {
+    id: string
+    sessionID: string
+    permission: string
+    patterns: string[]
+    metadata: Record<string, unknown>
+    always: string[]
+    tool?: {
+      messageID: string
+      callID: string
+    }
+  }
+
+  // Command approval request type (for command filter system)
+  interface CommandApprovalRequest {
+    id: string
+    sessionID: string
+    toolName: string
+    commandStr: string
+    input: Record<string, unknown>
+    patternSuggestions: string[]
+    tool?: {
+      messageID: string
+      callID: string
+    }
+  }
+
+  // OpenCode stream event type
+  interface OpenCodeStreamEvent {
+    type: string
+    sessionId: string
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    data: any
+    childSessionId?: string
+    /** session.status event payload -- only present when type === 'session.status' */
+    statusPayload?: {
+      type: 'idle' | 'busy' | 'retry'
+      attempt?: number
+      message?: string
+      next?: number
+    }
+  }
+
+  // File tree node type
+  interface FileTreeNode {
+    name: string
+    path: string
+    relativePath: string
+    isDirectory: boolean
+    isSymlink?: boolean
+    extension: string | null
+    children?: FileTreeNode[]
+  }
+
+  // Flat file entry for search index (no tree structure)
+  interface FlatFile {
+    name: string
+    path: string
+    relativePath: string
+    extension: string | null
+  }
+
+  type FileEventType = 'add' | 'addDir' | 'unlink' | 'unlinkDir' | 'change'
+
+  interface FileTreeChangeEventItem {
+    eventType: FileEventType
+    changedPath: string
+    relativePath: string
+  }
+
+  // File tree change event type (batched)
+  interface FileTreeChangeEvent {
+    worktreePath: string
+    events: FileTreeChangeEventItem[]
+  }
+
+  // Git status types
+  type GitStatusCode = 'M' | 'A' | 'D' | '?' | 'C' | ''
+
+  interface GitFileStatus {
+    path: string
+    relativePath: string
+    status: GitStatusCode
+    staged: boolean
+  }
+
+  interface GitStatusChangedEvent {
+    worktreePath: string
+  }
+
+  interface GitBranchInfo {
+    name: string
+    tracking: string | null
+    ahead: number
+    behind: number
+  }
+
+  interface DetectedApp {
+    id: string
+    name: string
+    command: string
+    available: boolean
+  }
+}
+
+export {}

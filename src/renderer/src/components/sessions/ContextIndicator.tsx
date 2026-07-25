@@ -1,0 +1,108 @@
+import { useMemo } from 'react'
+import { getModelLimitKey, useContextStore } from '@/stores/useContextStore'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { cn } from '@/lib/utils'
+
+interface ContextIndicatorProps {
+  sessionId: string
+  modelId: string
+  providerId?: string
+}
+
+function formatNumber(n: number): string {
+  return n.toLocaleString()
+}
+
+function getBarColor(percent: number): string {
+  if (percent >= 90) return 'bg-red-500'
+  if (percent >= 80) return 'bg-orange-500'
+  if (percent >= 60) return 'bg-yellow-500'
+  return 'bg-green-500'
+}
+
+export function ContextIndicator({
+  sessionId,
+  modelId,
+  providerId
+}: ContextIndicatorProps): React.JSX.Element | null {
+  const tokenInfo = useContextStore((state) => state.tokensBySession[sessionId])
+  const sessionModel = useContextStore((state) => state.modelBySession[sessionId])
+  const modelLimits = useContextStore((state) => state.modelLimits)
+  const cost = useContextStore((state) => state.costBySession[sessionId]) ?? 0
+
+  const { used, limit, percent, tokens } = useMemo(() => {
+    const t = tokenInfo ?? { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 }
+    const model =
+      sessionModel ??
+      (modelId
+        ? {
+            providerID: providerId ?? '*',
+            modelID: modelId
+          }
+        : undefined)
+
+    const lim = model
+      ? (modelLimits[getModelLimitKey(model.modelID, model.providerID)] ??
+        modelLimits[getModelLimitKey(model.modelID)])
+      : undefined
+
+    // Context window = total prompt tokens (input + cached).
+    // Output and reasoning are generated tokens — they don't occupy the context window.
+    const u = t.input + t.cacheRead + t.cacheWrite
+    const pct = typeof lim === 'number' && lim > 0 ? Math.round((u / lim) * 100) : null
+    return { used: u, limit: lim, percent: pct, tokens: t }
+  }, [tokenInfo, sessionModel, modelId, providerId, modelLimits])
+
+  const percentForBar = percent ?? 0
+
+  // Don't render if no limit or no usage yet
+  if (!limit && used === 0) return null
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="w-[120px] flex-shrink-0 cursor-default" data-testid="context-indicator">
+          <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+            <div
+              className={cn(
+                'h-full rounded-full transition-all duration-300',
+                getBarColor(percentForBar)
+              )}
+              style={{ width: `${Math.min(100, Math.max(0, percentForBar))}%` }}
+              data-testid="context-bar"
+            />
+          </div>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={8} className="max-w-[260px]">
+        <div className="space-y-1.5">
+          <div className="font-medium">Context Window</div>
+          {typeof limit === 'number' ? (
+            <div>
+              {formatNumber(used)} / {formatNumber(limit)} tokens ({percent ?? 0}%)
+            </div>
+          ) : (
+            <div>{formatNumber(used)} tokens (limit unavailable)</div>
+          )}
+          <div className="border-t border-border pt-1.5 space-y-0.5 text-[10px] text-muted-foreground">
+            <div>Input: {formatNumber(tokens.input)}</div>
+            <div>Cache read: {formatNumber(tokens.cacheRead)}</div>
+            <div>Cache write: {formatNumber(tokens.cacheWrite)}</div>
+          </div>
+          {(tokens.output > 0 || tokens.reasoning > 0) && (
+            <div className="border-t border-border pt-1.5 space-y-0.5 text-[10px] text-muted-foreground">
+              <div className="text-[10px]">Generated (not in context)</div>
+              {tokens.output > 0 && <div>Output: {formatNumber(tokens.output)}</div>}
+              {tokens.reasoning > 0 && <div>Reasoning: {formatNumber(tokens.reasoning)}</div>}
+            </div>
+          )}
+          {cost > 0 && (
+            <div className="border-t border-border pt-1.5">
+              <div>Session cost: ${cost.toFixed(4)}</div>
+            </div>
+          )}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  )
+}

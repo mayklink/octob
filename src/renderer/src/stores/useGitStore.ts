@@ -1,0 +1,692 @@
+import { create } from 'zustand'
+import { useWorktreeStore } from './useWorktreeStore'
+import { useKanbanStore } from './useKanbanStore'
+
+// Debounce timers for git status refresh per worktree
+const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
+// Pending promise resolvers — accumulated so ALL callers resolve when debounced work completes
+const pendingResolvers = new Map<string, Array<() => void>>()
+const REFRESH_DEBOUNCE_MS = 150
+
+// Git status types matching main process
+type GitStatusCode = 'M' | 'A' | 'D' | '?' | 'C' | ''
+
+interface GitFileStatus {
+  path: string
+  relativePath: string
+  status: GitStatusCode
+  staged: boolean
+}
+
+interface GitBranchInfo {
+  name: string
+  tracking: string | null
+  ahead: number
+  behind: number
+}
+
+function fileStatusesEqual(a: GitFileStatus[] | undefined, b: GitFileStatus[]): boolean {
+  if (!a || a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const left = a[i]
+    const right = b[i]
+    if (
+      left.path !== right.path ||
+      left.relativePath !== right.relativePath ||
+      left.status !== right.status ||
+      left.staged !== right.staged
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+function branchInfoEqual(a: GitBranchInfo | undefined, b: GitBranchInfo): boolean {
+  return !!a &&
+    a.name === b.name &&
+    a.tracking === b.tracking &&
+    a.ahead === b.ahead &&
+    a.behind === b.behind
+}
+
+interface RemoteInfo {
+  hasRemote: boolean
+  isGitHub: boolean
+  url: string | null
+}
+
+interface AttachedPR {
+  number: number
+  url: string
+}
+
+interface GitStoreState {
+  // Data - keyed by worktree path
+  fileStatusesByWorktree: Map<string, GitFileStatus[]>
+  branchInfoByWorktree: Map<string, GitBranchInfo>
+  conflictsByWorktree: Record<string, boolean>
+  isLoading: boolean
+  error: string | null
+
+  // Operation states
+  isCommitting: boolean
+  isPushing: boolean
+  isPulling: boolean
+
+  // Remote info - keyed by worktree ID
+  remoteInfo: Map<string, RemoteInfo>
+  prTargetBranch: Map<string, string>
+  reviewTargetBranch: Map<string, string>
+
+  // PR lifecycle - keyed by worktree ID
+  attachedPR: Map<string, AttachedPR>
+  creatingPRByWorktreeId: Map<string, boolean>
+
+  // Cross-worktree merge default - keyed by project ID
+  defaultMergeBranch: Map<string, string>
+  // Incremented on every commit so components can reset manual merge selections
+  mergeSelectionVersion: number
+
+  // Merge branch selection - keyed by worktree path
+  selectedMergeBranch: Map<string, string>
+
+  // Diff branch comparison - keyed by worktree path
+  selectedDiffBranch: Map<string, string>
+
+  // Create PR modal
+  createPRModalOpen: boolean
+  createPRWorktreeId: string | null
+  createPRWorktreePath: string | null
+
+  // Actions
+  loadFileStatuses: (worktreePath: string) => Promise<void>
+  loadBranchInfo: (worktreePath: string) => Promise<void>
+  getFileStatuses: (worktreePath: string) => GitFileStatus[]
+  getBranchInfo: (worktreePath: string) => GitBranchInfo | undefined
+  getFileStatus: (worktreePath: string, relativePath: string) => GitFileStatus | undefined
+  setHasConflicts: (worktreePath: string, hasConflicts: boolean) => void
+  stageFile: (worktreePath: string, relativePath: string) => Promise<boolean>
+  unstageFile: (worktreePath: string, relativePath: string) => Promise<boolean>
+  stageAll: (worktreePath: string) => Promise<boolean>
+  unstageAll: (worktreePath: string) => Promise<boolean>
+  discardChanges: (worktreePath: string, relativePath: string) => Promise<boolean>
+  addToGitignore: (worktreePath: string, pattern: string) => Promise<boolean>
+  refreshStatuses: (worktreePath: string) => Promise<void>
+  clearStatuses: (worktreePath: string) => void
+  loadStatusesForPaths: (paths: string[]) => Promise<void>
+
+  // Remote info actions
+  checkRemoteInfo: (worktreeId: string, worktreePath: string) => Promise<void>
+  setPrTargetBranch: (worktreeId: string, branch: string) => void
+  setReviewTargetBranch: (worktreeId: string, branch: string) => void
+
+  // PR lifecycle actions
+  setAttachedPR: (worktreeId: string, pr: AttachedPR | null) => void
+  setCreatingPR: (worktreeId: string, creating: boolean) => void
+  attachPR: (worktreeId: string, prNumber: number, prUrl: string) => Promise<void>
+  detachPR: (worktreeId: string) => Promise<void>
+
+  // Cross-worktree merge default actions
+  setDefaultMergeBranch: (projectId: string, branchName: string) => void
+
+  // Merge branch selection actions
+  setSelectedMergeBranch: (worktreePath: string, branch: string) => void
+
+  // Diff branch comparison actions
+  setSelectedDiffBranch: (worktreePath: string, branch: string) => void
+
+  // Create PR modal actions
+  setCreatePRModalOpen: (open: boolean, context?: { worktreeId: string; worktreePath: string }) => void
+
+  // Commit, Push, Pull actions
+  commit: (
+    worktreePath: string,
+    message: string
+  ) => Promise<{ success: boolean; commitHash?: string; error?: string }>
+  push: (
+    worktreePath: string,
+    remote?: string,
+    branch?: string,
+    force?: boolean
+  ) => Promise<{ success: boolean; error?: string }>
+  pull: (
+    worktreePath: string,
+    remote?: string,
+    branch?: string,
+    rebase?: boolean
+  ) => Promise<{ success: boolean; error?: string }>
+}
+
+export const useGitStore = create<GitStoreState>()((set, get) => ({
+  // Initial state
+  fileStatusesByWorktree: new Map(),
+  branchInfoByWorktree: new Map(),
+  conflictsByWorktree: {},
+  isLoading: false,
+  error: null,
+
+  // Operation states
+  isCommitting: false,
+  isPushing: false,
+  isPulling: false,
+
+  // Remote info
+  remoteInfo: new Map(),
+  prTargetBranch: new Map(),
+  reviewTargetBranch: new Map(),
+
+  // PR lifecycle
+  attachedPR: new Map(),
+  creatingPRByWorktreeId: new Map(),
+
+  // Cross-worktree merge default
+  defaultMergeBranch: new Map(),
+  mergeSelectionVersion: 0,
+
+  // Merge branch selection
+  selectedMergeBranch: new Map(),
+
+  // Diff branch comparison
+  selectedDiffBranch: new Map(),
+
+  // Create PR modal
+  createPRModalOpen: false,
+  createPRWorktreeId: null,
+  createPRWorktreePath: null,
+
+  // Load file statuses for a worktree
+  loadFileStatuses: async (worktreePath: string) => {
+    const hadCachedStatuses = get().fileStatusesByWorktree.has(worktreePath)
+    if (!hadCachedStatuses) {
+      set({ isLoading: true, error: null })
+    }
+    try {
+      const result = await window.gitOps.getFileStatuses(worktreePath)
+      if (!result.success || !result.files) {
+        set({
+          error: result.error || 'Failed to load file statuses',
+          isLoading: false
+        })
+        return
+      }
+
+      const files = result.files!
+      const hasConflicts = files.some((f) => f.status === 'C')
+
+      const currentFiles = get().fileStatusesByWorktree.get(worktreePath)
+      const currentHasConflicts = get().conflictsByWorktree[worktreePath] ?? false
+      if (
+        hadCachedStatuses &&
+        fileStatusesEqual(currentFiles, files) &&
+        currentHasConflicts === hasConflicts
+      ) {
+        return
+      }
+
+      set((state) => {
+        const newMap = new Map(state.fileStatusesByWorktree)
+        newMap.set(worktreePath, files)
+        return {
+          fileStatusesByWorktree: newMap,
+          isLoading: false,
+          conflictsByWorktree: {
+            ...state.conflictsByWorktree,
+            [worktreePath]: hasConflicts
+          }
+        }
+      })
+    } catch (error) {
+      set({
+        error: error instanceof Error ? error.message : 'Failed to load file statuses',
+        isLoading: false
+      })
+    }
+  },
+
+  // Load branch info for a worktree
+  loadBranchInfo: async (worktreePath: string) => {
+    try {
+      const result = await window.gitOps.getBranchInfo(worktreePath)
+      if (!result.success || !result.branch) {
+        return
+      }
+
+      if (branchInfoEqual(get().branchInfoByWorktree.get(worktreePath), result.branch)) {
+        return
+      }
+
+      set((state) => {
+        const newMap = new Map(state.branchInfoByWorktree)
+        newMap.set(worktreePath, result.branch!)
+        return { branchInfoByWorktree: newMap }
+      })
+    } catch (error) {
+      console.error('Failed to load branch info:', error)
+    }
+  },
+
+  // Get file statuses for a worktree
+  getFileStatuses: (worktreePath: string) => {
+    return get().fileStatusesByWorktree.get(worktreePath) || []
+  },
+
+  // Get branch info for a worktree
+  getBranchInfo: (worktreePath: string) => {
+    return get().branchInfoByWorktree.get(worktreePath)
+  },
+
+  // Get status for a specific file
+  getFileStatus: (worktreePath: string, relativePath: string) => {
+    const statuses = get().fileStatusesByWorktree.get(worktreePath) || []
+    return statuses.find((s) => s.relativePath === relativePath)
+  },
+
+  // Set whether a worktree has merge conflicts
+  setHasConflicts: (worktreePath: string, hasConflicts: boolean) => {
+    set((state) => ({
+      conflictsByWorktree: {
+        ...state.conflictsByWorktree,
+        [worktreePath]: hasConflicts
+      }
+    }))
+  },
+
+  // Stage a file
+  stageFile: async (worktreePath: string, relativePath: string) => {
+    try {
+      const result = await window.gitOps.stageFile(worktreePath, relativePath)
+      return result.success
+    } catch (error) {
+      console.error('Failed to stage file:', error)
+      return false
+    }
+  },
+
+  // Unstage a file
+  unstageFile: async (worktreePath: string, relativePath: string) => {
+    try {
+      const result = await window.gitOps.unstageFile(worktreePath, relativePath)
+      return result.success
+    } catch (error) {
+      console.error('Failed to unstage file:', error)
+      return false
+    }
+  },
+
+  // Stage all modified and untracked files
+  stageAll: async (worktreePath: string) => {
+    try {
+      const result = await window.gitOps.stageAll(worktreePath)
+      return result.success
+    } catch (error) {
+      console.error('Failed to stage all files:', error)
+      return false
+    }
+  },
+
+  // Unstage all staged files
+  unstageAll: async (worktreePath: string) => {
+    try {
+      const result = await window.gitOps.unstageAll(worktreePath)
+      return result.success
+    } catch (error) {
+      console.error('Failed to unstage all files:', error)
+      return false
+    }
+  },
+
+  // Discard changes in a file
+  discardChanges: async (worktreePath: string, relativePath: string) => {
+    try {
+      const result = await window.gitOps.discardChanges(worktreePath, relativePath)
+      return result.success
+    } catch (error) {
+      console.error('Failed to discard changes:', error)
+      return false
+    }
+  },
+
+  // Add to .gitignore
+  addToGitignore: async (worktreePath: string, pattern: string) => {
+    try {
+      const result = await window.gitOps.addToGitignore(worktreePath, pattern)
+      return result.success
+    } catch (error) {
+      console.error('Failed to add to .gitignore:', error)
+      return false
+    }
+  },
+
+  // Refresh statuses and branch info (debounced to batch rapid file changes)
+  refreshStatuses: async (worktreePath: string) => {
+    // Clear existing timer for this worktree
+    const existing = refreshTimers.get(worktreePath)
+    if (existing) {
+      clearTimeout(existing)
+    }
+
+    // Set debounced refresh — accumulate resolvers so all callers get notified
+    return new Promise<void>((resolve) => {
+      const resolvers = pendingResolvers.get(worktreePath) || []
+      resolvers.push(resolve)
+      pendingResolvers.set(worktreePath, resolvers)
+
+      refreshTimers.set(
+        worktreePath,
+        setTimeout(async () => {
+          refreshTimers.delete(worktreePath)
+          try {
+            await Promise.all([
+              get().loadFileStatuses(worktreePath),
+              get().loadBranchInfo(worktreePath)
+            ])
+          } finally {
+            // Resolve ALL pending promises for this worktree
+            const toResolve = pendingResolvers.get(worktreePath) || []
+            pendingResolvers.delete(worktreePath)
+            toResolve.forEach((r) => r())
+          }
+        }, REFRESH_DEBOUNCE_MS)
+      )
+    })
+  },
+
+  // Clear statuses for a worktree
+  clearStatuses: (worktreePath: string) => {
+    set((state) => {
+      const newFileMap = new Map(state.fileStatusesByWorktree)
+      newFileMap.delete(worktreePath)
+      const newBranchMap = new Map(state.branchInfoByWorktree)
+      newBranchMap.delete(worktreePath)
+      return { fileStatusesByWorktree: newFileMap, branchInfoByWorktree: newBranchMap }
+    })
+  },
+
+  // Load statuses and branch info for multiple worktree paths simultaneously
+  loadStatusesForPaths: async (paths: string[]) => {
+    await Promise.all(
+      paths.map((path) => Promise.all([get().loadFileStatuses(path), get().loadBranchInfo(path)]))
+    )
+  },
+
+  // Check remote info for a worktree
+  checkRemoteInfo: async (worktreeId: string, worktreePath: string) => {
+    try {
+      const result = await window.gitOps.getRemoteUrl(worktreePath)
+      const info: RemoteInfo = {
+        hasRemote: !!result.url,
+        isGitHub: result.url?.includes('github.com') ?? false,
+        url: result.url ?? null
+      }
+      set((state) => {
+        const newRemoteInfo = new Map(state.remoteInfo)
+        newRemoteInfo.set(worktreeId, info)
+        return { remoteInfo: newRemoteInfo }
+      })
+    } catch {
+      // Non-critical — default to no remote
+      set((state) => {
+        const newRemoteInfo = new Map(state.remoteInfo)
+        newRemoteInfo.set(worktreeId, { hasRemote: false, isGitHub: false, url: null })
+        return { remoteInfo: newRemoteInfo }
+      })
+    }
+  },
+
+  // Set optimistic attached PR cache
+  setAttachedPR: (worktreeId: string, pr: AttachedPR | null) => {
+    set((s) => {
+      const newMap = new Map(s.attachedPR)
+      if (pr) {
+        newMap.set(worktreeId, pr)
+      } else {
+        newMap.delete(worktreeId)
+      }
+      return { attachedPR: newMap }
+    })
+  },
+
+  // Attach a PR to a worktree (optimistic + DB write)
+  attachPR: async (worktreeId: string, prNumber: number, prUrl: string) => {
+    const prev = get().attachedPR.get(worktreeId) ?? null
+    // Optimistic update
+    set((s) => {
+      const newMap = new Map(s.attachedPR)
+      newMap.set(worktreeId, { number: prNumber, url: prUrl })
+      return { attachedPR: newMap }
+    })
+    try {
+      const result = await window.db.worktree.attachPR(worktreeId, prNumber, prUrl)
+      if (!result.success) {
+        // Rollback on failure
+        set((s) => {
+          const newMap = new Map(s.attachedPR)
+          if (prev) {
+            newMap.set(worktreeId, prev)
+          } else {
+            newMap.delete(worktreeId)
+          }
+          return { attachedPR: newMap }
+        })
+      } else {
+        // Sync PR to linked kanban tickets (only on success)
+        try {
+          await window.kanban.ticket.syncPR(worktreeId, prNumber, prUrl)
+          useKanbanStore.getState().syncPRToTicket(worktreeId, prNumber, prUrl)
+        } catch {
+          // Non-critical — ticket badge sync failure should not block PR attach
+        }
+      }
+    } catch {
+      // Rollback on error
+      set((s) => {
+        const newMap = new Map(s.attachedPR)
+        if (prev) {
+          newMap.set(worktreeId, prev)
+        } else {
+          newMap.delete(worktreeId)
+        }
+        return { attachedPR: newMap }
+      })
+    }
+  },
+
+  // Detach a PR from a worktree (optimistic + DB write)
+  detachPR: async (worktreeId: string) => {
+    const prev = get().attachedPR.get(worktreeId) ?? null
+    // Optimistic update
+    set((s) => {
+      const newMap = new Map(s.attachedPR)
+      newMap.delete(worktreeId)
+      return { attachedPR: newMap }
+    })
+    try {
+      const result = await window.db.worktree.detachPR(worktreeId)
+      if (!result.success) {
+        // Rollback on failure
+        set((s) => {
+          const newMap = new Map(s.attachedPR)
+          if (prev) newMap.set(worktreeId, prev)
+          return { attachedPR: newMap }
+        })
+      } else {
+        // Clear PR from linked kanban tickets (only on success)
+        try {
+          await window.kanban.ticket.clearPR(worktreeId)
+          useKanbanStore.getState().clearPRFromTicket(worktreeId)
+        } catch {
+          // Non-critical
+        }
+      }
+    } catch {
+      // Rollback on error
+      set((s) => {
+        const newMap = new Map(s.attachedPR)
+        if (prev) newMap.set(worktreeId, prev)
+        return { attachedPR: newMap }
+      })
+    }
+  },
+
+  // Set PR target branch for a worktree
+  setPrTargetBranch: (worktreeId: string, branch: string) => {
+    set((state) => {
+      const newPrTargetBranch = new Map(state.prTargetBranch)
+      newPrTargetBranch.set(worktreeId, branch)
+      return { prTargetBranch: newPrTargetBranch }
+    })
+  },
+
+  // Set review target branch for a worktree
+  setReviewTargetBranch: (worktreeId: string, branch: string) => {
+    set((state) => {
+      const newMap = new Map(state.reviewTargetBranch)
+      newMap.set(worktreeId, branch)
+      return { reviewTargetBranch: newMap }
+    })
+  },
+
+  // Set default merge branch for sibling worktrees after a commit
+  setDefaultMergeBranch: (projectId: string, branchName: string) => {
+    set((state) => {
+      const newMap = new Map(state.defaultMergeBranch)
+      newMap.set(projectId, branchName)
+      return { defaultMergeBranch: newMap }
+    })
+  },
+
+  // Set the selected merge branch for a worktree
+  setSelectedMergeBranch: (worktreePath: string, branch: string) => {
+    set((state) => {
+      const newMap = new Map(state.selectedMergeBranch)
+      newMap.set(worktreePath, branch)
+      return { selectedMergeBranch: newMap }
+    })
+  },
+
+  // Set the selected diff comparison branch for a worktree
+  setSelectedDiffBranch: (worktreePath: string, branch: string) => {
+    set((state) => {
+      const newMap = new Map(state.selectedDiffBranch)
+      newMap.set(worktreePath, branch)
+      return { selectedDiffBranch: newMap }
+    })
+  },
+
+  // Open/close create PR modal
+  setCreatePRModalOpen: (open: boolean, context?: { worktreeId: string; worktreePath: string }) => {
+    if (open && context) {
+      set({
+        createPRModalOpen: true,
+        createPRWorktreeId: context.worktreeId,
+        createPRWorktreePath: context.worktreePath,
+      })
+    } else if (!open) {
+      set({
+        createPRModalOpen: false,
+        createPRWorktreeId: null,
+        createPRWorktreePath: null,
+      })
+    }
+    // Opening without context is a no-op (all callers must provide context)
+  },
+
+  setCreatingPR: (worktreeId: string, creating: boolean) => {
+    set((state) => {
+      const next = new Map(state.creatingPRByWorktreeId)
+      if (creating) {
+        next.set(worktreeId, true)
+      } else {
+        next.delete(worktreeId)
+      }
+      return { creatingPRByWorktreeId: next }
+    })
+  },
+
+  // Commit staged changes
+  commit: async (worktreePath: string, message: string) => {
+    set({ isCommitting: true, error: null })
+    try {
+      const result = await window.gitOps.commit(worktreePath, message)
+      if (result.success) {
+        // Refresh statuses after commit (wrapped so failure doesn't block commit success)
+        try {
+          await get().refreshStatuses(worktreePath)
+        } catch {
+          // Non-critical — commit already succeeded
+        }
+
+        // Set the committed branch as the default merge target for sibling worktrees
+        const branchInfo = get().branchInfoByWorktree.get(worktreePath)
+        if (branchInfo?.name) {
+          const allWorktrees = Array.from(
+            useWorktreeStore.getState().worktreesByProject.values()
+          ).flat()
+          const worktree = allWorktrees.find((w) => w.path === worktreePath)
+          if (worktree?.project_id) {
+            get().setDefaultMergeBranch(worktree.project_id, branchInfo.name)
+          }
+        }
+        // Bump version so components reset any manual merge-from selection
+        set((state) => ({ mergeSelectionVersion: state.mergeSelectionVersion + 1 }))
+      }
+      return result
+    } catch (error) {
+      const errMessage = error instanceof Error ? error.message : 'Failed to commit'
+      set({ error: errMessage })
+      return { success: false, error: errMessage }
+    } finally {
+      set({ isCommitting: false })
+    }
+  },
+
+  // Push to remote
+  push: async (worktreePath: string, remote?: string, branch?: string, force?: boolean) => {
+    set({ isPushing: true, error: null })
+    try {
+      const result = await window.gitOps.push(worktreePath, remote, branch, force)
+      if (result.success) {
+        // Refresh branch info to update ahead/behind counts
+        try {
+          await get().loadBranchInfo(worktreePath)
+        } catch {
+          // Non-critical — push already succeeded
+        }
+      }
+      return result
+    } catch (error) {
+      const errMessage = error instanceof Error ? error.message : 'Failed to push'
+      set({ error: errMessage })
+      return { success: false, error: errMessage }
+    } finally {
+      set({ isPushing: false })
+    }
+  },
+
+  // Pull from remote
+  pull: async (worktreePath: string, remote?: string, branch?: string, rebase?: boolean) => {
+    set({ isPulling: true, error: null })
+    try {
+      const result = await window.gitOps.pull(worktreePath, remote, branch, rebase)
+      if (result.success) {
+        // Refresh statuses after pull (wrapped so failure doesn't block pull success)
+        try {
+          await get().refreshStatuses(worktreePath)
+        } catch {
+          // Non-critical — pull already succeeded
+        }
+      }
+      return result
+    } catch (error) {
+      const errMessage = error instanceof Error ? error.message : 'Failed to pull'
+      set({ error: errMessage })
+      return { success: false, error: errMessage }
+    } finally {
+      set({ isPulling: false })
+    }
+  }
+}))
+
+// Export types
+export type { GitStatusCode, GitFileStatus, GitBranchInfo, RemoteInfo, AttachedPR }

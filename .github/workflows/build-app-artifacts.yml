@@ -1,0 +1,176 @@
+# Full app packaging: electron-vite build + electron-builder (no GitHub Release publish).
+# Use this to download installers/zips from the Actions run summary -> Artifacts.
+name: Build app (artifacts)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Windows (NSIS + zip)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - id: version
+        shell: bash
+        run: |
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Windows node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+          key: windows-node22-modules-${{ hashFiles('package.json', 'yarn.lock', 'scripts/run-install-app-deps.cjs', 'scripts/run-electron-native-rebuild.cjs') }}
+          restore-keys: |
+            windows-node22-modules-
+
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+          key: ${{ runner.os }}-electron-${{ hashFiles('yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - run: yarn install:ci
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+
+      - run: yarn build
+
+      - name: Package (Windows)
+        run: yarn electron-builder --win --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Verify Windows outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la dist/
+          find dist -maxdepth 1 -name 'Octob-Setup-*.exe' | grep .
+          find dist -maxdepth 1 -name '*.zip' | grep .
+          echo "OK: installer and zip present"
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Octob-windows-v${{ steps.version.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+
+  build-linux:
+    name: Linux (AppImage + deb + tar.gz)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - id: version
+        run: |
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - run: yarn install:ci
+
+      - run: yarn build
+
+      - name: Package (Linux)
+        run: yarn electron-builder --linux --publish never
+
+      - name: Verify Linux outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la dist/
+          test "$(find dist -maxdepth 1 -name '*.AppImage' | head -1)" != "" || test "$(find dist -maxdepth 1 -name '*.deb' | head -1)" != ""
+          echo "OK: Linux package(s) present"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Octob-linux-v${{ steps.version.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+
+  build-mac-unsigned:
+    name: macOS unsigned (dmg + zip)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - id: version
+        run: |
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('yarn.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - run: yarn install:ci
+
+      - run: yarn build
+
+      - name: Package (macOS, unsigned, no notarize)
+        run: yarn electron-builder --mac --publish never -c.mac.notarize=false
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Verify macOS outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la dist/
+          test "$(find dist -maxdepth 1 \( -name '*.dmg' -o -name '*.zip' \) | head -1)" != ""
+          echo "OK: macOS archive present"
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Octob-macos-unsigned-v${{ steps.version.outputs.version }}
+          path: dist/
+          if-no-files-found: error

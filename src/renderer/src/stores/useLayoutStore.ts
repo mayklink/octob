@@ -1,0 +1,230 @@
+import { create } from 'zustand'
+import { persist, createJSONStorage } from 'zustand/middleware'
+
+export type BottomPanelTab = 'setup' | 'run' | 'terminal'
+export type CollapsedPanel = 'none' | 'top' | 'bottom'
+export type WorkspaceView = 'projects' | 'project' | 'connection' | 'pull-requests'
+export type WorkspaceContentView = 'overview' | 'session'
+export type VisualizationMode = 'basic' | 'advanced'
+export type WorkspaceMode = 'chat' | 'code' | 'git' | 'board'
+export type RightSidebarTab = 'changes' | 'files' | 'diffs' | 'comments'
+
+const LEFT_SIDEBAR_DEFAULT = 240
+const LEFT_SIDEBAR_MIN = 200
+const LEFT_SIDEBAR_MAX = 400
+const RIGHT_SIDEBAR_DEFAULT = 280
+const SPLIT_FRACTION_DEFAULT = 0.5
+const SPLIT_FRACTION_MIN = 0.15
+const SPLIT_FRACTION_MAX = 0.85
+const BOTTOM_TERMINAL_HEIGHT_DEFAULT = 0.30
+const BOTTOM_TERMINAL_HEIGHT_MIN = 0.15
+const BOTTOM_TERMINAL_HEIGHT_MAX = 0.70
+
+// Module-level Set to track suppression keys — kept outside Zustand state
+// because Set cannot be serialized by the persist middleware.
+const _ghosttySuppressKeys = new Set<string>()
+
+interface LayoutState {
+  leftSidebarWidth: number
+  leftSidebarCollapsed: boolean
+  rightSidebarWidth: number
+  rightSidebarCollapsed: boolean
+  bottomPanelTab: BottomPanelTab
+  workspaceView: WorkspaceView
+  workspaceContentView: WorkspaceContentView
+  visualizationMode: VisualizationMode
+  workspaceMode: WorkspaceMode
+  rightSidebarTab: RightSidebarTab
+  ghosttyOverlaySuppressed: boolean
+  collapsedPanel: CollapsedPanel
+  splitFractionByEntity: Record<string, number>
+  bottomTerminalExpanded: boolean
+  bottomTerminalHeightFraction: number
+  toggleTopPanel: () => void
+  toggleBottomPanel: () => void
+  setLeftSidebarWidth: (width: number) => void
+  toggleLeftSidebar: () => void
+  setLeftSidebarCollapsed: (collapsed: boolean) => void
+  setRightSidebarWidth: (width: number) => void
+  toggleRightSidebar: () => void
+  setRightSidebarCollapsed: (collapsed: boolean) => void
+  setBottomPanelTab: (tab: BottomPanelTab) => void
+  setWorkspaceView: (view: WorkspaceView) => void
+  setWorkspaceContentView: (view: WorkspaceContentView) => void
+  setVisualizationMode: (mode: VisualizationMode) => void
+  setWorkspaceMode: (mode: WorkspaceMode) => void
+  setRightSidebarTab: (tab: RightSidebarTab) => void
+  setGhosttyOverlaySuppressed: (suppressed: boolean) => void
+  pushGhosttySuppression: (key: string) => void
+  popGhosttySuppression: (key: string) => void
+  setSplitFraction: (entityKey: string, fraction: number) => void
+  toggleBottomTerminal: () => void
+  setBottomTerminalHeightFraction: (fraction: number) => void
+}
+
+export const useLayoutStore = create<LayoutState>()(
+  persist(
+    (set) => ({
+      leftSidebarWidth: LEFT_SIDEBAR_DEFAULT,
+      leftSidebarCollapsed: false,
+      rightSidebarWidth: RIGHT_SIDEBAR_DEFAULT,
+      // Context panels stay out of the way until the user explicitly opens one.
+      rightSidebarCollapsed: true,
+      bottomPanelTab: 'setup' as BottomPanelTab,
+      workspaceView: 'projects' as WorkspaceView,
+      workspaceContentView: 'overview' as WorkspaceContentView,
+      visualizationMode: 'advanced' as VisualizationMode,
+      workspaceMode: 'chat' as WorkspaceMode,
+      rightSidebarTab: 'changes' as RightSidebarTab,
+      ghosttyOverlaySuppressed: false,
+      collapsedPanel: 'none' as CollapsedPanel,
+      splitFractionByEntity: {} as Record<string, number>,
+      bottomTerminalExpanded: false,
+      bottomTerminalHeightFraction: BOTTOM_TERMINAL_HEIGHT_DEFAULT,
+
+      toggleTopPanel: () => {
+        set((state) => ({
+          collapsedPanel: state.collapsedPanel === 'top' ? 'none' : 'top'
+        }))
+      },
+
+      toggleBottomPanel: () => {
+        set((state) => ({
+          collapsedPanel: state.collapsedPanel === 'bottom' ? 'none' : 'bottom'
+        }))
+      },
+
+      setLeftSidebarWidth: (width: number) => {
+        const clampedWidth = Math.min(Math.max(width, LEFT_SIDEBAR_MIN), LEFT_SIDEBAR_MAX)
+        set({ leftSidebarWidth: clampedWidth })
+      },
+
+      toggleLeftSidebar: () => {
+        set((state) => ({ leftSidebarCollapsed: !state.leftSidebarCollapsed }))
+      },
+
+      setLeftSidebarCollapsed: (collapsed: boolean) => {
+        set({ leftSidebarCollapsed: collapsed })
+      },
+
+      setRightSidebarWidth: (width: number) => {
+        set({ rightSidebarWidth: Math.max(width, 200) })
+      },
+
+      toggleRightSidebar: () => {
+        set((state) => ({ rightSidebarCollapsed: !state.rightSidebarCollapsed }))
+      },
+
+      setRightSidebarCollapsed: (collapsed: boolean) => {
+        set({ rightSidebarCollapsed: collapsed })
+      },
+
+      setBottomPanelTab: (tab: BottomPanelTab) => {
+        set({ bottomPanelTab: tab })
+      },
+
+      setWorkspaceView: (view: WorkspaceView) => {
+        set({ workspaceView: view })
+      },
+
+      setWorkspaceContentView: (view: WorkspaceContentView) => {
+        set({ workspaceContentView: view })
+      },
+
+      setVisualizationMode: (mode: VisualizationMode) => {
+        set({ visualizationMode: mode })
+      },
+
+      setWorkspaceMode: (mode: WorkspaceMode) => {
+        set({ workspaceMode: mode })
+      },
+
+      setRightSidebarTab: (tab: RightSidebarTab) => {
+        set({ rightSidebarTab: tab })
+      },
+
+      setGhosttyOverlaySuppressed: (suppressed: boolean) => {
+        if (suppressed) {
+          _ghosttySuppressKeys.add('_compat')
+        } else {
+          _ghosttySuppressKeys.delete('_compat')
+        }
+        set({ ghosttyOverlaySuppressed: _ghosttySuppressKeys.size > 0 })
+      },
+
+      pushGhosttySuppression: (key: string) => {
+        _ghosttySuppressKeys.add(key)
+        set({ ghosttyOverlaySuppressed: true })
+      },
+
+      popGhosttySuppression: (key: string) => {
+        _ghosttySuppressKeys.delete(key)
+        set({ ghosttyOverlaySuppressed: _ghosttySuppressKeys.size > 0 })
+      },
+
+      setSplitFraction: (entityKey: string, fraction: number) => {
+        const clamped = Math.min(Math.max(fraction, SPLIT_FRACTION_MIN), SPLIT_FRACTION_MAX)
+        set((state) => ({
+          splitFractionByEntity: { ...state.splitFractionByEntity, [entityKey]: clamped }
+        }))
+      },
+
+      toggleBottomTerminal: () => {
+        set((state) => ({
+          bottomTerminalExpanded: !state.bottomTerminalExpanded
+        }))
+      },
+
+      setBottomTerminalHeightFraction: (fraction: number) => {
+        const clamped = Math.min(Math.max(fraction, BOTTOM_TERMINAL_HEIGHT_MIN), BOTTOM_TERMINAL_HEIGHT_MAX)
+        set({ bottomTerminalHeightFraction: clamped })
+      }
+    }),
+    {
+      name: 'octob-layout',
+      version: 2,
+      storage: createJSONStorage(() => localStorage),
+      migrate: (persistedState, version) => {
+        const state = persistedState as Partial<LayoutState>
+        if (version < 2) {
+          return { ...state, rightSidebarCollapsed: true }
+        }
+        return state
+      },
+      partialize: (state) => ({
+        leftSidebarWidth: state.leftSidebarWidth,
+        leftSidebarCollapsed: state.leftSidebarCollapsed,
+        rightSidebarWidth: state.rightSidebarWidth,
+        rightSidebarCollapsed: state.rightSidebarCollapsed,
+        visualizationMode: state.visualizationMode,
+        workspaceMode: state.workspaceMode,
+        collapsedPanel: state.collapsedPanel,
+        splitFractionByEntity: state.splitFractionByEntity,
+        bottomTerminalExpanded: state.bottomTerminalExpanded,
+        bottomTerminalHeightFraction: state.bottomTerminalHeightFraction
+      })
+    }
+  )
+)
+
+export const LAYOUT_CONSTRAINTS = {
+  leftSidebar: {
+    default: LEFT_SIDEBAR_DEFAULT,
+    min: LEFT_SIDEBAR_MIN,
+    max: LEFT_SIDEBAR_MAX
+  },
+  rightSidebar: {
+    default: RIGHT_SIDEBAR_DEFAULT,
+    min: 200
+  },
+  splitFraction: {
+    default: SPLIT_FRACTION_DEFAULT,
+    min: SPLIT_FRACTION_MIN,
+    max: SPLIT_FRACTION_MAX
+  },
+  bottomTerminal: {
+    default: BOTTOM_TERMINAL_HEIGHT_DEFAULT,
+    min: BOTTOM_TERMINAL_HEIGHT_MIN,
+    max: BOTTOM_TERMINAL_HEIGHT_MAX
+  }
+}

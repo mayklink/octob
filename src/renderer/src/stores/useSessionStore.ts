@@ -1,0 +1,2228 @@
+import { create } from 'zustand'
+import { persist, createJSONStorage } from 'zustand/middleware'
+import type { SelectedModel } from './useSettingsStore'
+import { useWorktreeStore } from './useWorktreeStore'
+import { useFileViewerStore } from './useFileViewerStore'
+import { notifyKanbanSessionSync, notifyKanbanNewSession } from './store-coordination'
+import { useSettingsStore } from './useSettingsStore'
+import { getUnavailableAgentSdkMessage } from '@/lib/agent-sdk-availability'
+import { resolveSessionCreationSelection } from '@/lib/handoffSelection'
+
+/**
+ * Push the follow-up-message queue state for a session into the main process
+ * via IPC. Main uses this to suppress session-complete notifications while
+ * more queued messages are about to be auto-sent.
+ *
+ * Fire-and-forget: swallows errors because the IPC surface may be absent in
+ * test harnesses and a failure here must not block queue mutations.
+ */
+const pushQueuedState = (sessionId: string, hasQueued: boolean): void => {
+  // Optional chaining short-circuits to `undefined` if `window.systemOps` or the
+  // method are missing (test harness), and `?.catch` short-circuits in turn — so
+  // this single expression covers both the "IPC surface absent" and "IPC rejects"
+  // cases. An IPC failure just falls back to the default (show notification),
+  // which is the safer behavior.
+  window.systemOps?.setSessionQueuedState?.(sessionId, hasQueued)?.catch?.(() => {})
+}
+
+export const BOARD_TAB_ID = '__board__'
+export const BOARD_ASSISTANT_SESSION_NAME_PREFIX = '[Board Assistant]'
+
+export function isBoardAssistantSessionName(name: string | null | undefined): boolean {
+  return typeof name === 'string' && name.startsWith(BOARD_ASSISTANT_SESSION_NAME_PREFIX)
+}
+
+function isVisibleSession(session: { name: string | null; session_type?: string }): boolean {
+  if (session.session_type === 'board-assistant') return false
+  return !isBoardAssistantSessionName(session.name)
+}
+
+function getUnavailableProviderError(
+  sdk: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
+): string | null {
+  const { availableAgentSdks } = useSettingsStore.getState()
+  return getUnavailableAgentSdkMessage(sdk, availableAgentSdks)
+}
+
+// Session mode type
+export type SessionMode = 'build' | 'plan' | 'super-plan'
+
+// Pending plan approval state (from ExitPlanMode blocking tool)
+export interface PendingPlan {
+  requestId: string
+  planContent: string
+  toolUseID: string
+}
+
+// Session type matching the database schema
+interface Session {
+  id: string
+  worktree_id: string | null
+  project_id: string
+  connection_id: string | null
+  name: string | null
+  status: 'active' | 'completed' | 'error'
+  opencode_session_id: string | null
+  agent_sdk: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
+  mode: SessionMode
+  session_type: 'default' | 'board-assistant'
+  model_provider_id: string | null
+  model_id: string | null
+  model_variant: string | null
+  created_at: string
+  updated_at: string
+  completed_at: string | null
+}
+
+interface SessionState {
+  // Data - keyed by worktree ID
+  sessionsByWorktree: Map<string, Session[]>
+  // Tab order - keyed by worktree ID, array of session IDs
+  tabOrderByWorktree: Map<string, string[]>
+  // Mode per session - keyed by session ID
+  modeBySession: Map<string, SessionMode>
+  // Super armed state per session - keyed by session ID (memory only, not persisted)
+  superArmedBySession: Map<string, boolean>
+  // Pending initial messages - keyed by session ID (e.g., code review prompts)
+  pendingMessages: Map<string, string>
+  // Pending plan approvals - keyed by session ID (from ExitPlanMode blocking tool)
+  pendingPlans: Map<string, PendingPlan>
+  // Pending follow-up messages - keyed by session ID, ordered queue of messages to auto-send
+  pendingFollowUpMessages: Map<string, string[]>
+  isLoading: boolean
+  error: string | null
+
+  // UI State
+  activeSessionId: string | null
+  activeWorktreeId: string | null
+  // Persisted: last active session per worktree
+  activeSessionByWorktree: Record<string, string>
+
+  // Connection session state
+  sessionsByConnection: Map<string, Session[]>
+  tabOrderByConnection: Map<string, string[]>
+  activeSessionByConnection: Record<string, string> // persisted
+  activeConnectionId: string | null
+
+  // Inline connection session viewing (in worktree mode)
+  // When set, MainPane renders this connection session instead of the active worktree session.
+  // Sidebar selection remains on the worktree.
+  inlineConnectionSessionId: string | null
+
+  // Transient signal: terminal session IDs that were closed since last acknowledgement.
+  // MainPane subscribes to this to prune mountedTerminalSessionIds.
+  closedTerminalSessionIds: Set<string>
+
+  // Orphaned sessions (from archived worktrees) - read-only, not attached to any worktree
+  orphanedSessions: Map<string, Session>
+
+  // Pinned session state — sessions pinned to the kanban board
+  pinnedSessionIds: Set<string>
+  activePinnedSessionId: string | null
+
+  // Board assistant state — project-scoped, one per project
+  boardAssistantByProject: Map<string, Session>
+  activeBoardAssistantProjectId: string | null
+
+  // Actions
+  acknowledgeClosedTerminals: (ids: Set<string>) => void
+  openOrphanedSession: (session: Session) => void
+  closeOrphanedSessions: () => void
+  loadSessions: (worktreeId: string, projectId: string) => Promise<void>
+  createSession: (
+    worktreeId: string,
+    projectId: string,
+    agentSdkOverride?: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal',
+    initialMode?: SessionMode,
+    options?: { autoFocus?: boolean; modelOverride?: SelectedModel }
+  ) => Promise<{ success: boolean; session?: Session; error?: string }>
+  closeSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>
+  reopenSession: (
+    sessionId: string,
+    worktreeId: string
+  ) => Promise<{ success: boolean; error?: string }>
+  reopenConnectionSession: (
+    sessionId: string,
+    connectionId: string
+  ) => Promise<{ success: boolean; error?: string }>
+  setActiveSession: (sessionId: string | null) => void
+  setActiveWorktree: (worktreeId: string | null) => void
+  updateSessionName: (sessionId: string, name: string) => Promise<boolean>
+  reorderTabs: (worktreeId: string, fromIndex: number, toIndex: number) => void
+  getSessionsForWorktree: (worktreeId: string) => Session[]
+  getTabOrderForWorktree: (worktreeId: string) => string[]
+  getSessionMode: (sessionId: string) => SessionMode
+  getSuperArmed: (sessionId: string) => boolean
+  toggleSessionMode: (sessionId: string) => Promise<void>
+  toggleSuperMode: (sessionId: string) => Promise<void>
+  toggleSuperPlanShortcut: (sessionId: string) => Promise<void>
+  setSessionMode: (sessionId: string, mode: SessionMode) => Promise<void>
+  setSessionModel: (
+    sessionId: string,
+    model: SelectedModel,
+    options?: { skipGlobalUpdate?: boolean }
+  ) => Promise<void>
+  setOpenCodeSessionId: (sessionId: string, opencodeSessionId: string | null) => void
+  setPendingMessage: (sessionId: string, message: string) => void
+  dequeuePendingMessage: (sessionId: string) => string | null
+  requeuePendingMessage: (sessionId: string, message: string) => void
+  consumePendingMessage: (sessionId: string) => string | null
+  setPendingFollowUpMessages: (sessionId: string, messages: string[]) => void
+  dequeueFollowUpMessage: (sessionId: string) => string | null
+  requeueFollowUpMessageFront: (sessionId: string, message: string) => void
+  consumeFollowUpMessage: (sessionId: string) => string | null
+  enqueueFollowUpMessage: (sessionId: string, message: string) => void
+  closeOtherSessions: (worktreeId: string, keepSessionId: string) => Promise<void>
+  closeSessionsToRight: (worktreeId: string, fromSessionId: string) => Promise<void>
+  // Plan approval
+  setPendingPlan: (sessionId: string, plan: PendingPlan) => void
+  clearPendingPlan: (sessionId: string) => void
+  getPendingPlan: (sessionId: string) => PendingPlan | null
+
+  // Pinned session actions
+  pinSessionToBoard: (sessionId: string) => Promise<void>
+  unpinSessionFromBoard: (sessionId: string) => void
+  setActivePinnedSession: (sessionId: string | null) => void
+  loadPinnedSessions: (worktreeId: string) => Promise<void>
+
+  // Inline connection session actions
+  setInlineConnectionSession: (sessionId: string | null) => void
+  clearInlineConnectionSession: () => void
+  loadConnectionSessionsBackground: (connectionId: string) => Promise<void>
+
+  // Board assistant actions
+  loadBoardAssistantSession: (projectId: string) => Promise<void>
+  createBoardAssistantSession: (
+    projectId: string
+  ) => Promise<{ success: boolean; session?: Session; error?: string }>
+  closeBoardAssistantSession: (projectId: string) => Promise<{ success: boolean; error?: string }>
+  focusBoardAssistantSession: (projectId: string) => void
+  openBoardAssistantProject: (projectId: string) => void
+  clearBoardAssistantFocus: () => void
+
+  // Connection session actions
+  loadConnectionSessions: (connectionId: string) => Promise<void>
+  createConnectionSession: (
+    connectionId: string,
+    agentSdkOverride?: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal',
+    initialMode?: SessionMode,
+    opts?: { autoFocus?: boolean; modelOverride?: SelectedModel }
+  ) => Promise<{ success: boolean; session?: Session; error?: string }>
+  setActiveConnectionSession: (sessionId: string | null) => void
+  setActiveConnection: (connectionId: string | null) => void
+  getSessionsForConnection: (connectionId: string) => Session[]
+  getTabOrderForConnection: (connectionId: string) => string[]
+  reorderConnectionTabs: (connectionId: string, fromIndex: number, toIndex: number) => void
+  closeOtherConnectionSessions: (connectionId: string, keepSessionId: string) => Promise<void>
+  closeConnectionSessionsToRight: (connectionId: string, fromSessionId: string) => Promise<void>
+}
+
+// Helper: find a session across both worktree and connection maps
+function findSessionScope(
+  state: SessionState,
+  sessionId: string
+): { type: 'worktree'; scopeId: string } | { type: 'connection'; scopeId: string } | null {
+  for (const [worktreeId, sessions] of state.sessionsByWorktree.entries()) {
+    if (sessions.some((s) => s.id === sessionId)) {
+      return { type: 'worktree', scopeId: worktreeId }
+    }
+  }
+  for (const [connectionId, sessions] of state.sessionsByConnection.entries()) {
+    if (sessions.some((s) => s.id === sessionId)) {
+      return { type: 'connection', scopeId: connectionId }
+    }
+  }
+  return null
+}
+
+export const useSessionStore = create<SessionState>()(
+  persist(
+    (set, get) => ({
+      // Initial state
+      sessionsByWorktree: new Map(),
+      tabOrderByWorktree: new Map(),
+      modeBySession: new Map(),
+      superArmedBySession: new Map(),
+      pendingMessages: new Map(),
+      pendingPlans: new Map(),
+      pendingFollowUpMessages: new Map(),
+      isLoading: false,
+      error: null,
+      activeSessionId: null,
+      activeWorktreeId: null,
+      activeSessionByWorktree: {},
+
+      // Connection session state
+      sessionsByConnection: new Map(),
+      tabOrderByConnection: new Map(),
+      activeSessionByConnection: {},
+      activeConnectionId: null,
+      inlineConnectionSessionId: null,
+      closedTerminalSessionIds: new Set<string>(),
+
+      // Orphaned sessions
+      orphanedSessions: new Map(),
+
+      // Pinned session state
+      pinnedSessionIds: new Set<string>(),
+      activePinnedSessionId: null,
+
+      // Board assistant state
+      boardAssistantByProject: new Map(),
+      activeBoardAssistantProjectId: null,
+
+      acknowledgeClosedTerminals: (ids: Set<string>) => {
+        set((state) => {
+          const remaining = new Set(state.closedTerminalSessionIds)
+          for (const id of ids) remaining.delete(id)
+          return { closedTerminalSessionIds: remaining }
+        })
+      },
+
+      // Load sessions for a worktree from database (only active sessions for tabs)
+      loadSessions: async (worktreeId: string, _projectId: string) => {
+        // Also load board assistant session for this project (fire-and-forget)
+        void get().loadBoardAssistantSession(_projectId)
+        // Only show loading indicator when no sessions are cached yet.
+        // When sessions already exist (e.g., after createSession populated them),
+        // skip the indicator to avoid unmounting active SessionViews mid-init.
+        const hasCached = get().sessionsByWorktree.has(worktreeId)
+        set({ isLoading: !hasCached, error: null })
+        try {
+          // Only load active sessions - completed sessions appear in history only
+          const sessions = await window.db.session.getActiveByWorktree(worktreeId)
+
+          // Also load pinned sessions for this worktree
+          const pinnedSessions = await window.db.session.getPinnedSessions(worktreeId)
+          const pinnedIds = new Set(pinnedSessions.map((s: { id: string }) => s.id))
+
+          // Sort by updated_at descending (most recent first)
+          const sortedSessions = sessions
+            .filter(isVisibleSession)
+            .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+
+          set((state) => {
+            const newSessionsMap = new Map(state.sessionsByWorktree)
+
+            // Merge: preserve sessions in the store that the DB read may have missed.
+            // This prevents a race where createSession adds a session to the store,
+            // but a concurrent loadSessions (triggered by selectedWorktreeId change)
+            // reads from the DB before the write commits and overwrites with an empty list.
+            const existingInStore = (newSessionsMap.get(worktreeId) || []).filter(isVisibleSession)
+            const dbSessionIds = new Set(sortedSessions.map((s) => s.id))
+            const missingFromDb = existingInStore.filter((s) => !dbSessionIds.has(s.id))
+            const merged = missingFromDb.length > 0
+              ? [...sortedSessions, ...missingFromDb]
+              : sortedSessions
+            newSessionsMap.set(worktreeId, merged)
+
+            // Initialize tab order if not exists - use session IDs in sorted order
+            const newTabOrderMap = new Map(state.tabOrderByWorktree)
+            // Use merged list (not just sortedSessions) for tab-order sync
+            // so that recently-created sessions aren't dropped from the order.
+            const allSessionIds = new Set(merged.map((s) => s.id))
+            if (!newTabOrderMap.has(worktreeId)) {
+              newTabOrderMap.set(
+                worktreeId,
+                merged.map((s) => s.id)
+              )
+            } else {
+              // Sync tab order with actual sessions (remove deleted, add new)
+              const existingOrder = newTabOrderMap.get(worktreeId)!
+              const validOrder = existingOrder.filter((id) => allSessionIds.has(id))
+              const newIds = merged
+                .map((s) => s.id)
+                .filter((id) => !validOrder.includes(id))
+              newTabOrderMap.set(worktreeId, [...validOrder, ...newIds])
+            }
+
+            // Populate mode map from loaded sessions
+            const newModeMap = new Map(state.modeBySession)
+            for (const session of merged) {
+              if (!newModeMap.has(session.id)) {
+                newModeMap.set(session.id, session.mode || 'build')
+              }
+            }
+
+            // Set active session if none selected and sessions exist
+            let activeSessionId = state.activeSessionId
+            if (
+              state.activeWorktreeId === worktreeId &&
+              !activeSessionId
+            ) {
+              // Try to restore persisted active session
+              const persistedSessionId = state.activeSessionByWorktree[worktreeId]
+              const boardMode = useSettingsStore.getState().boardMode
+
+              if (persistedSessionId === BOARD_TAB_ID && boardMode === 'sticky-tab') {
+                // Board tab is valid in sticky-tab mode
+                activeSessionId = BOARD_TAB_ID
+              } else if (persistedSessionId === BOARD_TAB_ID && boardMode === 'toggle') {
+                // Mode was switched away from sticky — fall back to first session
+                if (sortedSessions.length > 0) {
+                  const tabOrder = newTabOrderMap.get(worktreeId)!
+                  activeSessionId = tabOrder[0] || sortedSessions[0].id
+                }
+              } else if (sortedSessions.length > 0) {
+                const sessionExists =
+                  persistedSessionId && sortedSessions.some((s) => s.id === persistedSessionId)
+
+                if (sessionExists) {
+                  activeSessionId = persistedSessionId
+                } else if (boardMode === 'sticky-tab') {
+                  // No persisted session, sticky-tab mode: default to board
+                  activeSessionId = BOARD_TAB_ID
+                } else {
+                  const tabOrder = newTabOrderMap.get(worktreeId)!
+                  activeSessionId = tabOrder[0] || sortedSessions[0].id
+                }
+              } else if (boardMode === 'sticky-tab') {
+                // No sessions at all, sticky-tab mode: default to board
+                activeSessionId = BOARD_TAB_ID
+              }
+            }
+
+            return {
+              sessionsByWorktree: newSessionsMap,
+              tabOrderByWorktree: newTabOrderMap,
+              modeBySession: newModeMap,
+              pinnedSessionIds: pinnedIds,
+              isLoading: false,
+              activeSessionId
+            }
+          })
+        } catch (error) {
+          set({
+            error: error instanceof Error ? error.message : 'Failed to load sessions',
+            isLoading: false
+          })
+        }
+      },
+
+      // Create a new session
+      createSession: async (
+        worktreeId: string,
+        projectId: string,
+        agentSdkOverride?: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal',
+        initialMode?: SessionMode,
+        options?: { autoFocus?: boolean; modelOverride?: SelectedModel }
+      ) => {
+        try {
+          const autoFocus = options?.autoFocus !== false
+          const { agentSdk: defaultAgentSdk, model: defaultModel } = resolveSessionCreationSelection({
+            worktreeId,
+            agentSdkOverride,
+            initialMode,
+            modelOverride: options?.modelOverride
+          })
+          const unavailableProviderError = getUnavailableProviderError(defaultAgentSdk)
+          if (unavailableProviderError) {
+            return { success: false, error: unavailableProviderError }
+          }
+
+          const isTerminal = defaultAgentSdk === 'terminal'
+
+          const existingSessions = get().sessionsByWorktree.get(worktreeId) || []
+          const sessionNumber = existingSessions.length + 1
+
+          const session = await window.db.session.create({
+            worktree_id: worktreeId,
+            project_id: projectId,
+            name: isTerminal ? `Terminal ${sessionNumber}` : `Session ${sessionNumber}`,
+            agent_sdk: defaultAgentSdk,
+            mode: initialMode || 'build',
+            ...(defaultModel
+              ? {
+                  model_provider_id: defaultModel.providerID,
+                  model_id: defaultModel.modelID,
+                  model_variant: defaultModel.variant ?? null
+                }
+              : {})
+          })
+
+          // Clear file viewer so the new session takes focus in MainPane
+          if (autoFocus) {
+            const { useFileViewerStore } = await import('./useFileViewerStore')
+            useFileViewerStore.getState().setActiveFile(null)
+            useFileViewerStore.getState().clearActiveDiff()
+          }
+
+          set((state) => {
+            // Session data — always updated
+            const newSessionsMap = new Map(state.sessionsByWorktree)
+            const existingSessions = newSessionsMap.get(worktreeId) || []
+            newSessionsMap.set(worktreeId, [session, ...existingSessions])
+
+            // Add to tab order at the end
+            const newTabOrderMap = new Map(state.tabOrderByWorktree)
+            const existingOrder = newTabOrderMap.get(worktreeId) || []
+            newTabOrderMap.set(worktreeId, [...existingOrder, session.id])
+
+            // Initialize mode for new session
+            const newModeMap = new Map(state.modeBySession)
+            newModeMap.set(session.id, session.mode || 'build')
+
+            const base = {
+              sessionsByWorktree: newSessionsMap,
+              tabOrderByWorktree: newTabOrderMap,
+              modeBySession: newModeMap
+            }
+
+            // Focus state — only when autoFocus is true
+            if (autoFocus) {
+              return {
+                ...base,
+                activeSessionId: session.id,
+                activeSessionByWorktree: {
+                  ...state.activeSessionByWorktree,
+                  [worktreeId]: session.id
+                }
+              }
+            }
+
+            return base
+          })
+
+          // Notify kanban store — auto-attaches pre-assigned tickets to this session.
+          // Wrapped in its own try-catch so a handler error can never break session creation.
+          try {
+            notifyKanbanNewSession(session.id, worktreeId, projectId, session.mode || 'build')
+          } catch {
+            // Non-critical — session was created successfully regardless
+          }
+
+          // Auto-attach non-outdated diff comments so the new session starts with context.
+          // Lazy import to avoid circular dependencies (same pattern as kanban above).
+          try {
+            const { useDiffCommentStore } = await import('./useDiffCommentStore')
+            useDiffCommentStore.getState().attachAllToChat(worktreeId)
+          } catch {
+            // Non-critical — session was created successfully regardless
+          }
+
+          return { success: true, session }
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to create session'
+          }
+        }
+      },
+
+      // Close a session tab (removes from tab view, keeps in database for history)
+      // Scope-agnostic: works for both worktree and connection sessions
+      closeSession: async (sessionId: string) => {
+        try {
+          // Find the session to determine type and gather disconnect info
+          let isTerminalSession = false
+          let opencodeSessionId: string | null = null
+          let sessionWorktreeId: string | null = null
+          let sessionConnectionId: string | null = null
+
+          for (const [worktreeId, sessions] of get().sessionsByWorktree.entries()) {
+            const found = sessions.find((s) => s.id === sessionId)
+            if (found) {
+              isTerminalSession = found.agent_sdk === 'terminal'
+              opencodeSessionId = found.opencode_session_id
+              sessionWorktreeId = worktreeId
+              break
+            }
+          }
+          if (!sessionWorktreeId) {
+            for (const [connectionId, sessions] of get().sessionsByConnection.entries()) {
+              const found = sessions.find((s) => s.id === sessionId)
+              if (found) {
+                isTerminalSession = found.agent_sdk === 'terminal'
+                opencodeSessionId = found.opencode_session_id
+                sessionConnectionId = connectionId
+                break
+              }
+            }
+          }
+
+          // Mark session as completed instead of deleting
+          // This preserves it in session history
+          await window.db.session.update(sessionId, {
+            status: 'completed',
+            completed_at: new Date().toISOString()
+          })
+
+          // Destroy PTY for terminal sessions
+          if (isTerminalSession) {
+            try {
+              await window.terminalOps.destroy(sessionId)
+            } catch {
+              // Best-effort cleanup — PTY may already be gone
+            }
+          }
+
+          // Disconnect agent SDK session to free main-process resources
+          // (session state, abort controllers, cached data).
+          // Best-effort — session may already be disconnected.
+          if (
+            !isTerminalSession &&
+            opencodeSessionId &&
+            (sessionWorktreeId || sessionConnectionId)
+          ) {
+            try {
+              let sessionPath: string | null = null
+              if (sessionWorktreeId) {
+                // Resolve worktree filesystem path from worktree ID
+                for (const worktrees of useWorktreeStore.getState().worktreesByProject.values()) {
+                  const wt = worktrees.find((w) => w.id === sessionWorktreeId)
+                  if (wt) {
+                    sessionPath = wt.path
+                    break
+                  }
+                }
+              } else if (sessionConnectionId) {
+                const result = await window.connectionOps.get(sessionConnectionId)
+                sessionPath = result.success && result.connection ? result.connection.path : null
+              }
+              if (sessionPath) {
+                await window.opencodeOps.disconnect(sessionPath, opencodeSessionId)
+              }
+            } catch {
+              // Best-effort cleanup — session may already be disconnected
+            }
+          }
+
+          set((state) => {
+            const newWorktreeSessionsMap = new Map(state.sessionsByWorktree)
+            const newWorktreeTabOrderMap = new Map(state.tabOrderByWorktree)
+            const newConnectionSessionsMap = new Map(state.sessionsByConnection)
+            const newConnectionTabOrderMap = new Map(state.tabOrderByConnection)
+            const newOrphanedSessions = new Map(state.orphanedSessions)
+            // Clone up-front so both the orphan early-return and the main path
+            // drop any queued follow-up messages for the closed session — keeping
+            // the renderer map consistent with the main-process `Set` cleared below.
+            const newPendingFollowUps = new Map(state.pendingFollowUpMessages)
+            newPendingFollowUps.delete(sessionId)
+            let newActiveSessionId = state.activeSessionId
+
+            // Check if this is an orphaned session
+            if (newOrphanedSessions.has(sessionId)) {
+              newOrphanedSessions.delete(sessionId)
+              if (state.activeSessionId === sessionId) {
+                newActiveSessionId = null
+              }
+              return {
+                orphanedSessions: newOrphanedSessions,
+                activeSessionId: newActiveSessionId,
+                pendingFollowUpMessages: newPendingFollowUps
+              }
+            }
+
+            // Check worktree sessions first
+            let foundInWorktree = false
+            for (const [worktreeId, sessions] of newWorktreeSessionsMap.entries()) {
+              const filtered = sessions.filter((s) => s.id !== sessionId)
+              if (filtered.length !== sessions.length) {
+                foundInWorktree = true
+                newWorktreeSessionsMap.set(worktreeId, filtered)
+
+                // Update tab order
+                const tabOrder = newWorktreeTabOrderMap.get(worktreeId) || []
+                const sessionIndex = tabOrder.indexOf(sessionId)
+                const newOrder = tabOrder.filter((id) => id !== sessionId)
+                newWorktreeTabOrderMap.set(worktreeId, newOrder)
+
+                // If closing the active session, select another one
+                if (state.activeSessionId === sessionId) {
+                  if (newOrder.length > 0) {
+                    const newIndex = Math.min(sessionIndex, newOrder.length - 1)
+                    newActiveSessionId = newOrder[newIndex]
+                  } else {
+                    const boardMode = useSettingsStore.getState().boardMode
+                    newActiveSessionId = boardMode === 'sticky-tab' ? BOARD_TAB_ID : null
+                  }
+                }
+                break
+              }
+            }
+
+            // Check connection sessions if not found in worktree
+            if (!foundInWorktree) {
+              for (const [connectionId, sessions] of newConnectionSessionsMap.entries()) {
+                const filtered = sessions.filter((s) => s.id !== sessionId)
+                if (filtered.length !== sessions.length) {
+                  newConnectionSessionsMap.set(connectionId, filtered)
+
+                  // Update tab order
+                  const tabOrder = newConnectionTabOrderMap.get(connectionId) || []
+                  const sessionIndex = tabOrder.indexOf(sessionId)
+                  const newOrder = tabOrder.filter((id) => id !== sessionId)
+                  newConnectionTabOrderMap.set(connectionId, newOrder)
+
+                  // If closing the active session, select another one
+                  if (state.activeSessionId === sessionId) {
+                    if (newOrder.length > 0) {
+                      const newIndex = Math.min(sessionIndex, newOrder.length - 1)
+                      newActiveSessionId = newOrder[newIndex]
+                    } else {
+                      const boardMode = useSettingsStore.getState().boardMode
+                      newActiveSessionId = boardMode === 'sticky-tab' ? BOARD_TAB_ID : null
+                    }
+                  }
+                  break
+                }
+              }
+            }
+
+            // Update persisted active session mappings
+            const newActiveByWorktree = { ...state.activeSessionByWorktree }
+            for (const [worktreeId] of newWorktreeSessionsMap.entries()) {
+              if (newActiveByWorktree[worktreeId] === sessionId) {
+                if (newActiveSessionId) {
+                  newActiveByWorktree[worktreeId] = newActiveSessionId
+                } else {
+                  delete newActiveByWorktree[worktreeId]
+                }
+              }
+            }
+
+            const newActiveByConnection = { ...state.activeSessionByConnection }
+            for (const [connectionId] of newConnectionSessionsMap.entries()) {
+              if (newActiveByConnection[connectionId] === sessionId) {
+                if (newActiveSessionId) {
+                  newActiveByConnection[connectionId] = newActiveSessionId
+                } else {
+                  delete newActiveByConnection[connectionId]
+                }
+              }
+            }
+
+            const newClosedTerminals = isTerminalSession
+              ? new Set([...state.closedTerminalSessionIds, sessionId])
+              : state.closedTerminalSessionIds
+
+            // Clean up pinned session state if the closed session was pinned
+            const newPinnedIds = new Set(state.pinnedSessionIds)
+            newPinnedIds.delete(sessionId)
+
+            return {
+              sessionsByWorktree: newWorktreeSessionsMap,
+              tabOrderByWorktree: newWorktreeTabOrderMap,
+              sessionsByConnection: newConnectionSessionsMap,
+              tabOrderByConnection: newConnectionTabOrderMap,
+              activeSessionId: newActiveSessionId,
+              activeSessionByWorktree: newActiveByWorktree,
+              activeSessionByConnection: newActiveByConnection,
+              closedTerminalSessionIds: newClosedTerminals,
+              pinnedSessionIds: newPinnedIds,
+              pendingFollowUpMessages: newPendingFollowUps,
+              activePinnedSessionId:
+                state.activePinnedSessionId === sessionId ? null : state.activePinnedSessionId
+            }
+          })
+
+          pushQueuedState(sessionId, false)
+          return { success: true }
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to close session'
+          }
+        }
+      },
+
+      // Reopen a closed session (from history) - marks as active and adds to tabs
+      reopenSession: async (sessionId: string, worktreeId: string) => {
+        try {
+          // 1. Update database status first - this ensures persistence
+          const updatedSession = await window.db.session.update(sessionId, {
+            status: 'active',
+            completed_at: null
+          })
+
+          if (!updatedSession) {
+            return { success: false, error: 'Session not found' }
+          }
+
+          // 2. Clear all prompt stores BEFORE activating session to prevent stale/malformed data
+          const [{ useQuestionStore }, { usePermissionStore }, { useCommandApprovalStore }, { useFileViewerStore }] = await Promise.all([
+            import('./useQuestionStore'),
+            import('./usePermissionStore'),
+            import('./useCommandApprovalStore'),
+            import('./useFileViewerStore')
+          ])
+
+          // Clear any stale prompts from previous session state
+          useQuestionStore.getState().clearSession(sessionId)
+          usePermissionStore.getState().clearSession(sessionId)
+          useCommandApprovalStore.getState().clearSession(sessionId)
+          // Clear file viewer so session takes focus
+          useFileViewerStore.getState().setActiveFile(null)
+          useFileViewerStore.getState().clearActiveDiff()
+
+          // 3. Update state to add the session to tabs and make it active
+          set((state) => {
+            const newSessionsMap = new Map(state.sessionsByWorktree)
+            const existingSessions = newSessionsMap.get(worktreeId) || []
+
+            // Add the reopened session if not already present
+            let updatedSessions: typeof existingSessions
+            const existingIndex = existingSessions.findIndex((s) => s.id === sessionId)
+            if (existingIndex >= 0) {
+              // Update the existing session with fresh data
+              updatedSessions = [...existingSessions]
+              updatedSessions[existingIndex] = updatedSession
+            } else {
+              // Prepend the reopened session to the list
+              updatedSessions = [updatedSession, ...existingSessions]
+            }
+
+            newSessionsMap.set(worktreeId, updatedSessions)
+
+            // Add to tab order if not already there
+            const newTabOrderMap = new Map(state.tabOrderByWorktree)
+            const existingOrder = newTabOrderMap.get(worktreeId) || []
+            if (!existingOrder.includes(sessionId)) {
+              newTabOrderMap.set(worktreeId, [...existingOrder, sessionId])
+            }
+
+            return {
+              sessionsByWorktree: newSessionsMap,
+              tabOrderByWorktree: newTabOrderMap,
+              activeSessionId: sessionId,
+              activeWorktreeId: worktreeId
+            }
+          })
+
+          return { success: true }
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to reopen session'
+          }
+        }
+      },
+
+      // Reopen a closed connection session (from history)
+      reopenConnectionSession: async (sessionId: string, connectionId: string) => {
+        try {
+          // 1. Update database status first - this ensures persistence
+          const updatedSession = await window.db.session.update(sessionId, {
+            status: 'active',
+            completed_at: null
+          })
+
+          if (!updatedSession) {
+            return { success: false, error: 'Session not found' }
+          }
+
+          // 2. Clear all prompt stores BEFORE activating session
+          const [{ useQuestionStore }, { usePermissionStore }, { useCommandApprovalStore }, { useFileViewerStore }] = await Promise.all([
+            import('./useQuestionStore'),
+            import('./usePermissionStore'),
+            import('./useCommandApprovalStore'),
+            import('./useFileViewerStore')
+          ])
+
+          useQuestionStore.getState().clearSession(sessionId)
+          usePermissionStore.getState().clearSession(sessionId)
+          useCommandApprovalStore.getState().clearSession(sessionId)
+          useFileViewerStore.getState().setActiveFile(null)
+          useFileViewerStore.getState().clearActiveDiff()
+
+          // 3. Update state to add the session to tabs and make it active
+          set((state) => {
+            const newSessionsMap = new Map(state.sessionsByConnection)
+            const existingSessions = newSessionsMap.get(connectionId) || []
+
+            // Add the reopened session if not already present
+            let updatedSessions: typeof existingSessions
+            const existingIndex = existingSessions.findIndex((s) => s.id === sessionId)
+            if (existingIndex >= 0) {
+              // Update the existing session with fresh data
+              updatedSessions = [...existingSessions]
+              updatedSessions[existingIndex] = updatedSession
+            } else {
+              // Prepend the reopened session to the list
+              updatedSessions = [updatedSession, ...existingSessions]
+            }
+
+            newSessionsMap.set(connectionId, updatedSessions)
+
+            // Add to tab order if not already there
+            const newTabOrderMap = new Map(state.tabOrderByConnection)
+            const existingOrder = newTabOrderMap.get(connectionId) || []
+            if (!existingOrder.includes(sessionId)) {
+              newTabOrderMap.set(connectionId, [...existingOrder, sessionId])
+            }
+
+            return {
+              sessionsByConnection: newSessionsMap,
+              tabOrderByConnection: newTabOrderMap,
+              activeSessionId: sessionId,
+              activeConnectionId: connectionId,
+              activeWorktreeId: null
+            }
+          })
+
+          return { success: true }
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to reopen connection session'
+          }
+        }
+      },
+
+      // Set active session
+      setActiveSession: (sessionId: string | null) => {
+        // Clear file viewer so the session takes focus in MainPane
+        if (sessionId) {
+          import('./useFileViewerStore').then(({ useFileViewerStore }) => {
+            useFileViewerStore.getState().setActiveFile(null)
+            useFileViewerStore.getState().clearActiveDiff()
+          })
+        }
+
+        const state = get()
+        const worktreeId = state.activeWorktreeId
+        const connectionId = state.activeConnectionId
+
+        if (sessionId && worktreeId) {
+          set((state) => ({
+            activeSessionId: sessionId,
+            activeBoardAssistantProjectId: null,
+            activeSessionByWorktree: {
+              ...state.activeSessionByWorktree,
+              [worktreeId]: sessionId
+            }
+          }))
+        } else if (sessionId && connectionId) {
+          set((state) => ({
+            activeSessionId: sessionId,
+            activeBoardAssistantProjectId: null,
+            activeSessionByConnection: {
+              ...state.activeSessionByConnection,
+              [connectionId]: sessionId
+            }
+          }))
+        } else {
+          set({ activeSessionId: sessionId, activeBoardAssistantProjectId: null })
+        }
+      },
+
+      // Set active worktree and load its sessions
+      setActiveWorktree: (worktreeId: string | null) => {
+        const state = get()
+
+        if (worktreeId === state.activeWorktreeId) return
+
+        set({
+          activeWorktreeId: worktreeId,
+          activeConnectionId: null,
+          inlineConnectionSessionId: null,
+          activeBoardAssistantProjectId: null
+        })
+
+        if (worktreeId) {
+          // Check if we already have sessions for this worktree
+          const existingSessions = (state.sessionsByWorktree.get(worktreeId) || []).filter(
+            isVisibleSession
+          )
+          if (existingSessions) {
+            // Try to restore persisted active session for this worktree
+            const persistedSessionId = state.activeSessionByWorktree[worktreeId]
+            const boardMode = useSettingsStore.getState().boardMode
+
+            if (persistedSessionId === BOARD_TAB_ID && boardMode === 'sticky-tab') {
+              set({ activeSessionId: BOARD_TAB_ID })
+            } else if (persistedSessionId === BOARD_TAB_ID && boardMode === 'toggle') {
+              // Mode was switched away from sticky — fall back to first session
+              const tabOrder = state.tabOrderByWorktree.get(worktreeId) || []
+              const activeId =
+                tabOrder[0] || (existingSessions.length > 0 ? existingSessions[0].id : null)
+              set({ activeSessionId: activeId })
+            } else {
+              const sessionExists =
+                persistedSessionId && existingSessions.some((s) => s.id === persistedSessionId)
+
+              if (sessionExists) {
+                set({ activeSessionId: persistedSessionId })
+              } else if (boardMode === 'sticky-tab') {
+                set({ activeSessionId: BOARD_TAB_ID })
+              } else {
+                // Fallback to first tab
+                const tabOrder = state.tabOrderByWorktree.get(worktreeId) || []
+                const activeId =
+                  tabOrder[0] || (existingSessions.length > 0 ? existingSessions[0].id : null)
+                set({ activeSessionId: activeId })
+              }
+            }
+          } else {
+            // Clear active session until sessions are loaded
+            set({ activeSessionId: null })
+          }
+        } else {
+          set({ activeSessionId: null })
+        }
+      },
+
+      // Update session name (scope-agnostic)
+      updateSessionName: async (sessionId: string, name: string) => {
+        try {
+          const updatedSession = await window.db.session.update(sessionId, { name })
+          if (updatedSession) {
+            const scope = findSessionScope(get(), sessionId)
+
+            set((state) => {
+              // Update in worktree sessions
+              const newWorktreeSessionsMap = new Map(state.sessionsByWorktree)
+              for (const [wtId, sessions] of newWorktreeSessionsMap.entries()) {
+                const updated = sessions.map((s) => (s.id === sessionId ? { ...s, name } : s))
+                if (updated.some((s, i) => s !== sessions[i])) {
+                  newWorktreeSessionsMap.set(wtId, updated)
+                }
+              }
+
+              // Update in connection sessions
+              const newConnectionSessionsMap = new Map(state.sessionsByConnection)
+              for (const [connId, sessions] of newConnectionSessionsMap.entries()) {
+                const updated = sessions.map((s) => (s.id === sessionId ? { ...s, name } : s))
+                if (updated.some((s, i) => s !== sessions[i])) {
+                  newConnectionSessionsMap.set(connId, updated)
+                }
+              }
+
+              return {
+                sessionsByWorktree: newWorktreeSessionsMap,
+                sessionsByConnection: newConnectionSessionsMap
+              }
+            })
+
+            // Append non-default session titles to the worktree (updates store + DB)
+            const isDefault = /^Session \d+$/.test(name)
+            if (!isDefault && scope?.type === 'worktree') {
+              useWorktreeStore.getState().appendSessionTitle(scope.scopeId, name)
+            }
+
+            return true
+          }
+          return false
+        } catch {
+          return false
+        }
+      },
+
+      // Reorder tabs
+      reorderTabs: (worktreeId: string, fromIndex: number, toIndex: number) => {
+        set((state) => {
+          const newTabOrderMap = new Map(state.tabOrderByWorktree)
+          const order = [...(newTabOrderMap.get(worktreeId) || [])]
+
+          if (
+            fromIndex < 0 ||
+            fromIndex >= order.length ||
+            toIndex < 0 ||
+            toIndex >= order.length
+          ) {
+            return state
+          }
+
+          // Remove from old position and insert at new position
+          const [removed] = order.splice(fromIndex, 1)
+          order.splice(toIndex, 0, removed)
+
+          newTabOrderMap.set(worktreeId, order)
+          return { tabOrderByWorktree: newTabOrderMap }
+        })
+      },
+
+      // Get sessions for a worktree
+      getSessionsForWorktree: (worktreeId: string) => {
+        return (get().sessionsByWorktree.get(worktreeId) || []).filter(isVisibleSession)
+      },
+
+      // Get tab order for a worktree
+      getTabOrderForWorktree: (worktreeId: string) => {
+        const visibleIds = new Set(
+          (get().sessionsByWorktree.get(worktreeId) || [])
+            .filter(isVisibleSession)
+            .map((session) => session.id)
+        )
+        return (get().tabOrderByWorktree.get(worktreeId) || []).filter((id) => visibleIds.has(id))
+      },
+
+      // Get session mode (defaults to 'build')
+      getSessionMode: (sessionId: string): SessionMode => {
+        return get().modeBySession.get(sessionId) || 'build'
+      },
+
+      // Get super armed state for a session (defaults to false)
+      getSuperArmed: (sessionId: string): boolean => {
+        return get().superArmedBySession.get(sessionId) ?? false
+      },
+
+      // Get session by ID from either worktree or connection sessions
+      getSessionById: (sessionId: string): Session | null => {
+        for (const sessions of get().sessionsByWorktree.values()) {
+          const found = sessions.find((s) => s.id === sessionId)
+          if (found) return found
+        }
+        for (const sessions of get().sessionsByConnection.values()) {
+          const found = sessions.find((s) => s.id === sessionId)
+          if (found) return found
+        }
+        for (const session of get().boardAssistantByProject.values()) {
+          if (session.id === sessionId) return session
+        }
+        return null
+      },
+
+      // Hydrate a session from the DB into the in-memory store.
+      // Called when findSessionById discovers a session via DB fallback so
+      // that getWorktreeStatus() and zustand selectors can find it going forward.
+      // Does NOT modify tabOrder, activeSessionId, or loading state.
+      hydrateSession: (session: Session) => {
+        // Already in store? Skip.
+        if (get().getSessionById(session.id)) return
+
+        set((state) => {
+          if (session.session_type === 'board-assistant') {
+            const newMap = new Map(state.boardAssistantByProject)
+            newMap.set(session.project_id, session)
+
+            const newModeMap = new Map(state.modeBySession)
+            newModeMap.set(session.id, session.mode || 'build')
+
+            return { boardAssistantByProject: newMap, modeBySession: newModeMap }
+          }
+
+          if (session.worktree_id) {
+            const newMap = new Map(state.sessionsByWorktree)
+            const existing = newMap.get(session.worktree_id) || []
+            if (existing.some((s) => s.id === session.id)) return state
+            newMap.set(session.worktree_id, [...existing, session])
+
+            const newModeMap = new Map(state.modeBySession)
+            newModeMap.set(session.id, session.mode || 'build')
+
+            return { sessionsByWorktree: newMap, modeBySession: newModeMap }
+          } else if (session.connection_id) {
+            const newMap = new Map(state.sessionsByConnection)
+            const existing = newMap.get(session.connection_id) || []
+            if (existing.some((s) => s.id === session.id)) return state
+            newMap.set(session.connection_id, [...existing, session])
+
+            const newModeMap = new Map(state.modeBySession)
+            newModeMap.set(session.id, session.mode || 'build')
+
+            return { sessionsByConnection: newMap, modeBySession: newModeMap }
+          }
+          return state
+        })
+      },
+
+      // Toggle session mode between build and plan/super-plan (2-way cycle)
+      // From 'build': go to 'super-plan' if superArmed, else 'plan'
+      // From 'plan' or 'super-plan': go to 'build'
+      toggleSessionMode: async (sessionId: string) => {
+        const currentMode = get().modeBySession.get(sessionId) || 'build'
+
+        let newMode: SessionMode
+        if (currentMode === 'build') {
+          newMode = get().getSuperArmed(sessionId) ? 'super-plan' : 'plan'
+        } else {
+          // 'plan' or 'super-plan' → back to 'build'
+          newMode = 'build'
+        }
+
+        // Update local state immediately
+        set((state) => {
+          const newModeMap = new Map(state.modeBySession)
+          newModeMap.set(sessionId, newMode)
+          return { modeBySession: newModeMap }
+        })
+
+        // Persist to database
+        try {
+          await window.db.session.update(sessionId, { mode: newMode })
+        } catch (error) {
+          console.error('Failed to persist session mode:', error)
+        }
+
+        // Auto-apply mode-specific model if configured
+        await get().applyModeDefaultModel(sessionId, newMode)
+
+        // Notify Kanban board of mode change
+        notifyKanbanSessionSync(sessionId, { type: 'mode_change', sessionMode: newMode })
+      },
+
+      // Toggle super mode for a session (only works when in plan modes)
+      // 'plan' → 'super-plan' (superArmed = true)
+      // 'super-plan' → 'plan' (superArmed = false)
+      toggleSuperMode: async (sessionId: string) => {
+        const currentMode = get().modeBySession.get(sessionId) || 'build'
+
+        let newMode: SessionMode
+        let newSuperArmed: boolean
+        if (currentMode === 'plan') {
+          newMode = 'super-plan'
+          newSuperArmed = true
+        } else if (currentMode === 'super-plan') {
+          newMode = 'plan'
+          newSuperArmed = false
+        } else {
+          // Only works in plan modes; do nothing
+          return
+        }
+
+        // Update both maps atomically
+        set((state) => {
+          const newModeMap = new Map(state.modeBySession)
+          newModeMap.set(sessionId, newMode)
+          const newSuperArmedMap = new Map(state.superArmedBySession)
+          newSuperArmedMap.set(sessionId, newSuperArmed)
+          return { modeBySession: newModeMap, superArmedBySession: newSuperArmedMap }
+        })
+
+        // Persist to database
+        try {
+          await window.db.session.update(sessionId, { mode: newMode })
+        } catch (error) {
+          console.error('Failed to persist session mode:', error)
+        }
+
+        // Auto-apply mode-specific model if configured
+        await get().applyModeDefaultModel(sessionId, newMode)
+
+        // Notify Kanban board of mode change
+        notifyKanbanSessionSync(sessionId, { type: 'mode_change', sessionMode: newMode })
+      },
+
+      // Toggle super-plan shortcut: super-plan → plan, everything else → super-plan
+      // Unlike toggleSuperMode, this does NOT mutate superArmedBySession
+      toggleSuperPlanShortcut: async (sessionId: string) => {
+        const currentMode = get().modeBySession.get(sessionId) || 'build'
+        const newMode: SessionMode = currentMode === 'super-plan' ? 'plan' : 'super-plan'
+
+        set((state) => {
+          const newModeMap = new Map(state.modeBySession)
+          newModeMap.set(sessionId, newMode)
+          return { modeBySession: newModeMap }
+        })
+
+        try {
+          await window.db.session.update(sessionId, { mode: newMode })
+        } catch (error) {
+          console.error('Failed to persist session mode:', error)
+        }
+
+        await get().applyModeDefaultModel(sessionId, newMode)
+        notifyKanbanSessionSync(sessionId, { type: 'mode_change', sessionMode: newMode })
+      },
+
+      // Set session mode explicitly (also applies mode-specific model default)
+      setSessionMode: async (sessionId: string, mode: SessionMode) => {
+        set((state) => {
+          const newModeMap = new Map(state.modeBySession)
+          newModeMap.set(sessionId, mode)
+          return { modeBySession: newModeMap }
+        })
+
+        try {
+          await window.db.session.update(sessionId, { mode })
+        } catch (error) {
+          console.error('Failed to persist session mode:', error)
+        }
+
+        // Apply mode-specific default model (same as toggleSessionMode)
+        await get().applyModeDefaultModel(sessionId, mode)
+
+        // Notify Kanban board of mode change
+        notifyKanbanSessionSync(sessionId, { type: 'mode_change', sessionMode: mode })
+      },
+
+      // Set model for a specific session (per-session model selection, scope-agnostic)
+      setSessionModel: async (
+        sessionId: string,
+        model: SelectedModel,
+        options?: { skipGlobalUpdate?: boolean }
+      ) => {
+        // Update local state immediately (search both maps)
+        set((state) => {
+          const newWorktreeSessionsMap = new Map(state.sessionsByWorktree)
+          for (const [worktreeId, sessions] of newWorktreeSessionsMap.entries()) {
+            const updated = sessions.map((s) =>
+              s.id === sessionId
+                ? {
+                    ...s,
+                    model_provider_id: model.providerID,
+                    model_id: model.modelID,
+                    model_variant: model.variant ?? null
+                  }
+                : s
+            )
+            if (updated.some((s, i) => s !== sessions[i])) {
+              newWorktreeSessionsMap.set(worktreeId, updated)
+            }
+          }
+
+          const newConnectionSessionsMap = new Map(state.sessionsByConnection)
+          for (const [connectionId, sessions] of newConnectionSessionsMap.entries()) {
+            const updated = sessions.map((s) =>
+              s.id === sessionId
+                ? {
+                    ...s,
+                    model_provider_id: model.providerID,
+                    model_id: model.modelID,
+                    model_variant: model.variant ?? null
+                  }
+                : s
+            )
+            if (updated.some((s, i) => s !== sessions[i])) {
+              newConnectionSessionsMap.set(connectionId, updated)
+            }
+          }
+
+          return {
+            sessionsByWorktree: newWorktreeSessionsMap,
+            sessionsByConnection: newConnectionSessionsMap
+          }
+        })
+
+        // Persist to database
+        try {
+          await window.db.session.update(sessionId, {
+            model_provider_id: model.providerID,
+            model_id: model.modelID,
+            model_variant: model.variant ?? null
+          })
+        } catch (error) {
+          console.error('Failed to persist session model:', error)
+        }
+
+        // Find the session's SDK to route correctly (search both scopes)
+        let agentSdk: Session['agent_sdk'] = 'opencode'
+        for (const sessions of get().sessionsByWorktree.values()) {
+          const found = sessions.find((s) => s.id === sessionId)
+          if (found?.agent_sdk) {
+            agentSdk = found.agent_sdk
+            break
+          }
+        }
+        if (agentSdk === 'opencode') {
+          for (const sessions of get().sessionsByConnection.values()) {
+            const found = sessions.find((s) => s.id === sessionId)
+            if (found?.agent_sdk) {
+              agentSdk = found.agent_sdk
+              break
+            }
+          }
+        }
+        if (agentSdk === 'opencode') {
+          for (const session of get().boardAssistantByProject.values()) {
+            if (session.id === sessionId && session.agent_sdk) {
+              agentSdk = session.agent_sdk
+              break
+            }
+          }
+        }
+
+        // Push to agent backend (SDK-aware) — skip for terminal sessions
+        try {
+          if (agentSdk !== 'terminal') {
+            await window.opencodeOps.setModel({ ...model, agentSdk })
+          }
+        } catch (error) {
+          console.error('Failed to push model to agent backend:', error)
+        }
+
+        // Update per-provider last-used model so new worktrees inherit it
+        // Skip when auto-applying mode defaults — those shouldn't rewrite global preferences
+        if (!options?.skipGlobalUpdate) {
+          try {
+            const { useSettingsStore } = await import('./useSettingsStore')
+            useSettingsStore
+              .getState()
+              .setSelectedModelForSdk(agentSdk, model, { skipBackendPush: true })
+          } catch {
+            /* non-critical */
+          }
+        }
+
+        // Also persist as the worktree's last-used model (only for worktree sessions)
+        const scope = findSessionScope(get(), sessionId)
+        if (scope?.type === 'worktree') {
+          try {
+            await window.db.worktree.updateModel({
+              worktreeId: scope.scopeId,
+              modelProviderId: model.providerID,
+              modelId: model.modelID,
+              modelVariant: model.variant ?? null
+            })
+            useWorktreeStore.getState().updateWorktreeModel(scope.scopeId, model)
+          } catch {
+            /* non-critical */
+          }
+        }
+      },
+
+      // Apply mode-specific default model when toggling modes
+      applyModeDefaultModel: async (sessionId: string, newMode: SessionMode) => {
+        // Import settings store dynamically to avoid circular deps
+        const { useSettingsStore, resolveModelForSdk } = await import('./useSettingsStore')
+
+        const session = get().getSessionById(sessionId)
+        const settings = useSettingsStore.getState()
+        const sessionSdk = session?.agent_sdk ?? settings.defaultAgentSdk ?? 'opencode'
+        if (sessionSdk === 'terminal') return
+
+        const configuredDefaultSdk = settings.defaultAgentSdk ?? 'opencode'
+
+        // Mode defaults are configured in the context of the default SDK.
+        // Only apply them when the session SDK matches; otherwise fall back to per-SDK default.
+        const modeDefault =
+          sessionSdk === configuredDefaultSdk ? settings.getModelForMode(newMode) : null
+        const newModeDefault = modeDefault ?? resolveModelForSdk(sessionSdk, settings)
+        if (!newModeDefault) {
+          // No defaults configured, keep current model
+          return
+        }
+
+        // Apply the new mode's default model (without rewriting global preferences)
+        await get().setSessionModel(sessionId, newModeDefault, { skipGlobalUpdate: true })
+      },
+
+      // Keep opencode_session_id in sync in-memory after connect/reconnect (scope-agnostic)
+      setOpenCodeSessionId: (sessionId: string, opencodeSessionId: string | null) => {
+        set((state) => {
+          let updatedAny = false
+
+          // Check worktree sessions
+          const newWorktreeSessionsMap = new Map(state.sessionsByWorktree)
+          for (const [worktreeId, sessions] of newWorktreeSessionsMap.entries()) {
+            const updatedSessions = sessions.map((s) => {
+              if (s.id !== sessionId) return s
+              updatedAny = true
+              return { ...s, opencode_session_id: opencodeSessionId }
+            })
+            if (updatedAny) {
+              newWorktreeSessionsMap.set(worktreeId, updatedSessions)
+              return { sessionsByWorktree: newWorktreeSessionsMap }
+            }
+          }
+
+          // Check connection sessions
+          const newConnectionSessionsMap = new Map(state.sessionsByConnection)
+          for (const [connectionId, sessions] of newConnectionSessionsMap.entries()) {
+            const updatedSessions = sessions.map((s) => {
+              if (s.id !== sessionId) return s
+              updatedAny = true
+              return { ...s, opencode_session_id: opencodeSessionId }
+            })
+            if (updatedAny) {
+              newConnectionSessionsMap.set(connectionId, updatedSessions)
+              return { sessionsByConnection: newConnectionSessionsMap }
+            }
+          }
+
+          const newBoardAssistantMap = new Map(state.boardAssistantByProject)
+          for (const [projectId, session] of newBoardAssistantMap.entries()) {
+            if (session.id !== sessionId) continue
+            updatedAny = true
+            newBoardAssistantMap.set(projectId, {
+              ...session,
+              opencode_session_id: opencodeSessionId
+            })
+            return { boardAssistantByProject: newBoardAssistantMap }
+          }
+
+          return {}
+        })
+      },
+
+      // Set a pending initial message for a session (e.g., code review prompt)
+      setPendingMessage: (sessionId: string, message: string) => {
+        set((state) => {
+          const newMap = new Map(state.pendingMessages)
+          newMap.set(sessionId, message)
+          return { pendingMessages: newMap }
+        })
+      },
+
+      // Dequeue (get and remove) a pending message for a session
+      dequeuePendingMessage: (sessionId: string): string | null => {
+        const message = get().pendingMessages.get(sessionId) || null
+        if (message) {
+          set((state) => {
+            const newMap = new Map(state.pendingMessages)
+            newMap.delete(sessionId)
+            return { pendingMessages: newMap }
+          })
+        }
+        return message
+      },
+
+      // Restore a pending message for a session (used when auto-send fails)
+      requeuePendingMessage: (sessionId: string, message: string) => {
+        set((state) => {
+          const newMap = new Map(state.pendingMessages)
+          newMap.set(sessionId, message)
+          return { pendingMessages: newMap }
+        })
+      },
+
+      // Consume (get and remove) a pending message for a session
+      consumePendingMessage: (sessionId: string): string | null => {
+        return get().dequeuePendingMessage(sessionId)
+      },
+
+      // Set follow-up messages queue for a session (ordered, auto-sent after each idle)
+      setPendingFollowUpMessages: (sessionId: string, messages: string[]) => {
+        set((state) => {
+          const newMap = new Map(state.pendingFollowUpMessages)
+          newMap.set(sessionId, [...messages])
+          return { pendingFollowUpMessages: newMap }
+        })
+        pushQueuedState(sessionId, messages.length > 0)
+      },
+
+      // Dequeue (pop first) a follow-up message for a session
+      dequeueFollowUpMessage: (sessionId: string): string | null => {
+        const messages = get().pendingFollowUpMessages.get(sessionId)
+        if (!messages || messages.length === 0) {
+          return null
+        }
+        const [first, ...rest] = messages
+        set((state) => {
+          const newMap = new Map(state.pendingFollowUpMessages)
+          if (rest.length === 0) {
+            newMap.delete(sessionId)
+          } else {
+            newMap.set(sessionId, rest)
+          }
+          return { pendingFollowUpMessages: newMap }
+        })
+        pushQueuedState(sessionId, rest.length > 0)
+        return first
+      },
+
+      // Requeue a follow-up message at the front (used on transient send failure)
+      requeueFollowUpMessageFront: (sessionId: string, message: string) => {
+        set((state) => {
+          const existing = state.pendingFollowUpMessages.get(sessionId) || []
+          const newMap = new Map(state.pendingFollowUpMessages)
+          newMap.set(sessionId, [message, ...existing])
+          return { pendingFollowUpMessages: newMap }
+        })
+        pushQueuedState(sessionId, true)
+      },
+
+      // Consume (pop first) a follow-up message for a session
+      consumeFollowUpMessage: (sessionId: string): string | null => {
+        return get().dequeueFollowUpMessage(sessionId)
+      },
+
+      enqueueFollowUpMessage: (sessionId: string, message: string) => {
+        set((state) => {
+          const existing = state.pendingFollowUpMessages.get(sessionId) || []
+          const newMap = new Map(state.pendingFollowUpMessages)
+          newMap.set(sessionId, [...existing, message])
+          return { pendingFollowUpMessages: newMap }
+        })
+        pushQueuedState(sessionId, true)
+      },
+
+      // Close all sessions except the kept one
+      closeOtherSessions: async (worktreeId: string, keepSessionId: string) => {
+        const tabOrder = [...(get().tabOrderByWorktree.get(worktreeId) || [])]
+        for (const sessionId of tabOrder) {
+          if (sessionId !== keepSessionId) {
+            await get().closeSession(sessionId)
+          }
+        }
+        // Ensure the kept session is active
+        set({ activeSessionId: keepSessionId })
+      },
+
+      // Close all sessions to the right of the given one in tab order
+      closeSessionsToRight: async (worktreeId: string, fromSessionId: string) => {
+        const tabOrder = [...(get().tabOrderByWorktree.get(worktreeId) || [])]
+        const index = tabOrder.indexOf(fromSessionId)
+        if (index === -1) return
+        const toClose = tabOrder.slice(index + 1)
+        for (const sessionId of toClose) {
+          await get().closeSession(sessionId)
+        }
+      },
+
+      // Plan approval state management
+      setPendingPlan: (sessionId: string, plan: PendingPlan) => {
+        set((state) => {
+          const newMap = new Map(state.pendingPlans)
+          newMap.set(sessionId, plan)
+          return { pendingPlans: newMap }
+        })
+      },
+
+      clearPendingPlan: (sessionId: string) => {
+        set((state) => {
+          const newMap = new Map(state.pendingPlans)
+          newMap.delete(sessionId)
+          return { pendingPlans: newMap }
+        })
+      },
+
+      getPendingPlan: (sessionId: string): PendingPlan | null => {
+        return get().pendingPlans.get(sessionId) ?? null
+      },
+
+      // ─── Board assistant actions ──────────────────────────────────────
+
+      loadBoardAssistantSession: async (projectId: string) => {
+        try {
+          const session = await window.db.session.getActiveBoardAssistant(projectId)
+          set((state) => {
+            const map = new Map(state.boardAssistantByProject)
+            const newModeMap = new Map(state.modeBySession)
+            if (session) {
+              map.set(projectId, session)
+              newModeMap.set(session.id, session.mode || 'build')
+            } else {
+              map.delete(projectId)
+            }
+            return { boardAssistantByProject: map, modeBySession: newModeMap }
+          })
+        } catch {
+          // Non-fatal: board assistant tab won't show until next load
+        }
+      },
+
+      createBoardAssistantSession: async (projectId: string) => {
+        try {
+          // If one already exists, just focus it
+          const existing = get().boardAssistantByProject.get(projectId)
+          if (existing) {
+            get().focusBoardAssistantSession(projectId)
+            return { success: true, session: existing }
+          }
+
+          const session = await window.db.session.create({
+            worktree_id: null,
+            project_id: projectId,
+            name: 'Board Assistant',
+            session_type: 'board-assistant',
+            agent_sdk: useSettingsStore.getState().defaultAgentSdk ?? 'opencode'
+          })
+
+          useFileViewerStore.getState().clearActiveViews()
+
+          set((state) => {
+            const map = new Map(state.boardAssistantByProject)
+            const newModeMap = new Map(state.modeBySession)
+            map.set(projectId, session)
+            newModeMap.set(session.id, session.mode || 'build')
+            return {
+              boardAssistantByProject: map,
+              modeBySession: newModeMap,
+              activeBoardAssistantProjectId: projectId,
+              // Clear other active states so the board assistant view shows
+              activeSessionId: null,
+              activePinnedSessionId: null,
+              inlineConnectionSessionId: null
+            }
+          })
+
+          return { success: true, session }
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to create board assistant'
+          }
+        }
+      },
+
+      closeBoardAssistantSession: async (projectId: string) => {
+        try {
+          const session = get().boardAssistantByProject.get(projectId)
+          if (!session) {
+            // Clear stale focus/map state so the UI doesn't get stuck
+            set((state) => {
+              const map = new Map(state.boardAssistantByProject)
+              map.delete(projectId)
+              return {
+                boardAssistantByProject: map,
+                activeBoardAssistantProjectId:
+                  state.activeBoardAssistantProjectId === projectId
+                    ? null
+                    : state.activeBoardAssistantProjectId
+              }
+            })
+            return { success: true }
+          }
+
+          // Clean up the runtime BEFORE updating store state.
+          // We must do this here rather than relying on component unmount,
+          // because the BoardAssistantView may not be mounted (e.g. user
+          // switched to a file tab and then closed the board assistant tab).
+          const { useBoardChatStore } = await import('./useBoardChatStore')
+          const chatSession = useBoardChatStore.getState().getSessionSnapshot(session.id)
+          if (chatSession) {
+            const { useQuestionStore } = await import('./useQuestionStore')
+            const { usePermissionStore } = await import('./usePermissionStore')
+            const { useCommandApprovalStore } = await import('./useCommandApprovalStore')
+
+            useQuestionStore.getState().clearSession(session.id)
+            usePermissionStore.getState().clearSession(session.id)
+            useCommandApprovalStore.getState().clearSession(session.id)
+
+            if (chatSession.snapshot.runtimePath && chatSession.snapshot.opencodeSessionId) {
+              try {
+                await window.opencodeOps.abort(
+                  chatSession.snapshot.runtimePath,
+                  chatSession.snapshot.opencodeSessionId
+                )
+              } catch {
+                // Best-effort cleanup
+              }
+              try {
+                await window.opencodeOps.disconnect(
+                  chatSession.snapshot.runtimePath,
+                  chatSession.snapshot.opencodeSessionId
+                )
+              } catch {
+                // Best-effort cleanup
+              }
+            }
+
+          }
+          useBoardChatStore.getState().clearProjectSnapshot(projectId)
+
+          await window.db.session.update(session.id, {
+            status: 'completed',
+            completed_at: new Date().toISOString()
+          })
+
+          set((state) => {
+            const map = new Map(state.boardAssistantByProject)
+            map.delete(projectId)
+
+            // If this was the active board assistant, clear focus and
+            // restore the previously active session for this worktree
+            const clearFocus = state.activeBoardAssistantProjectId === projectId
+
+            if (clearFocus) {
+              const worktreeId = state.activeWorktreeId
+              const connectionId = state.activeConnectionId
+              const restoredSessionId =
+                (worktreeId ? state.activeSessionByWorktree[worktreeId] : null) ??
+                (connectionId ? state.activeSessionByConnection[connectionId] : null) ??
+                null
+
+              return {
+                boardAssistantByProject: map,
+                activeBoardAssistantProjectId: null,
+                activeSessionId: restoredSessionId
+              }
+            }
+
+            return { boardAssistantByProject: map }
+          })
+
+          return { success: true }
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to close board assistant'
+          }
+        }
+      },
+
+      focusBoardAssistantSession: (projectId: string) => {
+        const session = get().boardAssistantByProject.get(projectId)
+        if (!session) return
+
+        useFileViewerStore.getState().clearActiveViews()
+
+        set({
+          activeBoardAssistantProjectId: projectId,
+          // Clear other active states so the board assistant view shows
+          activeSessionId: null,
+          activePinnedSessionId: null,
+          inlineConnectionSessionId: null
+        })
+      },
+
+      openBoardAssistantProject: (projectId: string) => {
+        useFileViewerStore.getState().clearActiveViews()
+
+        set({
+          activeBoardAssistantProjectId: projectId,
+          activeSessionId: null,
+          activePinnedSessionId: null,
+          inlineConnectionSessionId: null
+        })
+      },
+
+      clearBoardAssistantFocus: () => {
+        set({ activeBoardAssistantProjectId: null })
+      },
+
+      // ─── Inline connection session actions ─────────────────────────────
+
+      setInlineConnectionSession: (sessionId: string | null) => {
+        set({ inlineConnectionSessionId: sessionId })
+      },
+
+      clearInlineConnectionSession: () => {
+        set({ inlineConnectionSessionId: null })
+      },
+
+      // Load sessions for a connection without entering connection mode.
+      // Used by sticky tabs in worktree mode to pre-load connection sessions.
+      loadConnectionSessionsBackground: async (connectionId: string) => {
+        try {
+          const sessions = await window.db.session.getActiveByConnection(connectionId)
+          const sortedSessions = sessions
+            .filter(isVisibleSession)
+            .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+
+          set((state) => {
+            const newSessionsMap = new Map(state.sessionsByConnection)
+            newSessionsMap.set(connectionId, sortedSessions)
+
+            // Initialize or sync tab order
+            const newTabOrderMap = new Map(state.tabOrderByConnection)
+            if (!newTabOrderMap.has(connectionId)) {
+              newTabOrderMap.set(
+                connectionId,
+                sortedSessions.map((s) => s.id)
+              )
+            } else {
+              const existingOrder = newTabOrderMap.get(connectionId)!
+              const sessionIds = new Set(sortedSessions.map((s) => s.id))
+              const validOrder = existingOrder.filter((id) => sessionIds.has(id))
+              const newIds = sortedSessions
+                .map((s) => s.id)
+                .filter((id) => !validOrder.includes(id))
+              newTabOrderMap.set(connectionId, [...validOrder, ...newIds])
+            }
+
+            // Populate mode map
+            const newModeMap = new Map(state.modeBySession)
+            for (const session of sortedSessions) {
+              if (!newModeMap.has(session.id)) {
+                newModeMap.set(session.id, session.mode || 'build')
+              }
+            }
+
+            return {
+              sessionsByConnection: newSessionsMap,
+              tabOrderByConnection: newTabOrderMap,
+              modeBySession: newModeMap
+              // NOTE: does NOT touch activeSessionId or activeConnectionId
+            }
+          })
+        } catch {
+          // Non-fatal: sticky tabs just won't show sessions until next load
+        }
+      },
+
+      // ─── Connection session actions ──────────────────────────────────────
+
+      // Load active sessions for a connection
+      loadConnectionSessions: async (connectionId: string) => {
+        set({ isLoading: true, error: null })
+        try {
+          const sessions = await window.db.session.getActiveByConnection(connectionId)
+          const sortedSessions = sessions
+            .filter(isVisibleSession)
+            .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+
+          set((state) => {
+            const newSessionsMap = new Map(state.sessionsByConnection)
+            newSessionsMap.set(connectionId, sortedSessions)
+
+            // Initialize or sync tab order
+            const newTabOrderMap = new Map(state.tabOrderByConnection)
+            if (!newTabOrderMap.has(connectionId)) {
+              newTabOrderMap.set(
+                connectionId,
+                sortedSessions.map((s) => s.id)
+              )
+            } else {
+              const existingOrder = newTabOrderMap.get(connectionId)!
+              const sessionIds = new Set(sortedSessions.map((s) => s.id))
+              const validOrder = existingOrder.filter((id) => sessionIds.has(id))
+              const newIds = sortedSessions
+                .map((s) => s.id)
+                .filter((id) => !validOrder.includes(id))
+              newTabOrderMap.set(connectionId, [...validOrder, ...newIds])
+            }
+
+            // Populate mode map
+            const newModeMap = new Map(state.modeBySession)
+            for (const session of sortedSessions) {
+              if (!newModeMap.has(session.id)) {
+                newModeMap.set(session.id, session.mode || 'build')
+              }
+            }
+
+            // Set active session if in connection context
+            let activeSessionId = state.activeSessionId
+            if (
+              state.activeConnectionId === connectionId &&
+              !activeSessionId
+            ) {
+              const persistedSessionId = state.activeSessionByConnection[connectionId]
+              const boardMode = useSettingsStore.getState().boardMode
+
+              if (persistedSessionId === BOARD_TAB_ID && boardMode === 'sticky-tab') {
+                activeSessionId = BOARD_TAB_ID
+              } else if (persistedSessionId === BOARD_TAB_ID && boardMode === 'toggle') {
+                if (sortedSessions.length > 0) {
+                  const tabOrder = newTabOrderMap.get(connectionId)!
+                  activeSessionId = tabOrder[0] || sortedSessions[0].id
+                }
+              } else if (sortedSessions.length > 0) {
+                const sessionExists =
+                  persistedSessionId && sortedSessions.some((s) => s.id === persistedSessionId)
+
+                if (sessionExists) {
+                  activeSessionId = persistedSessionId
+                } else if (boardMode === 'sticky-tab') {
+                  activeSessionId = BOARD_TAB_ID
+                } else {
+                  const tabOrder = newTabOrderMap.get(connectionId)!
+                  activeSessionId = tabOrder[0] || sortedSessions[0].id
+                }
+              } else if (boardMode === 'sticky-tab') {
+                activeSessionId = BOARD_TAB_ID
+              }
+            }
+
+            return {
+              sessionsByConnection: newSessionsMap,
+              tabOrderByConnection: newTabOrderMap,
+              modeBySession: newModeMap,
+              isLoading: false,
+              activeSessionId
+            }
+          })
+        } catch (error) {
+          set({
+            error: error instanceof Error ? error.message : 'Failed to load connection sessions',
+            isLoading: false
+          })
+        }
+      },
+
+      // Create a session scoped to a connection
+      createConnectionSession: async (
+        connectionId: string,
+        agentSdkOverride?: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal',
+        initialMode?: SessionMode,
+        opts?: { autoFocus?: boolean; modelOverride?: SelectedModel }
+      ) => {
+        try {
+          const autoFocus = opts?.autoFocus ?? true
+          // Look up the connection to get the first member's project_id
+          const result = await window.connectionOps.get(connectionId)
+          if (!result.success || !result.connection || result.connection.members.length === 0) {
+            return { success: false, error: result.error || 'Connection has no members' }
+          }
+
+          const projectId = result.connection.members[0].project_id
+
+          const { agentSdk: defaultAgentSdk, model: defaultModel } = resolveSessionCreationSelection({
+            agentSdkOverride,
+            initialMode,
+            modelOverride: opts?.modelOverride
+          })
+          const unavailableProviderError = getUnavailableProviderError(defaultAgentSdk)
+          if (unavailableProviderError) {
+            return { success: false, error: unavailableProviderError }
+          }
+
+          const isTerminal = defaultAgentSdk === 'terminal'
+          const existingSessions = get().sessionsByConnection.get(connectionId) || []
+          const sessionNumber = existingSessions.length + 1
+
+          const session = await window.db.session.create({
+            worktree_id: null,
+            project_id: projectId,
+            connection_id: connectionId,
+            name: isTerminal ? `Terminal ${sessionNumber}` : `Session ${sessionNumber}`,
+            agent_sdk: defaultAgentSdk,
+            mode: initialMode || 'build',
+            ...(defaultModel
+              ? {
+                  model_provider_id: defaultModel.providerID,
+                  model_id: defaultModel.modelID,
+                  model_variant: defaultModel.variant ?? null
+                }
+              : {})
+          })
+
+          set((state) => {
+            const newSessionsMap = new Map(state.sessionsByConnection)
+            const existing = newSessionsMap.get(connectionId) || []
+            newSessionsMap.set(connectionId, [session, ...existing])
+
+            const newTabOrderMap = new Map(state.tabOrderByConnection)
+            const existingOrder = newTabOrderMap.get(connectionId) || []
+            newTabOrderMap.set(connectionId, [...existingOrder, session.id])
+
+            const newModeMap = new Map(state.modeBySession)
+            newModeMap.set(session.id, session.mode || 'build')
+
+            const base = {
+              sessionsByConnection: newSessionsMap,
+              tabOrderByConnection: newTabOrderMap,
+              modeBySession: newModeMap
+            }
+
+            // Focus state — only when autoFocus is true
+            if (autoFocus) {
+              return {
+                ...base,
+                activeSessionId: session.id,
+                activeSessionByConnection: {
+                  ...state.activeSessionByConnection,
+                  [connectionId]: session.id
+                }
+              }
+            }
+
+            return base
+          })
+
+          return { success: true, session }
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to create connection session'
+          }
+        }
+      },
+
+      // Set active session in connection context
+      setActiveConnectionSession: (sessionId: string | null) => {
+        const connectionId = get().activeConnectionId
+        if (sessionId && connectionId) {
+          set((state) => ({
+            activeSessionId: sessionId,
+            activeSessionByConnection: {
+              ...state.activeSessionByConnection,
+              [connectionId]: sessionId
+            }
+          }))
+        } else {
+          set({ activeSessionId: sessionId })
+        }
+      },
+
+      // Set active connection and restore its last active session
+      setActiveConnection: (connectionId: string | null) => {
+        const state = get()
+
+        if (connectionId === state.activeConnectionId) return
+
+        set({ activeConnectionId: connectionId, activeWorktreeId: null })
+
+        if (connectionId) {
+          const existingSessions = (state.sessionsByConnection.get(connectionId) || []).filter(
+            isVisibleSession
+          )
+          if (existingSessions) {
+            const persistedSessionId = state.activeSessionByConnection[connectionId]
+            const boardMode = useSettingsStore.getState().boardMode
+
+            if (persistedSessionId === BOARD_TAB_ID && boardMode === 'sticky-tab') {
+              set({ activeSessionId: BOARD_TAB_ID })
+            } else if (persistedSessionId === BOARD_TAB_ID && boardMode === 'toggle') {
+              const tabOrder = state.tabOrderByConnection.get(connectionId) || []
+              const activeId =
+                tabOrder[0] || (existingSessions.length > 0 ? existingSessions[0].id : null)
+              set({ activeSessionId: activeId })
+            } else {
+              const sessionExists =
+                persistedSessionId && existingSessions.some((s) => s.id === persistedSessionId)
+              if (sessionExists) {
+                set({ activeSessionId: persistedSessionId })
+              } else if (boardMode === 'sticky-tab') {
+                set({ activeSessionId: BOARD_TAB_ID })
+              } else {
+                const tabOrder = state.tabOrderByConnection.get(connectionId) || []
+                const activeId =
+                  tabOrder[0] || (existingSessions.length > 0 ? existingSessions[0].id : null)
+                set({ activeSessionId: activeId })
+              }
+            }
+          } else {
+            set({ activeSessionId: null })
+          }
+        } else {
+          set({ activeSessionId: null })
+        }
+      },
+
+      // Get sessions for a connection
+      getSessionsForConnection: (connectionId: string) => {
+        return (get().sessionsByConnection.get(connectionId) || []).filter(isVisibleSession)
+      },
+
+      // Get tab order for a connection
+      getTabOrderForConnection: (connectionId: string) => {
+        const visibleIds = new Set(
+          (get().sessionsByConnection.get(connectionId) || [])
+            .filter(isVisibleSession)
+            .map((session) => session.id)
+        )
+        return (get().tabOrderByConnection.get(connectionId) || []).filter((id) => visibleIds.has(id))
+      },
+
+      // Reorder connection tabs
+      reorderConnectionTabs: (connectionId: string, fromIndex: number, toIndex: number) => {
+        set((state) => {
+          const newTabOrderMap = new Map(state.tabOrderByConnection)
+          const order = [...(newTabOrderMap.get(connectionId) || [])]
+
+          if (
+            fromIndex < 0 ||
+            fromIndex >= order.length ||
+            toIndex < 0 ||
+            toIndex >= order.length
+          ) {
+            return state
+          }
+
+          const [removed] = order.splice(fromIndex, 1)
+          order.splice(toIndex, 0, removed)
+
+          newTabOrderMap.set(connectionId, order)
+          return { tabOrderByConnection: newTabOrderMap }
+        })
+      },
+
+      // Close all connection sessions except the kept one
+      closeOtherConnectionSessions: async (connectionId: string, keepSessionId: string) => {
+        const tabOrder = [...(get().tabOrderByConnection.get(connectionId) || [])]
+        for (const sessionId of tabOrder) {
+          if (sessionId !== keepSessionId) {
+            await get().closeSession(sessionId)
+          }
+        }
+        set({ activeSessionId: keepSessionId })
+      },
+
+      // Close connection sessions to the right of the given one
+      closeConnectionSessionsToRight: async (connectionId: string, fromSessionId: string) => {
+        const tabOrder = [...(get().tabOrderByConnection.get(connectionId) || [])]
+        const index = tabOrder.indexOf(fromSessionId)
+        if (index === -1) return
+        const toClose = tabOrder.slice(index + 1)
+        for (const sessionId of toClose) {
+          await get().closeSession(sessionId)
+        }
+      },
+
+      // Open an orphaned session (from archived worktree) in read-only mode
+      openOrphanedSession: (session: Session) => {
+        set((state) => {
+          const newOrphanedSessions = new Map(state.orphanedSessions)
+          newOrphanedSessions.set(session.id, session)
+
+          return {
+            orphanedSessions: newOrphanedSessions,
+            activeSessionId: session.id,
+            activeWorktreeId: null,
+            activeConnectionId: null
+          }
+        })
+
+        // Clear prompt stores and file viewer
+        Promise.all([
+          import('./useQuestionStore'),
+          import('./usePermissionStore'),
+          import('./useCommandApprovalStore'),
+          import('./useFileViewerStore')
+        ]).then(([{ useQuestionStore }, { usePermissionStore }, { useCommandApprovalStore }, { useFileViewerStore }]) => {
+          useQuestionStore.getState().clearSession(session.id)
+          usePermissionStore.getState().clearSession(session.id)
+          useCommandApprovalStore.getState().clearSession(session.id)
+          useFileViewerStore.getState().setActiveFile(null)
+          useFileViewerStore.getState().clearActiveDiff()
+        })
+      },
+
+      // Pinned session actions
+      pinSessionToBoard: async (sessionId: string) => {
+        // Optimistic update
+        set((state) => {
+          const newPinnedIds = new Set(state.pinnedSessionIds)
+          newPinnedIds.add(sessionId)
+          return { pinnedSessionIds: newPinnedIds }
+        })
+        try {
+          await window.db.session.setPinnedToBoard(sessionId, true)
+        } catch {
+          // Rollback on failure
+          set((state) => {
+            const newPinnedIds = new Set(state.pinnedSessionIds)
+            newPinnedIds.delete(sessionId)
+            return {
+              pinnedSessionIds: newPinnedIds,
+              activePinnedSessionId:
+                state.activePinnedSessionId === sessionId ? null : state.activePinnedSessionId
+            }
+          })
+        }
+      },
+
+      unpinSessionFromBoard: (sessionId: string) => {
+        set((state) => {
+          const newPinnedIds = new Set(state.pinnedSessionIds)
+          newPinnedIds.delete(sessionId)
+          return {
+            pinnedSessionIds: newPinnedIds,
+            activePinnedSessionId:
+              state.activePinnedSessionId === sessionId ? null : state.activePinnedSessionId
+          }
+        })
+        // Fire-and-forget DB update
+        window.db.session.setPinnedToBoard(sessionId, false).catch(() => {})
+      },
+
+      setActivePinnedSession: (sessionId: string | null) => {
+        set({ activePinnedSessionId: sessionId })
+      },
+
+      loadPinnedSessions: async (worktreeId: string) => {
+        try {
+          const pinnedSessions = await window.db.session.getPinnedSessions(worktreeId)
+          set({
+            pinnedSessionIds: new Set(pinnedSessions.map((s) => s.id))
+          })
+        } catch {
+          // Silently fail — pinned sessions are non-critical
+        }
+      },
+
+      // Close all orphaned sessions (called when navigating away)
+      closeOrphanedSessions: () => {
+        set((state) => {
+          const hasOrphanedActive = state.activeSessionId && state.orphanedSessions.has(state.activeSessionId)
+
+          return {
+            orphanedSessions: new Map(),
+            activeSessionId: hasOrphanedActive ? null : state.activeSessionId
+          }
+        })
+      }
+    }),
+    {
+      name: 'octob-session-tabs',
+      storage: createJSONStorage(() => localStorage),
+      partialize: (state) => ({
+        activeSessionByWorktree: state.activeSessionByWorktree,
+        activeSessionByConnection: state.activeSessionByConnection
+      })
+    }
+  )
+)

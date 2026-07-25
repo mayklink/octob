@@ -1,0 +1,722 @@
+import { ipcMain, BrowserWindow } from 'electron'
+import * as chokidar from 'chokidar'
+import simpleGit from 'simple-git'
+import { Dirent, promises as fs, existsSync, statSync } from 'fs'
+import { join, basename, extname, relative } from 'path'
+import { createLogger } from '../services/logger'
+import type { FileEventType } from '../../shared/types/file-tree'
+
+const log = createLogger({ component: 'FileTreeHandlers' })
+
+// File tree node structure
+export interface FileTreeNode {
+  name: string
+  path: string
+  relativePath: string
+  isDirectory: boolean
+  isSymlink?: boolean
+  extension: string | null
+  children?: FileTreeNode[]
+}
+
+/**
+ * Determine whether a directory entry is a directory, following symlinks.
+ * `Dirent.isDirectory()` returns false for symlinks even when the target is a directory,
+ * so we need to `fs.stat` the resolved path for symlink entries.
+ */
+async function isDirectoryEntry(entry: Dirent, entryPath: string): Promise<boolean> {
+  if (entry.isDirectory()) return true
+  if (entry.isSymbolicLink()) {
+    try {
+      const stat = await fs.stat(entryPath) // fs.stat follows symlinks
+      return stat.isDirectory()
+    } catch {
+      return false // Broken symlink -- treat as file
+    }
+  }
+  return false
+}
+
+// Ignore patterns for file watching
+const IGNORE_PATTERNS = [
+  '**/node_modules/**',
+  '**/.git/**',
+  '**/build/**',
+  '**/dist/**',
+  '**/.next/**',
+  '**/.nuxt/**',
+  '**/coverage/**',
+  '**/.cache/**',
+  '**/tmp/**',
+  '**/.DS_Store',
+  '**/Thumbs.db',
+  '**/*.log'
+]
+
+// Ignore check function for directory scanning
+const IGNORE_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'build',
+  'dist',
+  '.next',
+  '.nuxt',
+  'coverage',
+  '.cache',
+  'tmp'
+])
+
+const IGNORE_FILES = new Set(['.DS_Store', 'Thumbs.db'])
+
+// Map of active watchers by worktree path
+const watchers = new Map<string, chokidar.FSWatcher>()
+
+// Debounce timers by worktree path
+const debounceTimers = new Map<string, NodeJS.Timeout>()
+
+// Pending events accumulated during the debounce window, keyed by worktree path
+const pendingEvents = new Map<string, Array<{ eventType: FileEventType; changedPath: string }>>()
+
+// Main window reference for sending events
+let mainWindow: BrowserWindow | null = null
+
+/**
+ * Recursively scan a directory and build a file tree
+ */
+export async function scanDirectory(
+  dirPath: string,
+  rootPath: string,
+  maxDepth: number = 10,
+  currentDepth: number = 0
+): Promise<FileTreeNode[]> {
+  if (currentDepth >= maxDepth) {
+    return []
+  }
+
+  try {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true })
+    const nodes: FileTreeNode[] = []
+
+    // Pre-resolve symlink targets so sorting and classification are correct
+    const resolved = await Promise.all(
+      entries.map(async (entry) => {
+        const entryPath = join(dirPath, entry.name)
+        const isSymlink = entry.isSymbolicLink()
+        const isDir = await isDirectoryEntry(entry, entryPath)
+        return { entry, entryPath, isDir, isSymlink }
+      })
+    )
+
+    // Sort entries: directories first, then files, both alphabetically
+    const sorted = resolved.sort((a, b) => {
+      if (a.isDir && !b.isDir) return -1
+      if (!a.isDir && b.isDir) return 1
+      return a.entry.name.localeCompare(b.entry.name, undefined, { sensitivity: 'base' })
+    })
+
+    for (const { entry, entryPath, isDir, isSymlink } of sorted) {
+      const relativePath = relative(rootPath, entryPath)
+
+      // Skip ignored directories and files
+      if (isDir && IGNORE_DIRS.has(entry.name)) {
+        continue
+      }
+      if (!isDir && IGNORE_FILES.has(entry.name)) {
+        continue
+      }
+
+      if (isDir) {
+        // Don't eagerly recurse into symlinked directories — they may be
+        // large external repos (e.g. connection members). Treat as lazy-load.
+        const children = isSymlink
+          ? undefined
+          : currentDepth < 1
+            ? await scanDirectory(entryPath, rootPath, maxDepth, currentDepth + 1)
+            : undefined
+
+        nodes.push({
+          name: entry.name,
+          path: entryPath,
+          relativePath,
+          isDirectory: true,
+          ...(isSymlink && { isSymlink: true }),
+          extension: null,
+          children
+        })
+      } else {
+        nodes.push({
+          name: entry.name,
+          path: entryPath,
+          relativePath,
+          isDirectory: false,
+          ...(isSymlink && { isSymlink: true }),
+          extension: extname(entry.name).toLowerCase() || null
+        })
+      }
+    }
+
+    return nodes
+  } catch (error) {
+    log.error(
+      'Failed to scan directory',
+      error instanceof Error ? error : new Error(String(error)),
+      { dirPath }
+    )
+    return []
+  }
+}
+
+/**
+ * Scan a single directory for lazy loading
+ */
+export async function scanSingleDirectory(
+  dirPath: string,
+  rootPath: string
+): Promise<FileTreeNode[]> {
+  try {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true })
+    const nodes: FileTreeNode[] = []
+
+    // Pre-resolve symlink targets so sorting and classification are correct
+    const resolved = await Promise.all(
+      entries.map(async (entry) => {
+        const entryPath = join(dirPath, entry.name)
+        const isSymlink = entry.isSymbolicLink()
+        const isDir = await isDirectoryEntry(entry, entryPath)
+        return { entry, entryPath, isDir, isSymlink }
+      })
+    )
+
+    const sorted = resolved.sort((a, b) => {
+      if (a.isDir && !b.isDir) return -1
+      if (!a.isDir && b.isDir) return 1
+      return a.entry.name.localeCompare(b.entry.name, undefined, { sensitivity: 'base' })
+    })
+
+    for (const { entry, entryPath, isDir, isSymlink } of sorted) {
+      const relativePath = relative(rootPath, entryPath)
+
+      if (isDir && IGNORE_DIRS.has(entry.name)) {
+        continue
+      }
+      if (!isDir && IGNORE_FILES.has(entry.name)) {
+        continue
+      }
+      if (isDir) {
+        nodes.push({
+          name: entry.name,
+          path: entryPath,
+          relativePath,
+          isDirectory: true,
+          ...(isSymlink && { isSymlink: true }),
+          extension: null,
+          children: undefined // Will be loaded lazily
+        })
+      } else {
+        nodes.push({
+          name: entry.name,
+          path: entryPath,
+          relativePath,
+          isDirectory: false,
+          ...(isSymlink && { isSymlink: true }),
+          extension: extname(entry.name).toLowerCase() || null
+        })
+      }
+    }
+
+    return nodes
+  } catch (error) {
+    log.error(
+      'Failed to scan single directory',
+      error instanceof Error ? error : new Error(String(error)),
+      { dirPath }
+    )
+    return []
+  }
+}
+
+// Flat file entry for search index (no tree structure)
+export interface FlatFileEntry {
+  name: string
+  path: string
+  relativePath: string
+  extension: string | null
+}
+
+/** Max depth when listing files without git (folders may be arbitrarily deep vs tree view). */
+const SCAN_FLAT_FS_MAX_DEPTH = 64
+
+function isGitLsFilesUnavailable(error: unknown): boolean {
+  const msg = (
+    error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  ).toLowerCase()
+  return (
+    msg.includes('not a git repository') ||
+    msg.includes('does not appear to be a git repository') ||
+    msg.includes('not a git working copy')
+  )
+}
+
+/**
+ * Collect files under dirPath without git — same heavyweight ignores as scanDirectory().
+ * Does not read .gitignore (no git metadata); IGNORE_DIRS skips common noise dirs.
+ */
+async function scanFlatFilesystem(
+  dirPath: string,
+  rootPath: string,
+  currentDepth: number,
+  accum: FlatFileEntry[]
+): Promise<void> {
+  if (currentDepth >= SCAN_FLAT_FS_MAX_DEPTH) {
+    return
+  }
+
+  const entries = await fs.readdir(dirPath, { withFileTypes: true })
+  const resolved = await Promise.all(
+    entries.map(async (entry) => {
+      const entryPath = join(dirPath, entry.name)
+      const isDir = await isDirectoryEntry(entry, entryPath)
+      return { entry, entryPath, isDir }
+    })
+  )
+
+  for (const { entry, entryPath, isDir } of resolved) {
+    if (isDir) {
+      if (IGNORE_DIRS.has(entry.name)) {
+        continue
+      }
+      await scanFlatFilesystem(entryPath, rootPath, currentDepth + 1, accum)
+    } else {
+      if (IGNORE_FILES.has(entry.name)) {
+        continue
+      }
+      const relativePath = relative(rootPath, entryPath)
+      accum.push({
+        name: entry.name,
+        path: entryPath,
+        relativePath,
+        extension: extname(entry.name).toLowerCase() || null
+      })
+    }
+  }
+}
+
+/**
+ * Get all project files as a flat list using git ls-files when possible.
+ * Returns tracked + untracked-non-ignored files (git), respecting .gitignore.
+ *
+ * Falls back to a filesystem walk when the path is not a git worktree/repo
+ * (orphan folders, detached worktrees, copied trees).
+ */
+export async function scanFlat(dirPath: string): Promise<FlatFileEntry[]> {
+  try {
+    const git = simpleGit(dirPath)
+    const raw = await git.raw(['ls-files', '--cached', '--others', '--exclude-standard'])
+    const lines = raw.trim().split('\n').filter(Boolean)
+
+    return lines.map((relativePath) => ({
+      name: basename(relativePath),
+      path: join(dirPath, relativePath),
+      relativePath,
+      extension: extname(relativePath).toLowerCase() || null
+    }))
+  } catch (error) {
+    if (!isGitLsFilesUnavailable(error)) {
+      throw error
+    }
+    log.warn('scanFlat: not a git dir, using filesystem fallback', {
+      dirPath,
+      detail: error instanceof Error ? error.message : String(error)
+    })
+    const accum: FlatFileEntry[] = []
+    await scanFlatFilesystem(dirPath, dirPath, 0, accum)
+    accum.sort((a, b) =>
+      a.relativePath.localeCompare(b.relativePath, undefined, { sensitivity: 'base' })
+    )
+    return accum
+  }
+}
+
+function isAddLike(eventType: FileEventType): boolean {
+  return eventType === 'add' || eventType === 'addDir'
+}
+
+function isUnlinkLike(eventType: FileEventType): boolean {
+  return eventType === 'unlink' || eventType === 'unlinkDir'
+}
+
+/**
+ * Deduplicate accumulated events for a single worktree.
+ *
+ * Rules (applied per changedPath):
+ *  - add-like + change    → keep only add-like
+ *  - add-like + unlink-like → remove both (cancel out)
+ *  - unlink-like + add-like → keep only add-like (recreated)
+ *  - multiple change      → keep only one change
+ */
+function deduplicateEvents(
+  events: Array<{ eventType: FileEventType; changedPath: string }>
+): Array<{ eventType: FileEventType; changedPath: string }> {
+  // Walk the list in order and collapse per-path
+  const byPath = new Map<string, FileEventType>() // changedPath → final eventType
+  const order: string[] = [] // insertion-order of first appearance
+
+  for (const { eventType, changedPath } of events) {
+    const existing = byPath.get(changedPath)
+
+    if (existing === undefined) {
+      byPath.set(changedPath, eventType)
+      order.push(changedPath)
+      continue
+    }
+
+    // add-like then change → keep add-like (change is redundant after creation)
+    if (isAddLike(existing) && eventType === 'change') continue
+
+    // add-like then unlink-like → cancel out
+    if (isAddLike(existing) && isUnlinkLike(eventType)) {
+      byPath.delete(changedPath)
+      continue
+    }
+
+    // unlink-like then add-like → recreated, keep add-like
+    if (isUnlinkLike(existing) && isAddLike(eventType)) {
+      byPath.set(changedPath, eventType)
+      continue
+    }
+
+    // multiple change → keep one
+    if (existing === 'change' && eventType === 'change') continue
+
+    // For any other combination, last event wins
+    byPath.set(changedPath, eventType)
+  }
+
+  // Rebuild in original insertion order, skipping deleted entries
+  const result: Array<{ eventType: FileEventType; changedPath: string }> = []
+  for (const changedPath of order) {
+    const eventType = byPath.get(changedPath)
+    if (eventType !== undefined) {
+      result.push({ eventType, changedPath })
+    }
+  }
+  return result
+}
+
+/**
+ * Emit debounced file tree change event to renderer.
+ *
+ * Events are accumulated during the debounce window and sent as a batch.
+ * The IPC payload carries `events: Array<{ eventType, changedPath, relativePath }>`.
+ */
+function emitFileTreeChange(
+  worktreePath: string,
+  eventType: FileEventType,
+  changedPath: string
+): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+
+  // Accumulate the event
+  let queue = pendingEvents.get(worktreePath)
+  if (!queue) {
+    queue = []
+    pendingEvents.set(worktreePath, queue)
+  }
+  queue.push({ eventType, changedPath })
+
+  // Reset the debounce timer
+  const existingTimer = debounceTimers.get(worktreePath)
+  if (existingTimer) {
+    clearTimeout(existingTimer)
+  }
+
+  // Set new debounce timer (100ms as per requirements)
+  const timer = setTimeout(() => {
+    debounceTimers.delete(worktreePath)
+    const raw = pendingEvents.get(worktreePath) ?? []
+    pendingEvents.delete(worktreePath)
+
+    const deduped = deduplicateEvents(raw)
+    if (deduped.length === 0) return
+
+    const events = deduped.map(({ eventType: et, changedPath: cp }) => ({
+      eventType: et,
+      changedPath: cp,
+      relativePath: relative(worktreePath, cp)
+    }))
+
+    const payload = { worktreePath, events }
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.webContents.send('file-tree:change', payload)
+  }, 100)
+
+  debounceTimers.set(worktreePath, timer)
+}
+
+export function registerFileTreeHandlers(window: BrowserWindow): void {
+  mainWindow = window
+  log.info('Registering file tree handlers')
+
+  // Scan a directory and return the file tree
+  ipcMain.handle(
+    'file-tree:scan',
+    async (
+      _event,
+      dirPath: string
+    ): Promise<{
+      success: boolean
+      tree?: FileTreeNode[]
+      error?: string
+    }> => {
+      log.info('Scanning directory', { dirPath })
+      try {
+        if (!existsSync(dirPath)) {
+          return {
+            success: false,
+            error: 'Directory does not exist'
+          }
+        }
+
+        const stat = statSync(dirPath)
+        if (!stat.isDirectory()) {
+          return {
+            success: false,
+            error: 'Path is not a directory'
+          }
+        }
+
+        const tree = await scanDirectory(dirPath, dirPath)
+        return {
+          success: true,
+          tree
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        log.error('Failed to scan directory', error instanceof Error ? error : new Error(message), {
+          dirPath
+        })
+        return {
+          success: false,
+          error: message
+        }
+      }
+    }
+  )
+
+  // Scan a directory and return a flat list of all files via git ls-files
+  ipcMain.handle(
+    'file-tree:scan-flat',
+    async (
+      _event,
+      dirPath: string
+    ): Promise<{
+      success: boolean
+      files?: FlatFileEntry[]
+      error?: string
+    }> => {
+      log.info('Scanning directory flat', { dirPath })
+      try {
+        if (!existsSync(dirPath)) {
+          return {
+            success: false,
+            error: 'Directory does not exist'
+          }
+        }
+
+        const stat = statSync(dirPath)
+        if (!stat.isDirectory()) {
+          return {
+            success: false,
+            error: 'Path is not a directory'
+          }
+        }
+
+        const files = await scanFlat(dirPath)
+        return {
+          success: true,
+          files
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        log.error(
+          'Failed to scan directory flat',
+          error instanceof Error ? error : new Error(message),
+          { dirPath }
+        )
+        return {
+          success: false,
+          error: message
+        }
+      }
+    }
+  )
+
+  // Lazy load children for a directory
+  ipcMain.handle(
+    'file-tree:loadChildren',
+    async (
+      _event,
+      dirPath: string,
+      rootPath: string
+    ): Promise<{
+      success: boolean
+      children?: FileTreeNode[]
+      error?: string
+    }> => {
+      try {
+        if (!existsSync(dirPath)) {
+          return {
+            success: false,
+            error: 'Directory does not exist'
+          }
+        }
+
+        const children = await scanSingleDirectory(dirPath, rootPath)
+        return {
+          success: true,
+          children
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        return {
+          success: false,
+          error: message
+        }
+      }
+    }
+  )
+
+  // Start watching a directory for changes
+  ipcMain.handle(
+    'file-tree:watch',
+    async (
+      _event,
+      worktreePath: string
+    ): Promise<{
+      success: boolean
+      error?: string
+    }> => {
+      log.info('Starting file watcher', { worktreePath })
+      try {
+        // If already watching, return success
+        if (watchers.has(worktreePath)) {
+          return { success: true }
+        }
+
+        const watcher = chokidar.watch(worktreePath, {
+          ignored: IGNORE_PATTERNS,
+          persistent: true,
+          ignoreInitial: true,
+          depth: 10,
+          followSymlinks: false,
+          ignorePermissionErrors: true,
+          usePolling: false
+        })
+
+        watcher.on('add', (path) => {
+          emitFileTreeChange(worktreePath, 'add', path)
+        })
+
+        watcher.on('addDir', (path) => {
+          emitFileTreeChange(worktreePath, 'addDir', path)
+        })
+
+        watcher.on('unlink', (path) => {
+          emitFileTreeChange(worktreePath, 'unlink', path)
+        })
+
+        watcher.on('unlinkDir', (path) => {
+          emitFileTreeChange(worktreePath, 'unlinkDir', path)
+        })
+
+        watcher.on('change', (path) => {
+          emitFileTreeChange(worktreePath, 'change', path)
+        })
+
+        watcher.on('error', (error) => {
+          log.error('File watcher error', error, { worktreePath })
+        })
+
+        watchers.set(worktreePath, watcher)
+        return { success: true }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        log.error(
+          'Failed to start file watcher',
+          error instanceof Error ? error : new Error(message),
+          { worktreePath }
+        )
+        return {
+          success: false,
+          error: message
+        }
+      }
+    }
+  )
+
+  // Stop watching a directory
+  ipcMain.handle(
+    'file-tree:unwatch',
+    async (
+      _event,
+      worktreePath: string
+    ): Promise<{
+      success: boolean
+      error?: string
+    }> => {
+      log.info('Stopping file watcher', { worktreePath })
+      try {
+        const watcher = watchers.get(worktreePath)
+        if (watcher) {
+          await watcher.close()
+          watchers.delete(worktreePath)
+        }
+
+        // Clear any pending debounce timer and accumulated events
+        const timer = debounceTimers.get(worktreePath)
+        if (timer) {
+          clearTimeout(timer)
+          debounceTimers.delete(worktreePath)
+        }
+        pendingEvents.delete(worktreePath)
+
+        return { success: true }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        return {
+          success: false,
+          error: message
+        }
+      }
+    }
+  )
+}
+
+export function getFileTreeWatcherCount(): number {
+  return watchers.size
+}
+
+// Cleanup all watchers (called on app quit)
+export async function cleanupFileTreeWatchers(): Promise<void> {
+  log.info('Cleaning up file tree watchers', { count: watchers.size })
+  for (const [path, watcher] of watchers) {
+    try {
+      await watcher.close()
+      log.info('Closed watcher', { path })
+    } catch (error) {
+      log.error(
+        'Failed to close watcher',
+        error instanceof Error ? error : new Error(String(error)),
+        { path }
+      )
+    }
+  }
+  watchers.clear()
+
+  // Clear all debounce timers and pending events
+  for (const timer of debounceTimers.values()) {
+    clearTimeout(timer)
+  }
+  debounceTimers.clear()
+  pendingEvents.clear()
+}

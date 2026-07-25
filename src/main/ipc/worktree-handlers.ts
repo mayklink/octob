@@ -1,0 +1,202 @@
+import { ipcMain } from 'electron'
+import { existsSync } from 'fs'
+import { openPathWithPreferredEditor, openPathWithPreferredTerminal } from './settings-handlers'
+import { createGitService, createLogger } from '../services'
+import { telemetryService } from '../services/telemetry-service'
+import {
+  createWorktreeOp,
+  deleteWorktreeOp,
+  syncWorktreesOp,
+  duplicateWorktreeOp,
+  renameWorktreeBranchOp,
+  createWorktreeFromBranchOp,
+  type CreateWorktreeParams,
+  type DeleteWorktreeParams,
+  type SyncWorktreesParams,
+  type DuplicateWorktreeParams,
+  type RenameBranchParams,
+  type CreateFromBranchParams
+} from '../services/worktree-ops'
+import { getDatabase } from '../db'
+
+export type {
+  CreateWorktreeParams,
+  DeleteWorktreeParams,
+  SyncWorktreesParams
+} from '../services/worktree-ops'
+
+const log = createLogger({ component: 'WorktreeHandlers' })
+
+export function registerWorktreeHandlers(): void {
+  log.info('Registering worktree handlers')
+
+  // Check if a repository has any commits
+  ipcMain.handle('worktree:hasCommits', async (_event, projectPath: string): Promise<boolean> => {
+    try {
+      const gitService = createGitService(projectPath)
+      return await gitService.hasCommits()
+    } catch {
+      return false
+    }
+  })
+
+  // Create a new worktree
+  ipcMain.handle('worktree:create', async (_event, params: CreateWorktreeParams) => {
+    const result = await createWorktreeOp(getDatabase(), params)
+    if (result.success) {
+      telemetryService.track('worktree_created')
+    }
+    return result
+  })
+
+  // Delete/Archive a worktree
+  ipcMain.handle('worktree:delete', async (_event, params: DeleteWorktreeParams) => {
+    return deleteWorktreeOp(getDatabase(), params)
+  })
+
+  // Sync worktrees with actual git state
+  ipcMain.handle('worktree:sync', async (_event, params: SyncWorktreesParams) => {
+    return syncWorktreesOp(getDatabase(), params)
+  })
+
+  // Duplicate a worktree (clone branch with uncommitted state)
+  ipcMain.handle('worktree:duplicate', async (_event, params: DuplicateWorktreeParams) => {
+    return duplicateWorktreeOp(getDatabase(), params)
+  })
+
+  // Check if worktree path exists on disk
+  ipcMain.handle('worktree:exists', (_event, worktreePath: string): boolean => {
+    return existsSync(worktreePath)
+  })
+
+  // Open worktree in user's preferred terminal (from Settings)
+  ipcMain.handle(
+    'worktree:openInTerminal',
+    async (
+      _event,
+      worktreePath: string
+    ): Promise<{
+      success: boolean
+      error?: string
+    }> => openPathWithPreferredTerminal(worktreePath)
+  )
+
+  // Open worktree in user's preferred editor (from Settings)
+  ipcMain.handle(
+    'worktree:openInEditor',
+    async (
+      _event,
+      worktreePath: string
+    ): Promise<{
+      success: boolean
+      error?: string
+    }> => openPathWithPreferredEditor(worktreePath)
+  )
+
+  // Get git branches for a project
+  ipcMain.handle(
+    'git:branches',
+    async (
+      _event,
+      projectPath: string
+    ): Promise<{
+      success: boolean
+      branches?: string[]
+      currentBranch?: string
+      error?: string
+    }> => {
+      try {
+        const gitService = createGitService(projectPath)
+        const branches = await gitService.getAllBranches()
+        const currentBranch = await gitService.getCurrentBranch()
+
+        return {
+          success: true,
+          branches,
+          currentBranch
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        return {
+          success: false,
+          error: message
+        }
+      }
+    }
+  )
+
+  // Check if a branch exists
+  ipcMain.handle(
+    'git:branchExists',
+    async (_event, projectPath: string, branchName: string): Promise<boolean> => {
+      try {
+        const gitService = createGitService(projectPath)
+        return await gitService.branchExists(branchName)
+      } catch {
+        return false
+      }
+    }
+  )
+
+  // Rename a branch in a worktree
+  ipcMain.handle('worktree:renameBranch', async (_event, params: RenameBranchParams) => {
+    return renameWorktreeBranchOp(getDatabase(), params)
+  })
+
+  // List all branches with checkout status
+  ipcMain.handle(
+    'git:listBranchesWithStatus',
+    async (_event, { projectPath }: { projectPath: string }) => {
+      try {
+        const gitService = createGitService(projectPath)
+        const branches = await gitService.listBranchesWithStatus()
+        return { success: true, branches }
+      } catch (error) {
+        return {
+          success: false,
+          branches: [],
+          error: error instanceof Error ? error.message : 'Unknown error'
+        }
+      }
+    }
+  )
+
+  // Create a worktree from a specific existing branch
+  ipcMain.handle('worktree:createFromBranch', async (_event, params: CreateFromBranchParams) => {
+    return createWorktreeFromBranchOp(getDatabase(), params)
+  })
+
+  // Get worktree context
+  ipcMain.handle('worktree:getContext', async (_event, worktreeId: string) => {
+    try {
+      const db = getDatabase()
+      const worktree = db.getWorktree(worktreeId)
+      if (!worktree) {
+        return { success: false, error: 'Worktree not found' }
+      }
+      return { success: true, context: worktree.context }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      }
+    }
+  })
+
+  // Update worktree context
+  ipcMain.handle(
+    'worktree:updateContext',
+    async (_event, worktreeId: string, context: string | null) => {
+      try {
+        const db = getDatabase()
+        db.updateWorktreeContext(worktreeId, context)
+        return { success: true }
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        }
+      }
+    }
+  )
+}

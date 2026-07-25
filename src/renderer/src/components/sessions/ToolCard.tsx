@@ -1,0 +1,1143 @@
+import { useState, useMemo, memo } from 'react'
+import {
+  FileText,
+  Pencil,
+  Terminal,
+  Search,
+  FolderSearch,
+  FilePlus,
+  Bot,
+  MessageCircleQuestion,
+  ListTodo,
+  ChevronDown,
+  Check,
+  X,
+  Loader2,
+  Clock,
+  Plus,
+  Minus,
+  Zap,
+  ClipboardCheck,
+  Globe,
+  Figma
+} from 'lucide-react'
+import { cn } from '@/lib/utils'
+import type { SubtaskInfo } from '@/lib/opencode-transcript'
+import type { ToolViewProps } from './tools/types'
+import { ReadToolView } from './tools/ReadToolView'
+import { WriteToolView } from './tools/WriteToolView'
+import { EditToolView } from './tools/EditToolView'
+import { GrepToolView } from './tools/GrepToolView'
+import { BashToolView } from './tools/BashToolView'
+import { FallbackToolView } from './tools/FallbackToolView'
+import { TodoWriteToolView } from './tools/TodoWriteToolView'
+import { TaskToolView } from './tools/TaskToolView'
+import { QuestionToolView } from './tools/QuestionToolView'
+import { SkillToolView } from './tools/SkillToolView'
+import { ExitPlanModeToolView } from './tools/ExitPlanModeToolView'
+import { WebFetchToolView } from './tools/WebFetchToolView'
+import { FileChangeToolView } from './tools/FileChangeToolView'
+import { ToolCallContextMenu } from './ToolCallContextMenu'
+import { extractCommandText } from '@/lib/tool-input-utils'
+import { wireValueToPrettyString } from '@/lib/tool-wire-display'
+import { useSessionStore } from '@/stores/useSessionStore'
+
+export type ToolStatus = 'pending' | 'running' | 'success' | 'error'
+
+export interface ToolUseInfo {
+  id: string
+  name: string
+  input: Record<string, unknown>
+  status: ToolStatus
+  output?: unknown
+  error?: unknown
+  startTime: number
+  endTime?: number
+  subtasks?: SubtaskInfo[]
+}
+
+/** Check if a tool name refers to a checklist-style tool */
+export function isTodoWriteTool(name: string): boolean {
+  const lower = name.toLowerCase()
+  return lower.includes('todowrite') || lower.includes('todo_write') || lower === 'update_plan'
+}
+
+/** Figma brand color for consistent icon styling */
+const FIGMA_ICON_COLOR = 'text-[#a259ff]'
+
+/** Check if a tool name refers to a Figma MCP tool */
+function isFigmaTool(name: string): boolean {
+  return name.toLowerCase().startsWith('mcp__figma__')
+}
+
+/** Check if a tool name refers to a Codex file change tool */
+function isFileChangeTool(name: string): boolean {
+  const lower = name.toLowerCase()
+  return lower === 'filechange' || lower === 'file_change' || lower === 'apply_patch'
+}
+
+/** Extract the operation name from a Figma tool name */
+function getFigmaOperation(name: string): string {
+  return name.toLowerCase().replace('mcp__figma__', '')
+}
+
+const FIGMA_OPERATION_LABELS: Record<string, string> = {
+  get_screenshot: 'Screenshot',
+  create_design_system_rules: 'Design system rules',
+  get_design_context: 'Design context',
+  get_metadata: 'Metadata',
+  get_variable_defs: 'Variables',
+  get_figjam: 'FigJam',
+  generate_figma_design: 'Generate design',
+  generate_diagram: 'Generate diagram',
+  get_code_connect_map: 'Code connect map',
+  whoami: 'Who am I',
+  add_code_connect_map: 'Add code connect',
+  get_code_connect_suggestions: 'Code connect suggestions',
+  send_code_connect_mappings: 'Send mappings'
+}
+
+const FIGMA_OPERATION_COLORS: Record<string, string> = {
+  get_screenshot: 'bg-blue-500/15 text-blue-500 dark:text-blue-400',
+  get_design_context: 'bg-blue-500/15 text-blue-500 dark:text-blue-400',
+  get_metadata: 'bg-blue-500/15 text-blue-500 dark:text-blue-400',
+  get_variable_defs: 'bg-blue-500/15 text-blue-500 dark:text-blue-400',
+  get_figjam: 'bg-blue-500/15 text-blue-500 dark:text-blue-400',
+  generate_figma_design: 'bg-purple-500/15 text-purple-500 dark:text-purple-400',
+  generate_diagram: 'bg-purple-500/15 text-purple-500 dark:text-purple-400',
+  create_design_system_rules: 'bg-purple-500/15 text-purple-500 dark:text-purple-400',
+  get_code_connect_map: 'bg-teal-500/15 text-teal-500 dark:text-teal-400',
+  add_code_connect_map: 'bg-teal-500/15 text-teal-500 dark:text-teal-400',
+  get_code_connect_suggestions: 'bg-teal-500/15 text-teal-500 dark:text-teal-400',
+  send_code_connect_mappings: 'bg-teal-500/15 text-teal-500 dark:text-teal-400',
+  whoami: 'bg-zinc-500/15 text-zinc-500 dark:text-zinc-400'
+}
+
+/** Get human-readable label for a Figma operation */
+function getFigmaOperationLabel(operation: string): string {
+  return FIGMA_OPERATION_LABELS[operation] || operation.replace(/_/g, ' ')
+}
+
+/** Get badge color class for a Figma operation */
+function getFigmaOperationColor(operation: string): string {
+  return FIGMA_OPERATION_COLORS[operation] || 'bg-zinc-500/15 text-zinc-500 dark:text-zinc-400'
+}
+
+// Map tool names to icons
+function getToolIcon(name: string): React.JSX.Element {
+  const iconClass = 'h-3.5 w-3.5'
+  const lowerName = name.toLowerCase()
+
+  if (isTodoWriteTool(lowerName)) {
+    return <ListTodo className={iconClass} />
+  }
+  if (lowerName.includes('read') || lowerName === 'cat' || lowerName === 'view') {
+    return <FileText className={iconClass} />
+  }
+  if (lowerName.includes('write') || lowerName === 'create') {
+    return <FilePlus className={iconClass} />
+  }
+  if (isFileChangeTool(lowerName)) {
+    return <Pencil className={iconClass} />
+  }
+  if (lowerName.includes('edit') || lowerName.includes('replace') || lowerName.includes('patch')) {
+    return <Pencil className={iconClass} />
+  }
+  if (lowerName.includes('bash') || lowerName.includes('shell') || lowerName.includes('exec')) {
+    return <Terminal className={iconClass} />
+  }
+  if (lowerName.includes('glob') || lowerName.includes('find') || lowerName.includes('list')) {
+    return <FolderSearch className={iconClass} />
+  }
+  if (lowerName.includes('grep') || lowerName.includes('search') || lowerName.includes('rg')) {
+    return <Search className={iconClass} />
+  }
+  if (lowerName === 'task') {
+    return <Bot className={iconClass} />
+  }
+  if (lowerName.includes('question')) {
+    return <MessageCircleQuestion className={iconClass} />
+  }
+  if (lowerName.includes('skill')) {
+    return <Zap className={iconClass} />
+  }
+  if (lowerName === 'exitplanmode') {
+    return <ClipboardCheck className={iconClass} />
+  }
+  if (lowerName === 'webfetch' || lowerName === 'web_fetch') {
+    return <Globe className={iconClass} />
+  }
+  if (isFigmaTool(name)) {
+    return <Figma className={cn(iconClass, FIGMA_ICON_COLOR)} />
+  }
+  // Default
+  return <Terminal className={iconClass} />
+}
+
+// Get a display label for the tool
+function getToolLabel(name: string, input: Record<string, unknown>, cwd?: string | null): string {
+  const lowerName = name.toLowerCase()
+
+  // Show summary for todowrite (must be before 'write' check)
+  if (isTodoWriteTool(lowerName)) {
+    const todos = Array.isArray(input.todos) ? (input.todos as Array<{ status: string }>) : []
+    const completed = todos.filter((t) => t.status === 'completed').length
+    return `${completed}/${todos.length} completed`
+  }
+
+  // Show file path for fileChange (Codex) — must be before generic file ops check
+  if (isFileChangeTool(lowerName)) {
+    const changes = Array.isArray(input.changes) ? (input.changes as Array<{ path: string }>) : []
+    if (changes.length > 0) {
+      const firstPath = changes[0]?.path || ''
+      const label = shortenPath(firstPath, cwd)
+      return changes.length > 1 ? `${label} +${changes.length - 1} more` : label
+    }
+  }
+
+  // Show file path for file operations
+  if (lowerName.includes('read') || lowerName.includes('write') || lowerName.includes('edit')) {
+    const filePath = (input.filePath || input.file_path || input.path || '') as string
+    if (filePath) {
+      return shortenPath(filePath, cwd)
+    }
+  }
+
+  // Show command for bash
+  if (lowerName.includes('bash') || lowerName.includes('shell') || lowerName.includes('exec')) {
+    const command = extractCommandText(input)
+    if (command) {
+      // Truncate long commands
+      return command.length > 60 ? command.slice(0, 60) + '...' : command
+    }
+  }
+
+  // Show pattern for search
+  if (lowerName.includes('grep') || lowerName.includes('search')) {
+    const pattern = (input.pattern || input.query || input.regex || '') as string
+    if (pattern) {
+      return pattern.length > 40 ? pattern.slice(0, 40) + '...' : pattern
+    }
+  }
+
+  // Show pattern for glob
+  if (lowerName.includes('glob') || lowerName.includes('find')) {
+    const pattern = (input.pattern || input.glob || '') as string
+    if (pattern) {
+      return pattern
+    }
+  }
+
+  // Show description for task
+  if (lowerName === 'task') {
+    const description = ((input.description || input.prompt || '') as string).trim()
+    if (description) {
+      return description
+    }
+  }
+
+  // Show skill name — Skill tool uses `skill` param, not `name`
+  if (lowerName.includes('skill')) {
+    const skillName = (input.skill || input.name || '') as string
+    return skillName || 'unknown'
+  }
+
+  // Show URL for webfetch
+  if (lowerName === 'webfetch' || lowerName === 'web_fetch') {
+    const url = (input.url || '') as string
+    try {
+      return new URL(url).hostname
+    } catch {
+      return url
+    }
+  }
+
+  // Show operation for Figma tools
+  if (isFigmaTool(name)) {
+    return getFigmaOperationLabel(getFigmaOperation(name))
+  }
+
+  return ''
+}
+
+function StatusIndicator({ status }: { status: ToolStatus }): React.JSX.Element {
+  switch (status) {
+    case 'pending':
+    case 'running':
+      return (
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" data-testid="tool-spinner" />
+      )
+    case 'success':
+      return <Check className="h-3.5 w-3.5 text-green-500" data-testid="tool-success" />
+    case 'error':
+      return <X className="h-3.5 w-3.5 text-red-500" data-testid="tool-error" />
+  }
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  return `${(ms / 60000).toFixed(1)}m`
+}
+
+function getLeftBorderColor(status: ToolStatus): string {
+  switch (status) {
+    case 'pending':
+      return 'var(--muted-foreground)'
+    case 'running':
+      return '#3b82f6' // blue-500
+    case 'success':
+      return '#22c55e' // green-500
+    case 'error':
+      return '#ef4444' // red-500
+  }
+}
+
+// Map tool names to rich renderers
+const TOOL_RENDERERS: Record<string, React.FC<ToolViewProps>> = {
+  Read: ReadToolView,
+  read_file: ReadToolView,
+  Write: WriteToolView,
+  write_file: WriteToolView,
+  Edit: EditToolView,
+  edit_file: EditToolView,
+  Grep: GrepToolView,
+  grep: GrepToolView,
+  Glob: GrepToolView, // Similar rendering to Grep
+  glob: GrepToolView,
+  Bash: BashToolView,
+  bash: BashToolView,
+  Task: TaskToolView,
+  task: TaskToolView,
+  mcp_question: QuestionToolView,
+  question: QuestionToolView,
+  mcp_todowrite: TodoWriteToolView,
+  TodoWrite: TodoWriteToolView,
+  todowrite: TodoWriteToolView,
+  update_plan: TodoWriteToolView,
+  Skill: SkillToolView,
+  mcp_skill: SkillToolView,
+  ExitPlanMode: ExitPlanModeToolView,
+  exitplanmode: ExitPlanModeToolView,
+  WebFetch: WebFetchToolView,
+  webfetch: WebFetchToolView,
+  web_fetch: WebFetchToolView,
+  fileChange: FileChangeToolView,
+  file_change: FileChangeToolView,
+  apply_patch: FileChangeToolView
+}
+
+/** Resolve a tool name to its rich renderer, falling back to FallbackToolView */
+function getToolRenderer(name: string): React.FC<ToolViewProps> {
+  // Try exact match first
+  if (TOOL_RENDERERS[name]) return TOOL_RENDERERS[name]
+  // Try case-insensitive match via known patterns
+  const lower = name.toLowerCase()
+  if (isTodoWriteTool(lower)) return TodoWriteToolView
+  if (lower.includes('read') || lower === 'cat' || lower === 'view') return ReadToolView
+  if (lower.includes('write') || lower === 'create') return WriteToolView
+  if (isFileChangeTool(lower)) return FileChangeToolView
+  if (lower.includes('edit') || lower.includes('replace') || lower.includes('patch'))
+    return EditToolView
+  if (lower.includes('bash') || lower.includes('shell') || lower.includes('exec'))
+    return BashToolView
+  if (lower.includes('grep') || lower.includes('search') || lower.includes('rg'))
+    return GrepToolView
+  if (lower.includes('glob') || lower.includes('find') || lower.includes('list'))
+    return GrepToolView
+  if (lower === 'task') return TaskToolView
+  if (lower.includes('question')) return QuestionToolView
+  if (lower.includes('skill')) return SkillToolView
+  if (lower === 'exitplanmode') return ExitPlanModeToolView
+  if (lower === 'webfetch' || lower === 'web_fetch') return WebFetchToolView
+  // Figma: explicit fallback for now, will get a dedicated FigmaToolView later
+  if (isFigmaTool(name)) return FallbackToolView
+  // Fallback
+  return FallbackToolView
+}
+
+function shortenPath(filePath: string, cwd?: string | null): string {
+  if (cwd && filePath.startsWith(cwd)) {
+    const relative = filePath.slice(cwd.length).replace(/^\//, '')
+    if (relative) return relative
+  }
+  const parts = filePath.split('/')
+  return parts.length > 2 ? `.../${parts.slice(-2).join('/')}` : filePath
+}
+
+/** Renders tool-specific collapsed header content (icon + name + contextual info) */
+function CollapsedContent({
+  toolUse,
+  cwd
+}: {
+  toolUse: ToolUseInfo
+  cwd?: string | null
+}): React.JSX.Element {
+  const { name, input, output } = toolUse
+  const lowerName = name.toLowerCase()
+
+  // Bash / Shell / Exec
+  if (lowerName.includes('bash') || lowerName.includes('shell') || lowerName.includes('exec')) {
+    const command = extractCommandText(input)
+    const truncCmd = command.length > 60 ? command.slice(0, 60) + '...' : command
+    return (
+      <>
+        <span className="text-muted-foreground shrink-0">
+          <Terminal className="h-3.5 w-3.5" />
+        </span>
+        <span className="font-medium text-foreground shrink-0">Bash</span>
+        <span className="font-mono text-muted-foreground truncate min-w-0">
+          <span className="text-green-500">$</span> {truncCmd}
+        </span>
+      </>
+    )
+  }
+
+  // TodoWrite (must be before 'write' check since name contains 'write')
+  if (isTodoWriteTool(lowerName)) {
+    const todos = Array.isArray(input.todos) ? (input.todos as Array<{ status: string }>) : []
+    const completed = todos.filter((t) => t.status === 'completed').length
+    const inProgress = todos.filter((t) => t.status === 'in_progress').length
+    return (
+      <>
+        <span className="text-muted-foreground shrink-0">
+          <ListTodo className="h-3.5 w-3.5" />
+        </span>
+        <span className="font-medium text-foreground shrink-0">Tasks</span>
+        <span className="text-muted-foreground truncate min-w-0">
+          {completed}/{todos.length} completed
+        </span>
+        {inProgress > 0 && (
+          <span className="text-[10px] bg-blue-500/15 text-blue-500 dark:text-blue-400 rounded px-1 py-0.5 font-medium shrink-0">
+            {inProgress} active
+          </span>
+        )}
+      </>
+    )
+  }
+
+  // Read / Cat / View
+  if (lowerName.includes('read') || lowerName === 'cat' || lowerName === 'view') {
+    const filePath = (input.filePath || input.file_path || input.path || '') as string
+    const lineCount = output ? output.trimEnd().split('\n').length : null
+    return (
+      <>
+        <span className="text-muted-foreground shrink-0">
+          <FileText className="h-3.5 w-3.5" />
+        </span>
+        <span className="font-medium text-foreground shrink-0">Read</span>
+        <span className="font-mono text-muted-foreground truncate min-w-0">
+          {shortenPath(filePath, cwd)}
+        </span>
+        {lineCount !== null && (
+          <span className="text-muted-foreground/60 shrink-0 text-[10px]">{lineCount} lines</span>
+        )}
+      </>
+    )
+  }
+
+  // Write / Create
+  if (lowerName.includes('write') || lowerName === 'create') {
+    const filePath = (input.filePath || input.file_path || input.path || '') as string
+    const content = (input.content || '') as string
+    const lineCount = content ? content.trimEnd().split('\n').length : null
+    return (
+      <>
+        <span className="text-muted-foreground shrink-0">
+          <FilePlus className="h-3.5 w-3.5" />
+        </span>
+        <span className="font-medium text-foreground shrink-0">Write</span>
+        <span className="font-mono text-muted-foreground truncate min-w-0">
+          {shortenPath(filePath, cwd)}
+        </span>
+        {lineCount !== null && (
+          <span className="text-muted-foreground/60 shrink-0 text-[10px]">{lineCount} lines</span>
+        )}
+      </>
+    )
+  }
+
+  // FileChange (Codex) — must be before Edit/Replace/Patch to avoid 'apply_patch' shadowing
+  if (isFileChangeTool(lowerName)) {
+    const changes = Array.isArray(input.changes)
+      ? (input.changes as Array<{ path: string; kind: { type: string } }>)
+      : []
+    const firstPath = changes[0]?.path || ''
+    const changeCount = changes.length
+    return (
+      <>
+        <span className="text-muted-foreground shrink-0">
+          <Pencil className="h-3.5 w-3.5" />
+        </span>
+        <span className="font-medium text-foreground shrink-0">Edit</span>
+        <span className="font-mono text-muted-foreground truncate min-w-0">
+          {shortenPath(firstPath, cwd)}
+        </span>
+        {changeCount > 1 && (
+          <span className="text-[10px] bg-blue-500/15 text-blue-500 dark:text-blue-400 rounded px-1 py-0.5 font-medium shrink-0">
+            +{changeCount - 1} more
+          </span>
+        )}
+      </>
+    )
+  }
+
+  // Edit / Replace / Patch
+  if (lowerName.includes('edit') || lowerName.includes('replace') || lowerName.includes('patch')) {
+    const filePath = (input.filePath || input.file_path || input.path || '') as string
+    const oldString = (input.oldString || input.old_string || '') as string
+    const newString = (input.newString || input.new_string || '') as string
+    const removedLines = oldString ? oldString.split('\n').length : 0
+    const addedLines = newString ? newString.split('\n').length : 0
+    return (
+      <>
+        <span className="text-muted-foreground shrink-0">
+          <Pencil className="h-3.5 w-3.5" />
+        </span>
+        <span className="font-medium text-foreground shrink-0">Edit</span>
+        <span className="font-mono text-muted-foreground truncate min-w-0">
+          {shortenPath(filePath, cwd)}
+        </span>
+        {(removedLines > 0 || addedLines > 0) && (
+          <span className="shrink-0 text-[10px] flex items-center gap-1">
+            {removedLines > 0 && <span className="text-red-400">-{removedLines}</span>}
+            {addedLines > 0 && <span className="text-green-400">+{addedLines}</span>}
+          </span>
+        )}
+      </>
+    )
+  }
+
+  // Grep / Search / Rg
+  if (lowerName.includes('grep') || lowerName.includes('search') || lowerName.includes('rg')) {
+    const pattern = (input.pattern || input.query || input.regex || '') as string
+    const searchPath = (input.path || '') as string
+    const matchCount = output ? output.split('\n').filter((l) => l.trim()).length : null
+    return (
+      <>
+        <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+        <span className="text-muted-foreground">Search</span>
+        <span className="truncate">&quot;{pattern}&quot;</span>
+        {searchPath && <span className="text-muted-foreground truncate">in {searchPath}</span>}
+        {matchCount !== null && matchCount > 0 && (
+          <span className="text-muted-foreground">({matchCount})</span>
+        )}
+      </>
+    )
+  }
+
+  // Glob / Find / List
+  if (lowerName.includes('glob') || lowerName.includes('find') || lowerName.includes('list')) {
+    const pattern = (input.pattern || input.glob || '') as string
+    const fileCount = output ? output.split('\n').filter((l) => l.trim()).length : null
+    return (
+      <>
+        <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+        <span className="text-muted-foreground">Find files</span>
+        <span className="truncate">{pattern}</span>
+        {fileCount !== null && fileCount > 0 && (
+          <span className="text-muted-foreground">({fileCount})</span>
+        )}
+      </>
+    )
+  }
+
+  // Skill — Skill tool uses `skill` param, not `name`
+  if (lowerName === 'skill' || lowerName === 'mcp_skill' || lowerName.includes('skill')) {
+    const skillName = (input.skill as string) || (input.name as string) || 'unknown'
+    return (
+      <>
+        <Zap className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+        <span className="font-medium text-foreground shrink-0">Skill</span>
+        <span className="text-muted-foreground truncate min-w-0">{skillName}</span>
+      </>
+    )
+  }
+
+  // Question
+  if (lowerName.includes('question')) {
+    const questions = Array.isArray(input.questions)
+      ? (input.questions as Array<{ header: string; question: string }>)
+      : []
+    const questionCount = questions.length
+    const firstHeader = questions[0]?.header || 'Question'
+    return (
+      <>
+        <span className="text-muted-foreground shrink-0">
+          <MessageCircleQuestion className="h-3.5 w-3.5" />
+        </span>
+        <span className="font-medium text-foreground shrink-0">Question</span>
+        <span className="text-muted-foreground truncate min-w-0">
+          {questionCount > 1 ? `${questionCount} questions` : firstHeader}
+        </span>
+      </>
+    )
+  }
+
+  // Task
+  if (lowerName === 'task') {
+    const description = ((input.description || input.prompt || '') as string).trim()
+    const subagentType = (input.subagent_type || input.subagentType || '') as string
+    const subtasks = toolUse.subtasks ?? []
+    const completedSubtasks = subtasks.filter((subtask) => subtask.status === 'completed').length
+    const activeSubtasks = subtasks.filter((subtask) => subtask.status === 'running').length
+    return (
+      <>
+        <span className="text-muted-foreground shrink-0">
+          <Bot className="h-3.5 w-3.5" />
+        </span>
+        <span className="font-medium text-foreground shrink-0">Agent</span>
+        {subagentType && (
+          <span className="text-[10px] bg-blue-500/15 text-blue-500 dark:text-blue-400 rounded px-1 py-0.5 font-medium shrink-0">
+            {subagentType}
+          </span>
+        )}
+        <span className="text-muted-foreground truncate min-w-0">{description}</span>
+        {subtasks.length > 0 && (
+          <span className="text-[10px] bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 rounded px-1 py-0.5 font-medium shrink-0">
+            {completedSubtasks}/{subtasks.length} done
+          </span>
+        )}
+        {activeSubtasks > 0 && (
+          <span className="text-[10px] bg-blue-500/15 text-blue-500 dark:text-blue-400 rounded px-1 py-0.5 font-medium shrink-0">
+            {activeSubtasks} active
+          </span>
+        )}
+      </>
+    )
+  }
+
+  // ExitPlanMode — plan review tool
+  if (lowerName === 'exitplanmode') {
+    const isAccepted = toolUse.status === 'success'
+    const isRejected = toolUse.status === 'error'
+    const badgeText = isAccepted ? 'accepted' : isRejected ? 'rejected' : 'review'
+    return (
+      <>
+        <span className={cn(isRejected ? 'text-red-500' : 'text-emerald-500', 'shrink-0')}>
+          <ClipboardCheck className="h-3.5 w-3.5" />
+        </span>
+        <span className="font-medium text-foreground shrink-0">Plan</span>
+        <span
+          className={cn(
+            'text-[10px] rounded px-1 py-0.5 font-medium shrink-0',
+            isRejected
+              ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+              : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+          )}
+        >
+          {badgeText}
+        </span>
+      </>
+    )
+  }
+
+  // WebFetch
+  if (lowerName === 'webfetch' || lowerName === 'web_fetch') {
+    const url = (input.url || '') as string
+    let hostname = url
+    try {
+      hostname = new URL(url).hostname
+    } catch {
+      // keep full url
+    }
+    return (
+      <>
+        <Globe className="h-3.5 w-3.5 text-blue-400 shrink-0" />
+        <span className="font-medium text-foreground shrink-0">Fetch</span>
+        <span className="font-mono text-muted-foreground truncate min-w-0">{hostname}</span>
+      </>
+    )
+  }
+
+  // Figma MCP tools
+  if (isFigmaTool(name)) {
+    const operation = getFigmaOperation(name)
+    return (
+      <>
+        <Figma className={cn('h-3.5 w-3.5 shrink-0', FIGMA_ICON_COLOR)} />
+        <span className="font-medium text-foreground shrink-0">Figma</span>
+        <span
+          className={cn(
+            'text-[10px] rounded px-1 py-0.5 font-medium shrink-0',
+            getFigmaOperationColor(operation)
+          )}
+        >
+          {getFigmaOperationLabel(operation)}
+        </span>
+      </>
+    )
+  }
+
+  // Default fallback
+  const label = getToolLabel(name, input, cwd)
+  return (
+    <>
+      <span className="text-muted-foreground shrink-0">{getToolIcon(name)}</span>
+      <span className="font-medium text-foreground shrink-0">{name}</span>
+      {label && <span className="text-muted-foreground truncate font-mono min-w-0">{label}</span>}
+    </>
+  )
+}
+
+/** Check if a tool name refers to a Skill tool */
+function isSkillTool(name: string): boolean {
+  const lower = name.toLowerCase()
+  return lower === 'skill' || lower === 'mcp_skill' || lower.includes('skill')
+}
+
+/** Detect file operation tools that should use the compact inline layout */
+export function isFileOperation(name: string): boolean {
+  if (isTodoWriteTool(name)) return false
+  if (isFileChangeTool(name)) return true
+  const lower = name.toLowerCase()
+  return (
+    lower.includes('read') ||
+    lower === 'cat' ||
+    lower === 'view' ||
+    lower.includes('write') ||
+    lower === 'create' ||
+    lower.includes('edit') ||
+    lower.includes('replace') ||
+    lower.includes('patch')
+  )
+}
+
+/** Detect search/find tools that should use the compact inline layout */
+export function isSearchOperation(name: string): boolean {
+  const lower = name.toLowerCase()
+  return (
+    lower === 'grep' ||
+    lower === 'mcp_grep' ||
+    lower === 'glob' ||
+    lower === 'mcp_glob' ||
+    lower.includes('grep') ||
+    lower.includes('glob')
+  )
+}
+
+/** Resolve a short display label for a file operation tool */
+function getFileToolLabel(name: string): string {
+  const lower = name.toLowerCase()
+  if (lower.includes('read') || lower === 'cat' || lower === 'view') return 'Read'
+  if (lower.includes('write') || lower === 'create') return 'Write'
+  if (lower.includes('edit') || lower.includes('replace') || lower.includes('patch')) return 'Edit'
+  return name
+}
+
+/** Compact single-line renderer for Read/Write/Edit file operations, Search/Find tools, and Skill tools */
+const CompactFileToolCard = memo(function CompactFileToolCard({
+  toolUse,
+  cwd
+}: {
+  toolUse: ToolUseInfo
+  cwd?: string | null
+}): React.JSX.Element {
+  const [isExpanded, setIsExpanded] = useState(false)
+
+  const isSearch = isSearchOperation(toolUse.name)
+  const isSkill = isSkillTool(toolUse.name)
+  const isFigma = isFigmaTool(toolUse.name)
+  const isFileChange = isFileChangeTool(toolUse.name)
+  const filePath = (toolUse.input.filePath ||
+    toolUse.input.file_path ||
+    toolUse.input.path ||
+    '') as string
+  const shortPath = shortenPath(filePath, cwd)
+  const label = isSkill ? 'Skill' : getFileToolLabel(toolUse.name)
+  const detail = isSkill
+    ? (toolUse.input.skill as string) || (toolUse.input.name as string) || 'unknown'
+    : shortPath
+  const isRunning = toolUse.status === 'pending' || toolUse.status === 'running'
+  const isError = toolUse.status === 'error'
+  const hasOutput = !!(toolUse.output || toolUse.error)
+  // FileChange tools carry their content in input.changes, not output
+  const hasStructuredInput = Object.keys(toolUse.input).length > 0
+  const hasExpandableContent =
+    hasOutput ||
+    hasStructuredInput ||
+    (isFileChange &&
+      Array.isArray(toolUse.input.changes) &&
+      (toolUse.input.changes as unknown[]).length > 0)
+  /** Match generic ToolCard: allow opening detail while streaming before args/output arrive. */
+  const canToggleExpand = hasExpandableContent || isRunning
+
+  const Renderer = useMemo(() => getToolRenderer(toolUse.name), [toolUse.name])
+
+  // Use CollapsedContent for search, Figma, and fileChange tools (they have rich collapsed headers)
+  const useCollapsedContent = isSearch || isFigma || isFileChange
+
+  const icon = useMemo(() => {
+    if (isExpanded) {
+      return <Minus className="h-3.5 w-3.5 text-muted-foreground" />
+    }
+    if (isRunning) {
+      return (
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" data-testid="tool-spinner" />
+      )
+    }
+    if (isError) {
+      return <X className="h-3.5 w-3.5 text-red-500" data-testid="tool-error" />
+    }
+    if (isSkill) {
+      return <Zap className="h-3.5 w-3.5 text-amber-400" data-testid="tool-success" />
+    }
+    if (isFigma) {
+      return <Figma className={cn('h-3.5 w-3.5', FIGMA_ICON_COLOR)} data-testid="tool-success" />
+    }
+    return <Plus className="h-3.5 w-3.5 text-muted-foreground" data-testid="tool-success" />
+  }, [isExpanded, isRunning, isError, isSkill, isFigma])
+
+  return (
+    <div
+      data-testid="compact-file-tool"
+      data-tool-name={toolUse.name}
+      data-tool-status={toolUse.status}
+    >
+      {/* Compact single-line header */}
+      <button
+        onClick={() => canToggleExpand && setIsExpanded(!isExpanded)}
+        className={cn(
+          'flex items-center gap-1.5 w-full py-1 text-left text-xs',
+          canToggleExpand && 'cursor-pointer hover:bg-accent/50 transition-colors rounded-sm',
+          !canToggleExpand && 'cursor-default'
+        )}
+        disabled={!canToggleExpand}
+      >
+        {icon}
+        {useCollapsedContent ? (
+          <CollapsedContent toolUse={toolUse} cwd={cwd} />
+        ) : (
+          <>
+            <span className="font-medium text-foreground shrink-0">{label}</span>
+            <span
+              className={cn(
+                'truncate min-w-0',
+                isSkill ? 'text-muted-foreground' : 'font-mono',
+                isError ? 'text-red-400' : 'text-muted-foreground'
+              )}
+            >
+              {detail}
+            </span>
+          </>
+        )}
+      </button>
+
+      {/* Expanded content */}
+      {isExpanded && canToggleExpand && (
+        <div className="ml-5 mt-0.5 mb-1" data-testid="tool-output">
+          <Renderer
+            name={toolUse.name}
+            input={toolUse.input}
+            output={toolUse.output}
+            error={toolUse.error}
+            status={toolUse.status}
+            subtasks={toolUse.subtasks}
+          />
+        </div>
+      )}
+    </div>
+  )
+})
+
+interface ToolCardProps {
+  toolUse: ToolUseInfo
+  cwd?: string | null
+  compact?: boolean
+}
+
+export const ToolCard = memo(function ToolCard({
+  toolUse,
+  cwd,
+  compact = false
+}: ToolCardProps): React.JSX.Element {
+  const [isExpanded, setIsExpanded] = useState(false)
+
+  const duration = useMemo(() => {
+    if (toolUse.endTime && toolUse.startTime) {
+      return formatDuration(toolUse.endTime - toolUse.startTime)
+    }
+    return null
+  }, [toolUse.startTime, toolUse.endTime])
+
+  const lowerName = toolUse.name.toLowerCase()
+  const isBash =
+    lowerName.includes('bash') || lowerName.includes('shell') || lowerName.includes('exec')
+  const command = extractCommandText(toolUse.input)
+  const hasOutput = !!(toolUse.output || toolUse.error || (isBash && command))
+  const isExitPlanMode = lowerName === 'exitplanmode'
+
+  // Fallback: if toolUse.input.plan is missing, check the pending plan store.
+  // This handles the race where plan.ready sets pendingPlan but the streaming
+  // part's input wasn't updated in time.
+  const pendingPlanContent = useSessionStore((state) => {
+    if (!isExitPlanMode) return ''
+    for (const [, plan] of state.pendingPlans) {
+      if (plan.toolUseID === toolUse.id && plan.planContent) {
+        return plan.planContent
+      }
+    }
+    return ''
+  })
+
+  const effectiveInput =
+    isExitPlanMode && !toolUse.input?.plan && pendingPlanContent
+      ? { ...toolUse.input, plan: pendingPlanContent }
+      : toolUse.input
+
+  const hasPlanInput =
+    isExitPlanMode && typeof effectiveInput?.plan === 'string' && effectiveInput.plan.length > 0
+  const hasTaskDetail =
+    lowerName === 'task' &&
+    (((typeof effectiveInput?.prompt === 'string' && effectiveInput.prompt.length > 0) ||
+      (toolUse.subtasks?.length ?? 0) > 0) as boolean)
+  const hasStructuredInput = Object.keys(toolUse.input).length > 0
+  const hasDetail = hasOutput || hasPlanInput || hasTaskDetail || hasStructuredInput
+  const isAgentToolBusy = toolUse.status === 'pending' || toolUse.status === 'running'
+  /** Lets users open detail while tools are in-flight before input/output materializes (e.g. Cursor ACP). */
+  const canShowToolDetailPanel = hasDetail || isAgentToolBusy
+
+  const Renderer = useMemo(() => getToolRenderer(toolUse.name), [toolUse.name])
+
+  // Route file operations, search tools, skill tools, and Figma tools to compact layout
+  if (
+    isFileOperation(toolUse.name) ||
+    isSearchOperation(toolUse.name) ||
+    isSkillTool(toolUse.name) ||
+    isFigmaTool(toolUse.name)
+  ) {
+    return (
+      <ToolCallContextMenu toolUse={toolUse}>
+        <div>
+          <CompactFileToolCard toolUse={toolUse} cwd={cwd} />
+        </div>
+      </ToolCallContextMenu>
+    )
+  }
+
+  // TodoWrite: always-visible, no expand/collapse
+  if (isTodoWriteTool(toolUse.name)) {
+    return (
+      <ToolCallContextMenu toolUse={toolUse}>
+        <div
+          className={cn(
+            compact
+              ? 'my-1 rounded-md border border-l-2 text-xs'
+              : 'my-1 rounded-md border border-l-2 text-xs',
+            toolUse.status === 'running' && 'animate-pulse',
+            'border-border bg-muted/30'
+          )}
+          style={{ borderLeftColor: getLeftBorderColor(toolUse.status) }}
+          data-testid="tool-card"
+          data-tool-name={toolUse.name}
+          data-tool-status={toolUse.status}
+        >
+          {/* Header */}
+          <div
+            className={cn(
+              'flex items-center gap-1.5 w-full text-left',
+              compact ? 'px-2 py-1.5' : 'px-2.5 py-1.5'
+            )}
+            data-testid="tool-card-header"
+          >
+            <CollapsedContent toolUse={toolUse} cwd={cwd} />
+            <span className="flex-1" />
+            {duration && (
+              <span
+                className="text-muted-foreground shrink-0 flex items-center gap-1"
+                data-testid="tool-duration"
+              >
+                <Clock className="h-3 w-3" />
+                {duration}
+              </span>
+            )}
+            <StatusIndicator status={toolUse.status} />
+          </div>
+          {/* Always-visible content */}
+          <div
+            className={cn('border-t border-border', compact ? 'px-2 py-1.5' : 'px-2.5 py-2')}
+            data-testid="tool-output"
+          >
+            <Renderer
+              name={toolUse.name}
+              input={toolUse.input}
+              output={toolUse.output}
+              error={toolUse.error}
+              status={toolUse.status}
+              subtasks={toolUse.subtasks}
+            />
+          </div>
+        </div>
+      </ToolCallContextMenu>
+    )
+  }
+
+  // ExitPlanMode: always-expanded plan card with fake user message on acceptance/rejection
+  if (isExitPlanMode) {
+    const planAccepted = toolUse.status === 'success'
+    const planRejected = toolUse.status === 'error'
+    return (
+      <ToolCallContextMenu toolUse={toolUse}>
+        <div>
+          <div
+            className={cn(
+              compact
+                ? 'my-1 rounded-md border border-l-2 text-xs'
+                : 'my-1 rounded-md border border-l-2 text-xs',
+              planRejected ? 'border-red-500/30 bg-red-500/5' : 'border-border bg-primary/[0.04]'
+            )}
+            style={{ borderLeftColor: getLeftBorderColor(toolUse.status) }}
+            data-testid="tool-card"
+            data-tool-name={toolUse.name}
+            data-tool-status={toolUse.status}
+          >
+            {/* Header */}
+            <div
+              className={cn(
+                'flex items-center gap-1.5 w-full text-left',
+                compact ? 'px-2 py-1.5' : 'px-2.5 py-1.5'
+              )}
+              data-testid="tool-card-header"
+            >
+              <CollapsedContent toolUse={toolUse} cwd={cwd} />
+              <span className="flex-1" />
+              {duration && (
+                <span
+                  className="text-muted-foreground shrink-0 flex items-center gap-1"
+                  data-testid="tool-duration"
+                >
+                  <Clock className="h-3 w-3" />
+                  {duration}
+                </span>
+              )}
+              <StatusIndicator status={toolUse.status} />
+            </div>
+            {/* Always-visible plan content */}
+            {hasPlanInput && (
+              <div
+                className={cn('border-t border-border', compact ? 'px-3 py-2.5' : 'px-4 py-3')}
+                data-testid="tool-output"
+              >
+                <Renderer
+                  name={toolUse.name}
+                  input={effectiveInput}
+                  output={toolUse.output}
+                  error={toolUse.error}
+                  status={toolUse.status}
+                  subtasks={toolUse.subtasks}
+                />
+              </div>
+            )}
+          </div>
+          {/* Fake user message after plan acceptance */}
+          {planAccepted && (
+            <div className="flex justify-end px-6 py-4" data-testid="plan-accepted-message">
+              <div className="max-w-[80%] rounded-2xl px-4 py-3 bg-primary/10 text-foreground">
+                <p className="text-sm whitespace-pre-wrap leading-relaxed">Implement the plan</p>
+              </div>
+            </div>
+          )}
+          {/* Fake user message after plan rejection with feedback */}
+          {planRejected && toolUse.error && (
+            <div className="flex justify-end px-6 py-4" data-testid="plan-rejected-message">
+              <div className="max-w-[80%] rounded-2xl px-4 py-3 bg-primary/10 text-foreground">
+                <p className="text-sm whitespace-pre-wrap leading-relaxed">
+                  {wireValueToPrettyString(toolUse.error)}
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      </ToolCallContextMenu>
+    )
+  }
+
+  return (
+    <ToolCallContextMenu toolUse={toolUse}>
+      <div
+        className={cn(
+          compact
+            ? 'my-1 rounded-md border border-l-2 text-xs'
+            : 'my-1 rounded-md border border-l-2 text-xs',
+          toolUse.status === 'running' && 'animate-pulse',
+          toolUse.status === 'error'
+            ? 'border-red-500/30 bg-red-500/5'
+            : 'border-border bg-muted/30'
+        )}
+        style={{
+          borderLeftColor: getLeftBorderColor(toolUse.status)
+        }}
+        data-testid="tool-card"
+        data-tool-name={toolUse.name}
+        data-tool-status={toolUse.status}
+      >
+        {/* Header - always visible */}
+        <button
+          onClick={() => canShowToolDetailPanel && setIsExpanded(!isExpanded)}
+          className={cn(
+            compact
+              ? 'flex items-center gap-1.5 w-full px-2 py-1.5 text-left'
+              : 'flex items-center gap-1.5 w-full px-2.5 py-1.5 text-left',
+            canShowToolDetailPanel && 'cursor-pointer hover:bg-muted/50 transition-colors'
+          )}
+          disabled={!canShowToolDetailPanel}
+          aria-expanded={canShowToolDetailPanel ? isExpanded : undefined}
+          data-testid="tool-card-header"
+        >
+          {/* Tool-specific collapsed content */}
+          <CollapsedContent toolUse={toolUse} cwd={cwd} />
+
+          {/* Spacer */}
+          <span className="flex-1" />
+
+          {/* Duration */}
+          {duration && (
+            <span
+              className="text-muted-foreground shrink-0 flex items-center gap-1"
+              data-testid="tool-duration"
+            >
+              <Clock className="h-3 w-3" />
+              {duration}
+            </span>
+          )}
+
+          {/* Status indicator */}
+          <StatusIndicator status={toolUse.status} />
+
+          {/* Expand/Collapse affordance */}
+          {canShowToolDetailPanel && (
+            <span className="ml-1 inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              {isExpanded ? 'Hide' : 'View'}
+              <ChevronDown
+                className={cn(
+                  'h-2.5 w-2.5 shrink-0 transition-transform duration-150',
+                  !isExpanded && '-rotate-90'
+                )}
+              />
+            </span>
+          )}
+        </button>
+
+        {/* Expandable detail view with rich renderer */}
+        <div
+          className={cn(
+            'transition-all duration-150 overflow-hidden',
+            isExpanded && canShowToolDetailPanel ? 'max-h-[2000px] opacity-100' : 'max-h-0 opacity-0'
+          )}
+          data-testid="tool-output"
+        >
+          <div className={cn('border-t border-border', compact ? 'px-2 py-1.5' : 'px-2.5 py-2')}>
+            <Renderer
+              name={toolUse.name}
+              input={toolUse.input}
+              output={toolUse.output}
+              error={toolUse.error}
+              status={toolUse.status}
+              subtasks={toolUse.subtasks}
+            />
+          </div>
+        </div>
+      </div>
+    </ToolCallContextMenu>
+  )
+})

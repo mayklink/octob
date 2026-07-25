@@ -1,0 +1,2633 @@
+import { deleteAttachment } from '../services/attachment-storage'
+import Database from 'better-sqlite3'
+import { app } from 'electron'
+import { join } from 'path'
+import { existsSync, mkdirSync } from 'fs'
+import { randomUUID } from 'crypto'
+import { MIGRATIONS } from './schema'
+import type {
+  Project,
+  ProjectCreate,
+  ProjectUpdate,
+  Worktree,
+  WorktreeCreate,
+  WorktreeUpdate,
+  Session,
+  SessionCreate,
+  SessionUpdate,
+  SessionMessage,
+  SessionMessageCreate,
+  SessionMessageUpdate,
+  SessionMessageUpsertByOpenCode,
+  SessionActivity,
+  SessionActivityCreate,
+  Setting,
+  SessionSearchOptions,
+  SessionWithWorktree,
+  Space,
+  SpaceCreate,
+  SpaceUpdate,
+  ProjectSpaceAssignment,
+  Connection,
+  ConnectionCreate,
+  ConnectionMember,
+  ConnectionMemberCreate,
+  ConnectionWithMembers,
+  KanbanTicket,
+  KanbanTicketCreate,
+  KanbanTicketBatchCreate,
+  KanbanTicketBatchCreateItem,
+  KanbanTicketBatchCreateResult,
+  KanbanTicketUpdate,
+  KanbanTicketColumn,
+  TicketMark,
+  TicketFollowupMessage,
+  TicketFollowupMessageCreate,
+  TicketDependency,
+  DiffComment,
+  DiffCommentCreate,
+  DiffCommentUpdate,
+  AutomaticPullRequestReviewRunRow,
+  AutomaticPullRequestReviewRunCreate,
+  AutomaticPullRequestReviewRunUpdate
+} from './types'
+
+export class DatabaseService {
+  private db: Database.Database | null = null
+  private dbPath: string
+
+  constructor(dbPath?: string) {
+    if (dbPath) {
+      this.dbPath = dbPath
+    } else {
+      const octobDir = join(app.getPath('home'), '.octob')
+      if (!existsSync(octobDir)) {
+        mkdirSync(octobDir, { recursive: true })
+      }
+      this.dbPath = join(octobDir, 'octob.db')
+    }
+  }
+
+  getDbPath(): string {
+    return this.dbPath
+  }
+
+  init(): void {
+    if (this.db) return
+
+    this.db = new Database(this.dbPath)
+    this.db.pragma('journal_mode = WAL')
+    this.db.pragma('foreign_keys = ON')
+
+    this.runMigrations()
+  }
+
+  close(): void {
+    if (this.db) {
+      this.db.close()
+      this.db = null
+    }
+  }
+
+  private getDb(): Database.Database {
+    if (!this.db) {
+      throw new Error('Database not initialized. Call init() first.')
+    }
+    return this.db
+  }
+
+  // Maps SQLite INTEGER 0/1 to boolean for worktree rows
+  private mapWorktreeRow(row: Record<string, unknown>): Worktree {
+    return {
+      ...row,
+      is_default: !!row.is_default,
+      branch_renamed: (row.branch_renamed as number) ?? 0,
+      last_message_at: (row.last_message_at as number) ?? null,
+      session_titles: (row.session_titles as string) ?? '[]',
+      last_model_provider_id: (row.last_model_provider_id as string) ?? null,
+      last_model_id: (row.last_model_id as string) ?? null,
+      last_model_variant: (row.last_model_variant as string) ?? null,
+      attachments: (row.attachments as string) ?? '[]',
+      pinned: (row.pinned as number) ?? 0,
+      context: (row.context as string) ?? null,
+      github_pr_number: (row.github_pr_number as number) ?? null,
+      github_pr_url: (row.github_pr_url as string) ?? null,
+      base_branch: (row.base_branch as string) ?? null
+    } as Worktree
+  }
+
+  // Maps SQLite INTEGER 0/1 to boolean for session rows.
+  // NOTE: If future boolean or JSON columns are added to sessions, they must be
+  // explicitly mapped here (the spread passes raw SQLite values through).
+  private mapSessionRow(row: Record<string, unknown>): Session {
+    return {
+      ...row,
+      pinned_to_board: !!(row.pinned_to_board as number),
+      session_type: (row.session_type as string) ?? 'default'
+    } as Session
+  }
+
+  // Maps SQLite row to KanbanTicket (INTEGER 0/1 → boolean, JSON string → array)
+  private mapKanbanTicketRow(row: Record<string, unknown>): KanbanTicket {
+    let attachments: unknown[] = []
+    try {
+      const raw = row.attachments as string
+      if (raw) {
+        attachments = JSON.parse(raw)
+      }
+    } catch {
+      attachments = []
+    }
+
+    return {
+      id: row.id as string,
+      project_id: row.project_id as string,
+      title: row.title as string,
+      description: (row.description as string) ?? null,
+      attachments,
+      column: row.column as KanbanTicketColumn,
+      sort_order: row.sort_order as number,
+      current_session_id: (row.current_session_id as string) ?? null,
+      worktree_id: (row.worktree_id as string) ?? null,
+      mode: (row.mode as 'build' | 'plan' | 'super-plan') ?? null,
+      plan_ready: !!(row.plan_ready as number),
+      created_at: row.created_at as string,
+      updated_at: row.updated_at as string,
+      archived_at: (row.archived_at as string) ?? null,
+      external_provider: (row.external_provider as string) ?? null,
+      external_id: (row.external_id as string) ?? null,
+      external_url: (row.external_url as string) ?? null,
+      github_pr_number: (row.github_pr_number as number) ?? null,
+      github_pr_url: (row.github_pr_url as string) ?? null,
+      mark: (row.mark as TicketMark) ?? null,
+      total_tokens: (row.total_tokens as number) ?? 0,
+      pending_launch_config: (row.pending_launch_config as string) ?? null,
+      note: (row.note as string) ?? null
+    }
+  }
+
+  private mapDiffCommentRow(row: Record<string, unknown>): DiffComment {
+    return {
+      id: row.id as string,
+      worktree_id: row.worktree_id as string,
+      file_path: row.file_path as string,
+      line_start: row.line_start as number,
+      line_end: (row.line_end as number) ?? null,
+      anchor_text: (row.anchor_text as string) ?? null,
+      anchor_context_before: (row.anchor_context_before as string) ?? null,
+      anchor_context_after: (row.anchor_context_after as string) ?? null,
+      body: row.body as string,
+      is_outdated: !!(row.is_outdated as number),
+      created_at: row.created_at as string,
+      updated_at: row.updated_at as string
+    }
+  }
+
+  private normalizeBatchDrafts(
+    drafts: KanbanTicketBatchCreateItem[]
+  ): Array<KanbanTicketBatchCreateItem & { draft_key: string; title: string; project_id: string; depends_on: string[] }> {
+    if (drafts.length === 0) {
+      throw new Error('Batch ticket creation requires at least one draft')
+    }
+
+    const normalized: Array<
+      KanbanTicketBatchCreateItem & {
+        draft_key: string
+        title: string
+        project_id: string
+        depends_on: string[]
+      }
+    > = []
+    const draftKeys = new Set<string>()
+    let projectId: string | null = null
+
+    for (const draft of drafts) {
+      const draftKey = draft.draft_key.trim()
+      const title = draft.title.trim()
+      const nextProjectId = draft.project_id.trim()
+
+      if (!draftKey) {
+        throw new Error('Each batch draft must include a draft_key')
+      }
+      if (!title) {
+        throw new Error(`Draft "${draftKey}" must include a title`)
+      }
+      if (!nextProjectId) {
+        throw new Error(`Draft "${draftKey}" must include a project_id`)
+      }
+      if (draftKeys.has(draftKey)) {
+        throw new Error(`Duplicate draft_key "${draftKey}" in batch`)
+      }
+
+      if (projectId === null) {
+        projectId = nextProjectId
+      } else if (projectId !== nextProjectId) {
+        throw new Error('All drafts in a batch must belong to the same project')
+      }
+
+      const dependsOn = Array.from(
+        new Set(
+          (draft.depends_on ?? [])
+            .filter((dependency): dependency is string => typeof dependency === 'string')
+            .map((dependency) => dependency.trim())
+            .filter(Boolean)
+        )
+      )
+
+      if (dependsOn.includes(draftKey)) {
+        throw new Error(`Draft "${draftKey}" cannot depend on itself`)
+      }
+
+      draftKeys.add(draftKey)
+      normalized.push({
+        ...draft,
+        draft_key: draftKey,
+        title,
+        project_id: nextProjectId,
+        depends_on: dependsOn
+      })
+    }
+
+    const normalizedKeySet = new Set(normalized.map((draft) => draft.draft_key))
+    for (const draft of normalized) {
+      for (const dependency of draft.depends_on) {
+        if (!normalizedKeySet.has(dependency)) {
+          throw new Error(`Draft "${draft.draft_key}" depends on unknown draft "${dependency}"`)
+        }
+      }
+    }
+
+    const visitState = new Map<string, 'visiting' | 'done'>()
+    const visit = (draftKey: string): void => {
+      const state = visitState.get(draftKey)
+      if (state === 'visiting') {
+        throw new Error(`Draft dependencies contain a cycle involving "${draftKey}"`)
+      }
+      if (state === 'done') return
+
+      visitState.set(draftKey, 'visiting')
+      const draft = normalized.find((item) => item.draft_key === draftKey)
+      if (!draft) return
+
+      for (const dependency of draft.depends_on) {
+        visit(dependency)
+      }
+
+      visitState.set(draftKey, 'done')
+    }
+
+    for (const draft of normalized) {
+      visit(draft.draft_key)
+    }
+
+    return normalized
+  }
+
+  private wouldCreateTicketDependencyCycle(
+    db: Database.Database,
+    dependentId: string,
+    blockerId: string
+  ): boolean {
+    const visited = new Set<string>()
+    const queue: string[] = [blockerId]
+    visited.add(blockerId)
+
+    while (queue.length > 0) {
+      const node = queue.shift()!
+      const dependents = db
+        .prepare('SELECT dependent_id FROM ticket_dependencies WHERE blocker_id = ?')
+        .all(node) as { dependent_id: string }[]
+
+      for (const row of dependents) {
+        if (row.dependent_id === dependentId) {
+          return true
+        }
+        if (!visited.has(row.dependent_id)) {
+          visited.add(row.dependent_id)
+          queue.push(row.dependent_id)
+        }
+      }
+    }
+
+    return false
+  }
+
+  private runMigrations(): void {
+    const db = this.getDb()
+
+    // Ensure settings table exists for version tracking
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `)
+
+    const currentVersion = this.getSetting('schema_version')
+    const version = currentVersion ? parseInt(currentVersion, 10) : 0
+
+    for (const migration of MIGRATIONS) {
+      if (migration.version > version) {
+        try {
+          db.exec(migration.up)
+        } catch (err) {
+          // Log but don't crash -- partial migrations (e.g. duplicate column)
+          // are handled by the idempotent repair step below.
+          console.error(
+            `[db] Migration v${migration.version} (${migration.name}) failed:`,
+            err instanceof Error ? err.message : String(err)
+          )
+        }
+        this.setSetting('schema_version', migration.version.toString())
+      }
+    }
+
+    // Post-migration repair: idempotently ensure all expected tables/columns
+    // exist. This handles partial migrations, merge conflicts, or version
+    // skew between worktree builds.
+    this.ensureConnectionTables()
+  }
+
+  /**
+   * Idempotently add a column to a table. No-op if column already exists.
+   * Safe to call repeatedly (e.g. after merges that replay migrations).
+   */
+  private safeAddColumn(table: string, column: string, definition: string): void {
+    const db = this.getDb()
+    const columns = db.pragma(`table_info(${table})`) as { name: string }[]
+    if (!columns.some((c) => c.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+    }
+  }
+
+  /**
+   * Idempotently ensure connection-related tables and columns exist.
+   * Safe to run multiple times -- uses IF NOT EXISTS and checks column presence.
+   */
+  private ensureConnectionTables(): void {
+    const db = this.getDb()
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS connections (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        path TEXT NOT NULL,
+        color TEXT DEFAULT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS connection_members (
+        id TEXT PRIMARY KEY,
+        connection_id TEXT NOT NULL,
+        worktree_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        symlink_name TEXT NOT NULL,
+        added_at TEXT NOT NULL,
+        FOREIGN KEY (connection_id) REFERENCES connections(id) ON DELETE CASCADE,
+        FOREIGN KEY (worktree_id) REFERENCES worktrees(id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_connection_members_connection ON connection_members(connection_id);
+      CREATE INDEX IF NOT EXISTS idx_connection_members_worktree ON connection_members(worktree_id);
+    `)
+
+    this.safeAddColumn(
+      'sessions',
+      'connection_id',
+      'TEXT DEFAULT NULL REFERENCES connections(id) ON DELETE SET NULL'
+    )
+    this.safeAddColumn('sessions', 'agent_sdk', "TEXT NOT NULL DEFAULT 'opencode'")
+    this.safeAddColumn('connections', 'color', 'TEXT DEFAULT NULL')
+    this.safeAddColumn('connections', 'custom_name', 'TEXT DEFAULT NULL')
+    this.safeAddColumn('worktrees', 'attachments', "TEXT DEFAULT '[]'")
+    this.safeAddColumn('worktrees', 'pinned', 'INTEGER NOT NULL DEFAULT 0')
+    this.safeAddColumn('worktrees', 'context', 'TEXT DEFAULT NULL')
+    this.safeAddColumn('worktrees', 'github_pr_number', 'INTEGER DEFAULT NULL')
+    this.safeAddColumn('worktrees', 'github_pr_url', 'TEXT DEFAULT NULL')
+    this.safeAddColumn('connections', 'pinned', 'INTEGER NOT NULL DEFAULT 0')
+    this.safeAddColumn('projects', 'kanban_simple_mode', 'INTEGER NOT NULL DEFAULT 0')
+    this.safeAddColumn('kanban_tickets', 'archived_at', 'TEXT DEFAULT NULL')
+    this.safeAddColumn('sessions', 'pinned_to_board', 'INTEGER NOT NULL DEFAULT 0')
+    this.safeAddColumn('kanban_tickets', 'github_pr_number', 'INTEGER DEFAULT NULL')
+    this.safeAddColumn('kanban_tickets', 'github_pr_url', 'TEXT DEFAULT NULL')
+    this.safeAddColumn('kanban_tickets', 'mark', 'TEXT DEFAULT NULL')
+    this.safeAddColumn('kanban_tickets', 'note', 'TEXT DEFAULT NULL')
+    this.safeAddColumn('sessions', 'session_type', "TEXT NOT NULL DEFAULT 'default'")
+
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_sessions_connection ON sessions(connection_id);
+    `)
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS session_activities (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        agent_session_id TEXT,
+        thread_id TEXT,
+        turn_id TEXT,
+        item_id TEXT,
+        request_id TEXT,
+        kind TEXT NOT NULL,
+        tone TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        payload_json TEXT,
+        sequence INTEGER,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_activities_session_created
+        ON session_activities(session_id, created_at, id);
+      CREATE INDEX IF NOT EXISTS idx_session_activities_session_turn
+        ON session_activities(session_id, turn_id, created_at);
+    `)
+
+    // Kanban tickets table + indexes (idempotent repair for v11 migration)
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS kanban_tickets (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        description TEXT,
+        attachments TEXT NOT NULL DEFAULT '[]',
+        "column" TEXT NOT NULL DEFAULT 'todo',
+        sort_order REAL NOT NULL DEFAULT 0,
+        current_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+        worktree_id TEXT REFERENCES worktrees(id) ON DELETE SET NULL,
+        mode TEXT,
+        plan_ready INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_kanban_tickets_project ON kanban_tickets(project_id);
+      CREATE INDEX IF NOT EXISTS idx_kanban_tickets_session ON kanban_tickets(current_session_id);
+      CREATE INDEX IF NOT EXISTS idx_kanban_tickets_worktree ON kanban_tickets(worktree_id);
+    `)
+
+    // Ticket followup messages table + index (idempotent repair for v13/v14 migrations)
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS ticket_followup_messages (
+        id TEXT PRIMARY KEY,
+        ticket_id TEXT NOT NULL REFERENCES kanban_tickets(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        mode TEXT,
+        session_id TEXT,
+        source TEXT,
+        created_at TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'user'
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ticket_followup_messages_ticket
+        ON ticket_followup_messages(ticket_id, created_at);
+    `)
+    this.safeAddColumn('ticket_followup_messages', 'role', "TEXT NOT NULL DEFAULT 'user'")
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS automatic_pr_review_runs (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        repository_id TEXT NOT NULL,
+        pr_number INTEGER NOT NULL,
+        head_sha TEXT NOT NULL,
+        title TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued',
+        worktree_id TEXT REFERENCES worktrees(id) ON DELETE SET NULL,
+        session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        discovered_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_pr_review_revision
+        ON automatic_pr_review_runs(provider, repository_id, pr_number, head_sha);
+      CREATE INDEX IF NOT EXISTS idx_auto_pr_review_status
+        ON automatic_pr_review_runs(status, discovered_at);
+    `)
+  }
+
+  // Settings operations
+  getSetting(key: string): string | null {
+    const db = this.getDb()
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+      | Setting
+      | undefined
+    return row?.value ?? null
+  }
+
+  setSetting(key: string, value: string): void {
+    const db = this.getDb()
+    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value)
+  }
+
+  deleteSetting(key: string): void {
+    const db = this.getDb()
+    db.prepare('DELETE FROM settings WHERE key = ?').run(key)
+  }
+
+  getAllSettings(): Setting[] {
+    const db = this.getDb()
+    return db.prepare('SELECT key, value FROM settings').all() as Setting[]
+  }
+
+  createAutomaticPullRequestReviewRun(data: AutomaticPullRequestReviewRunCreate): boolean {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    const result = db.prepare(
+      `INSERT OR IGNORE INTO automatic_pr_review_runs
+       (id, provider, repository_id, pr_number, head_sha, title, payload_json, status,
+        discovered_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`
+    ).run(
+      data.id,
+      data.provider,
+      data.repository_id,
+      data.pr_number,
+      data.head_sha,
+      data.title,
+      data.payload_json,
+      now,
+      now
+    )
+    return result.changes > 0
+  }
+
+  getAutomaticPullRequestReviewRun(id: string): AutomaticPullRequestReviewRunRow | null {
+    const row = this.getDb()
+      .prepare('SELECT * FROM automatic_pr_review_runs WHERE id = ?')
+      .get(id) as AutomaticPullRequestReviewRunRow | undefined
+    return row ?? null
+  }
+
+  listAutomaticPullRequestReviewRuns(limit = 100): AutomaticPullRequestReviewRunRow[] {
+    return this.getDb()
+      .prepare(
+        `SELECT * FROM automatic_pr_review_runs
+         ORDER BY discovered_at DESC
+         LIMIT ?`
+      )
+      .all(Math.max(1, Math.min(500, limit))) as AutomaticPullRequestReviewRunRow[]
+  }
+
+  listPendingAutomaticPullRequestReviewRuns(): AutomaticPullRequestReviewRunRow[] {
+    return this.getDb()
+      .prepare(
+        `SELECT * FROM automatic_pr_review_runs
+         WHERE status IN ('queued', 'preparing', 'running')
+         ORDER BY discovered_at ASC`
+      )
+      .all() as AutomaticPullRequestReviewRunRow[]
+  }
+
+  updateAutomaticPullRequestReviewRun(
+    id: string,
+    data: AutomaticPullRequestReviewRunUpdate
+  ): AutomaticPullRequestReviewRunRow | null {
+    const allowed: Array<keyof AutomaticPullRequestReviewRunUpdate> = [
+      'status', 'worktree_id', 'session_id', 'attempt_count', 'error', 'started_at', 'completed_at'
+    ]
+    const entries = allowed
+      .filter((key) => Object.prototype.hasOwnProperty.call(data, key))
+      .map((key) => [key, data[key]] as const)
+    if (entries.length === 0) return this.getAutomaticPullRequestReviewRun(id)
+    const assignments = entries.map(([key]) => `${key} = ?`).join(', ')
+    this.getDb()
+      .prepare(`UPDATE automatic_pr_review_runs SET ${assignments}, updated_at = ? WHERE id = ?`)
+      .run(...entries.map(([, value]) => value), new Date().toISOString(), id)
+    return this.getAutomaticPullRequestReviewRun(id)
+  }
+
+  // Project operations
+  createProject(data: ProjectCreate): Project {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    // New projects get sort_order 0 (top), bump all others down
+    db.prepare('UPDATE projects SET sort_order = sort_order + 1').run()
+
+    const project: Project = {
+      id: randomUUID(),
+      name: data.name,
+      path: data.path,
+      description: data.description ?? null,
+      tags: data.tags ? JSON.stringify(data.tags) : null,
+      language: null,
+      custom_icon: null,
+      setup_script: data.setup_script ?? null,
+      run_script: data.run_script ?? null,
+      archive_script: data.archive_script ?? null,
+      auto_assign_port: false,
+      sort_order: 0,
+      created_at: now,
+      last_accessed_at: now
+    }
+
+    db.prepare(
+      `INSERT INTO projects (id, name, path, description, tags, language, setup_script, run_script, archive_script, auto_assign_port, sort_order, created_at, last_accessed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      project.id,
+      project.name,
+      project.path,
+      project.description,
+      project.tags,
+      project.language,
+      project.setup_script,
+      project.run_script,
+      project.archive_script,
+      project.auto_assign_port ? 1 : 0,
+      project.sort_order,
+      project.created_at,
+      project.last_accessed_at
+    )
+
+    return project
+  }
+
+  getProject(id: string): Project | null {
+    const db = this.getDb()
+    const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as
+      | (Project & { auto_assign_port: number | boolean })
+      | undefined
+    if (!row) return null
+    return {
+      ...row,
+      auto_assign_port: Boolean(row.auto_assign_port)
+    }
+  }
+
+  getProjectByPath(path: string): Project | null {
+    const db = this.getDb()
+    const row = db.prepare('SELECT * FROM projects WHERE path = ?').get(path) as
+      | (Project & { auto_assign_port: number | boolean })
+      | undefined
+    if (!row) return null
+    return {
+      ...row,
+      auto_assign_port: Boolean(row.auto_assign_port)
+    }
+  }
+
+  getAllProjects(): Project[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare('SELECT * FROM projects ORDER BY sort_order ASC, last_accessed_at DESC')
+      .all() as Array<Project & { auto_assign_port: number | boolean }>
+
+    return rows.map((row) => ({
+      ...row,
+      auto_assign_port: Boolean(row.auto_assign_port)
+    }))
+  }
+
+  reorderProjects(orderedIds: string[]): void {
+    const db = this.getDb()
+    const stmt = db.prepare('UPDATE projects SET sort_order = ? WHERE id = ?')
+    const tx = db.transaction(() => {
+      for (let i = 0; i < orderedIds.length; i++) {
+        stmt.run(i, orderedIds[i])
+      }
+    })
+    tx()
+  }
+
+  getProjectIdsSortedByLastMessage(): string[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        `SELECT p.id
+         FROM projects p
+         LEFT JOIN worktrees w ON w.project_id = p.id
+         GROUP BY p.id
+         ORDER BY
+           CASE WHEN MAX(w.last_message_at) IS NULL THEN 1 ELSE 0 END ASC,
+           MAX(w.last_message_at) DESC`
+      )
+      .all() as { id: string }[]
+    return rows.map((r) => r.id)
+  }
+
+  updateProject(id: string, data: ProjectUpdate): Project | null {
+    const db = this.getDb()
+    const existing = this.getProject(id)
+    if (!existing) return null
+
+    const updates: string[] = []
+    const values: (string | number | null)[] = []
+
+    if (data.name !== undefined) {
+      updates.push('name = ?')
+      values.push(data.name)
+    }
+    if (data.description !== undefined) {
+      updates.push('description = ?')
+      values.push(data.description)
+    }
+    if (data.tags !== undefined) {
+      updates.push('tags = ?')
+      values.push(data.tags ? JSON.stringify(data.tags) : null)
+    }
+    if (data.language !== undefined) {
+      updates.push('language = ?')
+      values.push(data.language)
+    }
+    if (data.custom_icon !== undefined) {
+      updates.push('custom_icon = ?')
+      values.push(data.custom_icon)
+    }
+    if (data.setup_script !== undefined) {
+      updates.push('setup_script = ?')
+      values.push(data.setup_script)
+    }
+    if (data.run_script !== undefined) {
+      updates.push('run_script = ?')
+      values.push(data.run_script)
+    }
+    if (data.archive_script !== undefined) {
+      updates.push('archive_script = ?')
+      values.push(data.archive_script)
+    }
+    if (data.auto_assign_port !== undefined) {
+      updates.push('auto_assign_port = ?')
+      values.push(data.auto_assign_port ? 1 : 0)
+    }
+    if (data.last_accessed_at !== undefined) {
+      updates.push('last_accessed_at = ?')
+      values.push(data.last_accessed_at)
+    }
+
+    if (updates.length === 0) return existing
+
+    values.push(id)
+    db.prepare(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`).run(...values)
+
+    return this.getProject(id)
+  }
+
+  deleteProject(id: string): boolean {
+    const db = this.getDb()
+    const result = db.prepare('DELETE FROM projects WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  touchProject(id: string): void {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    db.prepare('UPDATE projects SET last_accessed_at = ? WHERE id = ?').run(now, id)
+  }
+
+  // Worktree operations
+  createWorktree(data: WorktreeCreate): Worktree {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    const isDefault = data.is_default ?? false
+    const worktree: Worktree = {
+      id: randomUUID(),
+      project_id: data.project_id,
+      name: data.name,
+      branch_name: data.branch_name,
+      path: data.path,
+      status: 'active',
+      is_default: isDefault,
+      branch_renamed: 0,
+      last_message_at: null,
+      session_titles: '[]',
+      last_model_provider_id: null,
+      last_model_id: null,
+      last_model_variant: null,
+      attachments: '[]',
+      pinned: 0,
+      context: null,
+      github_pr_number: null,
+      github_pr_url: null,
+      base_branch: data.base_branch ?? null,
+      created_at: now,
+      last_accessed_at: now
+    }
+
+    db.prepare(
+      `INSERT INTO worktrees (id, project_id, name, branch_name, path, status, is_default, branch_renamed, base_branch, created_at, last_accessed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      worktree.id,
+      worktree.project_id,
+      worktree.name,
+      worktree.branch_name,
+      worktree.path,
+      worktree.status,
+      isDefault ? 1 : 0,
+      worktree.branch_renamed,
+      worktree.base_branch,
+      worktree.created_at,
+      worktree.last_accessed_at
+    )
+
+    return worktree
+  }
+
+  getWorktree(id: string): Worktree | null {
+    const db = this.getDb()
+    const row = db.prepare('SELECT * FROM worktrees WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined
+    return row ? this.mapWorktreeRow(row) : null
+  }
+
+  getWorktreeByPath(path: string): Worktree | null {
+    const db = this.getDb()
+    const row = db
+      .prepare("SELECT * FROM worktrees WHERE path = ? AND status = 'active'")
+      .get(path) as Record<string, unknown> | undefined
+    return row ? this.mapWorktreeRow(row) : null
+  }
+
+  getWorktreesByProject(projectId: string): Worktree[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        'SELECT * FROM worktrees WHERE project_id = ? ORDER BY is_default ASC, last_accessed_at DESC'
+      )
+      .all(projectId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapWorktreeRow(row))
+  }
+
+  getActiveWorktreesByProject(projectId: string): Worktree[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        "SELECT * FROM worktrees WHERE project_id = ? AND status = 'active' ORDER BY is_default ASC, last_accessed_at DESC"
+      )
+      .all(projectId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapWorktreeRow(row))
+  }
+
+  getRecentlyActiveWorktrees(cutoffMs: number): Worktree[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        "SELECT * FROM worktrees WHERE status = 'active' AND last_message_at IS NOT NULL AND last_message_at > ? ORDER BY last_message_at DESC"
+      )
+      .all(cutoffMs) as Record<string, unknown>[]
+    return rows.map((row) => this.mapWorktreeRow(row))
+  }
+
+  getPinnedWorktrees(): Worktree[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        "SELECT * FROM worktrees WHERE status = 'active' AND pinned = 1 ORDER BY last_accessed_at DESC"
+      )
+      .all() as Record<string, unknown>[]
+    return rows.map((row) => this.mapWorktreeRow(row))
+  }
+
+  getPinnedConnections(): ConnectionWithMembers[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        "SELECT * FROM connections WHERE status = 'active' AND pinned = 1 ORDER BY updated_at DESC"
+      )
+      .all() as Connection[]
+
+    return rows.map((row) => {
+      const members = db
+        .prepare(
+          `SELECT cm.*, w.name as worktree_name, w.branch_name as worktree_branch,
+                  w.path as worktree_path, p.name as project_name
+           FROM connection_members cm
+           JOIN worktrees w ON cm.worktree_id = w.id
+           JOIN projects p ON cm.project_id = p.id
+           WHERE cm.connection_id = ?
+           ORDER BY cm.added_at ASC`
+        )
+        .all(row.id) as ConnectionWithMembers['members']
+      return { ...row, members }
+    })
+  }
+
+  updateWorktree(id: string, data: WorktreeUpdate): Worktree | null {
+    const db = this.getDb()
+    const existing = this.getWorktree(id)
+    if (!existing) return null
+
+    const updates: string[] = []
+    const values: (string | number | null)[] = []
+
+    if (data.name !== undefined) {
+      updates.push('name = ?')
+      values.push(data.name)
+    }
+    if (data.branch_name !== undefined) {
+      updates.push('branch_name = ?')
+      values.push(data.branch_name)
+    }
+    if (data.status !== undefined) {
+      updates.push('status = ?')
+      values.push(data.status)
+    }
+    if (data.branch_renamed !== undefined) {
+      updates.push('branch_renamed = ?')
+      values.push(data.branch_renamed)
+    }
+    if (data.last_message_at !== undefined) {
+      updates.push('last_message_at = ?')
+      values.push(data.last_message_at)
+    }
+    if (data.pinned !== undefined) {
+      updates.push('pinned = ?')
+      values.push(data.pinned)
+    }
+    if (data.last_accessed_at !== undefined) {
+      updates.push('last_accessed_at = ?')
+      values.push(data.last_accessed_at)
+    }
+
+    if (updates.length === 0) return existing
+
+    values.push(id)
+    db.prepare(`UPDATE worktrees SET ${updates.join(', ')} WHERE id = ?`).run(...values)
+
+    return this.getWorktree(id)
+  }
+
+  deleteWorktree(id: string): boolean {
+    const db = this.getDb()
+    const result = db.prepare('DELETE FROM worktrees WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  archiveWorktree(id: string): Worktree | null {
+    return this.updateWorktree(id, { status: 'archived' })
+  }
+
+  touchWorktree(id: string): void {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    db.prepare('UPDATE worktrees SET last_accessed_at = ? WHERE id = ?').run(now, id)
+  }
+
+  updateWorktreeContext(worktreeId: string, context: string | null): void {
+    const db = this.getDb()
+    db.prepare('UPDATE worktrees SET context = ? WHERE id = ?').run(context, worktreeId)
+  }
+
+  /**
+   * Append a session title to the worktree's session_titles JSON array.
+   * Skips duplicates.
+   */
+  appendSessionTitle(worktreeId: string, title: string): void {
+    const db = this.getDb()
+    const row = db.prepare('SELECT session_titles FROM worktrees WHERE id = ?').get(worktreeId) as
+      | Record<string, unknown>
+      | undefined
+    const titles: string[] = JSON.parse((row?.session_titles as string) || '[]')
+    if (!titles.includes(title)) {
+      titles.push(title)
+      db.prepare('UPDATE worktrees SET session_titles = ? WHERE id = ?').run(
+        JSON.stringify(titles),
+        worktreeId
+      )
+    }
+  }
+
+  /**
+   * Add an attachment to a worktree's attachments JSON array.
+   * Rejects duplicates by URL.
+   */
+  addAttachment(
+    worktreeId: string,
+    attachment: { type: 'jira' | 'figma'; url: string; label: string }
+  ): { success: boolean; error?: string } {
+    const db = this.getDb()
+    const row = db.prepare('SELECT attachments FROM worktrees WHERE id = ?').get(worktreeId) as
+      | Record<string, unknown>
+      | undefined
+    if (!row) return { success: false, error: 'Worktree not found' }
+    const attachments: Array<{
+      id: string
+      type: string
+      url: string
+      label: string
+      created_at: string
+    }> = JSON.parse((row.attachments as string) || '[]')
+    if (attachments.some((a) => a.url === attachment.url)) {
+      return { success: false, error: 'Already attached' }
+    }
+    const id = randomUUID()
+    attachments.push({
+      id,
+      type: attachment.type,
+      url: attachment.url,
+      label: attachment.label,
+      created_at: new Date().toISOString()
+    })
+    db.prepare('UPDATE worktrees SET attachments = ? WHERE id = ?').run(
+      JSON.stringify(attachments),
+      worktreeId
+    )
+    return { success: true }
+  }
+
+  /**
+   * Remove an attachment from a worktree by attachment ID.
+   */
+  removeAttachment(worktreeId: string, attachmentId: string): { success: boolean; error?: string } {
+    const db = this.getDb()
+    const row = db.prepare('SELECT attachments FROM worktrees WHERE id = ?').get(worktreeId) as
+      | Record<string, unknown>
+      | undefined
+    if (!row) return { success: false, error: 'Worktree not found' }
+    const attachments: Array<{ id: string }> = JSON.parse((row.attachments as string) || '[]')
+    const filtered = attachments.filter((a) => a.id !== attachmentId)
+    if (filtered.length === attachments.length) {
+      return { success: false, error: 'Attachment not found' }
+    }
+    db.prepare('UPDATE worktrees SET attachments = ? WHERE id = ?').run(
+      JSON.stringify(filtered),
+      worktreeId
+    )
+    return { success: true }
+  }
+
+  /**
+   * Attach a GitHub PR to a worktree.
+   */
+  attachPR(
+    worktreeId: string,
+    prNumber: number,
+    prUrl: string
+  ): { success: boolean; error?: string } {
+    const db = this.getDb()
+    const row = db.prepare('SELECT id FROM worktrees WHERE id = ?').get(worktreeId)
+    if (!row) return { success: false, error: 'Worktree not found' }
+    db.prepare(
+      'UPDATE worktrees SET github_pr_number = ?, github_pr_url = ? WHERE id = ?'
+    ).run(prNumber, prUrl, worktreeId)
+    return { success: true }
+  }
+
+  /**
+   * Detach a GitHub PR from a worktree.
+   */
+  detachPR(worktreeId: string): { success: boolean; error?: string } {
+    const db = this.getDb()
+    const row = db.prepare('SELECT id FROM worktrees WHERE id = ?').get(worktreeId)
+    if (!row) return { success: false, error: 'Worktree not found' }
+    db.prepare(
+      'UPDATE worktrees SET github_pr_number = NULL, github_pr_url = NULL WHERE id = ?'
+    ).run(worktreeId)
+    return { success: true }
+  }
+
+  /**
+   * Update the last-used model for a worktree.
+   */
+  updateWorktreeModel(
+    worktreeId: string,
+    modelProviderId: string,
+    modelId: string,
+    modelVariant: string | null
+  ): void {
+    const db = this.getDb()
+    db.prepare(
+      `UPDATE worktrees
+       SET last_model_provider_id = ?, last_model_id = ?, last_model_variant = ?
+       WHERE id = ?`
+    ).run(modelProviderId, modelId, modelVariant, worktreeId)
+  }
+
+  /**
+   * Look up the worktree that owns a given session.
+   */
+  getWorktreeBySessionId(sessionId: string): Worktree | null {
+    const session = this.getSession(sessionId)
+    if (!session?.worktree_id) return null
+    return this.getWorktree(session.worktree_id)
+  }
+
+  // Session operations
+  createSession(data: SessionCreate): Session {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    const session: Session = {
+      id: randomUUID(),
+      worktree_id: data.worktree_id,
+      project_id: data.project_id,
+      connection_id: data.connection_id ?? null,
+      name: data.name ?? null,
+      status: 'active',
+      opencode_session_id: data.opencode_session_id ?? null,
+      agent_sdk: data.agent_sdk ?? 'opencode',
+      mode: data.mode ?? 'build',
+      session_type: data.session_type ?? 'default',
+      model_provider_id: data.model_provider_id ?? null,
+      model_id: data.model_id ?? null,
+      model_variant: data.model_variant ?? null,
+      created_at: now,
+      updated_at: now,
+      completed_at: null,
+      pinned_to_board: false
+    }
+
+    db.prepare(
+      `INSERT INTO sessions (id, worktree_id, project_id, connection_id, name, status, opencode_session_id, agent_sdk, mode, session_type, model_provider_id, model_id, model_variant, created_at, updated_at, completed_at, pinned_to_board)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      session.id,
+      session.worktree_id,
+      session.project_id,
+      session.connection_id,
+      session.name,
+      session.status,
+      session.opencode_session_id,
+      session.agent_sdk,
+      session.mode,
+      session.session_type,
+      session.model_provider_id,
+      session.model_id,
+      session.model_variant,
+      session.created_at,
+      session.updated_at,
+      session.completed_at,
+      0
+    )
+
+    return session
+  }
+
+  getSession(id: string): Session | null {
+    const db = this.getDb()
+    const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined
+    return row ? this.mapSessionRow(row) : null
+  }
+
+  getSessionByOpenCodeSessionId(opencodeSessionId: string): Session | null {
+    const db = this.getDb()
+    const row = db
+      .prepare('SELECT * FROM sessions WHERE opencode_session_id = ? LIMIT 1')
+      .get(opencodeSessionId) as Record<string, unknown> | undefined
+    return row ? this.mapSessionRow(row) : null
+  }
+
+  /**
+   * Resolve which SDK powers a session. `sessionKey` may be either the agent backend id
+   * stored in {@link Session.opencode_session_id} (OpenCode MCP id, ACP id, `pending::…`, etc.)
+   * or the Octob row id ({@link Session.id}) — callers do not always pass the same shape.
+   */
+  getAgentSdkForSession(
+    sessionKey: string
+  ): 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal' | null {
+    const db = this.getDb()
+    const row = db
+      .prepare(
+        'SELECT agent_sdk FROM sessions WHERE opencode_session_id = ? OR id = ? LIMIT 1'
+      )
+      .get(sessionKey, sessionKey) as
+      | { agent_sdk: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal' }
+      | undefined
+    return row?.agent_sdk ?? null
+  }
+
+  getSessionsByWorktree(worktreeId: string): Session[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare('SELECT * FROM sessions WHERE worktree_id = ? ORDER BY updated_at DESC')
+      .all(worktreeId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapSessionRow(row))
+  }
+
+  getSessionsByProject(projectId: string): Session[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare('SELECT * FROM sessions WHERE project_id = ? ORDER BY updated_at DESC')
+      .all(projectId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapSessionRow(row))
+  }
+
+  getActiveSessionsByWorktree(worktreeId: string): Session[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        "SELECT * FROM sessions WHERE worktree_id = ? AND status = 'active' ORDER BY updated_at DESC"
+      )
+      .all(worktreeId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapSessionRow(row))
+  }
+
+  getActiveBoardAssistantByProject(projectId: string): Session | null {
+    const db = this.getDb()
+    const row = db
+      .prepare(
+        "SELECT * FROM sessions WHERE project_id = ? AND session_type = 'board-assistant' AND status = 'active' ORDER BY updated_at DESC LIMIT 1"
+      )
+      .get(projectId) as Record<string, unknown> | undefined
+    return row ? this.mapSessionRow(row) : null
+  }
+
+  countActiveSessions(): number {
+    const db = this.getDb()
+    const row = db.prepare("SELECT COUNT(*) as count FROM sessions WHERE status = 'active'").get() as { count: number } | undefined
+    return row?.count ?? 0
+  }
+
+  updateSession(id: string, data: SessionUpdate): Session | null {
+    const db = this.getDb()
+    const existing = this.getSession(id)
+    if (!existing) return null
+
+    const updates: string[] = ['updated_at = ?']
+    const values: (string | number | null)[] = [new Date().toISOString()]
+
+    if (data.name !== undefined) {
+      updates.push('name = ?')
+      values.push(data.name)
+    }
+    if (data.status !== undefined) {
+      updates.push('status = ?')
+      values.push(data.status)
+    }
+    if (data.opencode_session_id !== undefined) {
+      updates.push('opencode_session_id = ?')
+      values.push(data.opencode_session_id)
+    }
+    if (data.agent_sdk !== undefined) {
+      updates.push('agent_sdk = ?')
+      values.push(data.agent_sdk)
+    }
+    if (data.mode !== undefined) {
+      updates.push('mode = ?')
+      values.push(data.mode)
+    }
+    if (data.session_type !== undefined) {
+      updates.push('session_type = ?')
+      values.push(data.session_type)
+    }
+    if (data.model_provider_id !== undefined) {
+      updates.push('model_provider_id = ?')
+      values.push(data.model_provider_id)
+    }
+    if (data.model_id !== undefined) {
+      updates.push('model_id = ?')
+      values.push(data.model_id)
+    }
+    if (data.model_variant !== undefined) {
+      updates.push('model_variant = ?')
+      values.push(data.model_variant)
+    }
+    if (data.completed_at !== undefined) {
+      updates.push('completed_at = ?')
+      values.push(data.completed_at)
+    }
+    if (data.pinned_to_board !== undefined) {
+      updates.push('pinned_to_board = ?')
+      values.push(data.pinned_to_board ? 1 : 0)
+    }
+
+    values.push(id)
+    db.prepare(`UPDATE sessions SET ${updates.join(', ')} WHERE id = ?`).run(...values)
+
+    return this.getSession(id)
+  }
+
+  deleteSession(id: string): boolean {
+    const db = this.getDb()
+    const result = db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  getPinnedSessions(worktreeId: string): Session[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        'SELECT * FROM sessions WHERE pinned_to_board = 1 AND worktree_id = ? ORDER BY updated_at DESC'
+      )
+      .all(worktreeId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapSessionRow(row))
+  }
+
+  searchSessions(options: SessionSearchOptions): SessionWithWorktree[] {
+    const db = this.getDb()
+    const conditions: string[] = []
+    const values: (string | null)[] = []
+
+    let query = `
+      SELECT
+        s.*,
+        w.name as worktree_name,
+        w.branch_name as worktree_branch_name,
+        p.name as project_name,
+        c.name as connection_name
+      FROM sessions s
+      LEFT JOIN worktrees w ON s.worktree_id = w.id
+      LEFT JOIN projects p ON s.project_id = p.id
+      LEFT JOIN connections c ON s.connection_id = c.id
+    `
+
+    if (options.keyword) {
+      conditions.push(`(
+        s.name LIKE ? OR
+        p.name LIKE ? OR
+        w.name LIKE ? OR
+        w.branch_name LIKE ? OR
+        c.name LIKE ?
+      )`)
+      const keyword = `%${options.keyword}%`
+      values.push(keyword, keyword, keyword, keyword, keyword)
+    }
+
+    if (options.project_id) {
+      conditions.push('s.project_id = ?')
+      values.push(options.project_id)
+    }
+
+    if (options.worktree_id) {
+      conditions.push('s.worktree_id = ?')
+      values.push(options.worktree_id)
+    }
+
+    if (options.dateFrom) {
+      conditions.push('s.created_at >= ?')
+      values.push(options.dateFrom)
+    }
+
+    if (options.dateTo) {
+      conditions.push('s.created_at <= ?')
+      values.push(options.dateTo)
+    }
+
+    if (!options.includeArchived) {
+      conditions.push("(w.status = 'active' OR w.id IS NULL)")
+    }
+
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ')
+    }
+
+    query += ' ORDER BY s.updated_at DESC'
+
+    const rows = db.prepare(query).all(...values) as Record<string, unknown>[]
+    return rows.map((row) => this.mapSessionRow(row) as SessionWithWorktree)
+  }
+
+  // Session draft operations
+  getSessionDraft(sessionId: string): string | null {
+    const db = this.getDb()
+    const row = db.prepare('SELECT draft_input FROM sessions WHERE id = ?').get(sessionId) as
+      | { draft_input: string | null }
+      | undefined
+    return row?.draft_input ?? null
+  }
+
+  updateSessionDraft(sessionId: string, draft: string | null): void {
+    const db = this.getDb()
+    db.prepare('UPDATE sessions SET draft_input = ? WHERE id = ?').run(draft, sessionId)
+  }
+
+  // Session message operations
+  createSessionMessage(data: SessionMessageCreate): SessionMessage {
+    const db = this.getDb()
+    const now = data.created_at ?? new Date().toISOString()
+    const message: SessionMessage = {
+      id: randomUUID(),
+      session_id: data.session_id,
+      role: data.role,
+      content: data.content,
+      opencode_message_id: data.opencode_message_id ?? null,
+      opencode_message_json: data.opencode_message_json ?? null,
+      opencode_parts_json: data.opencode_parts_json ?? null,
+      opencode_timeline_json: data.opencode_timeline_json ?? null,
+      created_at: now
+    }
+
+    db.prepare(
+      `INSERT INTO session_messages (
+        id,
+        session_id,
+        role,
+        content,
+        opencode_message_id,
+        opencode_message_json,
+        opencode_parts_json,
+        opencode_timeline_json,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      message.id,
+      message.session_id,
+      message.role,
+      message.content,
+      message.opencode_message_id,
+      message.opencode_message_json,
+      message.opencode_parts_json,
+      message.opencode_timeline_json,
+      message.created_at
+    )
+
+    // Update session updated_at
+    db.prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(now, data.session_id)
+
+    return message
+  }
+
+  updateSessionMessage(id: string, data: SessionMessageUpdate): SessionMessage | null {
+    const db = this.getDb()
+    const existing = db.prepare('SELECT * FROM session_messages WHERE id = ?').get(id) as
+      | SessionMessage
+      | undefined
+    if (!existing) return null
+
+    const updates: string[] = []
+    const values: (string | null)[] = []
+
+    if (data.content !== undefined) {
+      updates.push('content = ?')
+      values.push(data.content)
+    }
+    if (data.opencode_message_json !== undefined) {
+      updates.push('opencode_message_json = ?')
+      values.push(data.opencode_message_json)
+    }
+    if (data.opencode_parts_json !== undefined) {
+      updates.push('opencode_parts_json = ?')
+      values.push(data.opencode_parts_json)
+    }
+    if (data.opencode_timeline_json !== undefined) {
+      updates.push('opencode_timeline_json = ?')
+      values.push(data.opencode_timeline_json)
+    }
+
+    if (updates.length === 0) return existing
+
+    values.push(id)
+    db.prepare(`UPDATE session_messages SET ${updates.join(', ')} WHERE id = ?`).run(...values)
+
+    const updated = db.prepare('SELECT * FROM session_messages WHERE id = ?').get(id) as
+      | SessionMessage
+      | undefined
+    if (!updated) return null
+
+    db.prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(
+      new Date().toISOString(),
+      updated.session_id
+    )
+
+    return updated
+  }
+
+  getSessionMessageByOpenCodeId(
+    sessionId: string,
+    opencodeMessageId: string
+  ): SessionMessage | null {
+    const db = this.getDb()
+    const row = db
+      .prepare(
+        `SELECT * FROM session_messages
+         WHERE session_id = ? AND opencode_message_id = ?
+         ORDER BY created_at ASC
+         LIMIT 1`
+      )
+      .get(sessionId, opencodeMessageId) as SessionMessage | undefined
+    return row ?? null
+  }
+
+  upsertSessionMessageByOpenCodeId(data: SessionMessageUpsertByOpenCode): SessionMessage {
+    const existing = this.getSessionMessageByOpenCodeId(data.session_id, data.opencode_message_id)
+    if (existing) {
+      const updated = this.updateSessionMessage(existing.id, {
+        content: data.content,
+        opencode_message_json: data.opencode_message_json ?? existing.opencode_message_json,
+        opencode_parts_json: data.opencode_parts_json ?? existing.opencode_parts_json,
+        opencode_timeline_json: data.opencode_timeline_json ?? existing.opencode_timeline_json
+      })
+      if (!updated) return existing
+      return updated
+    }
+
+    return this.createSessionMessage({
+      session_id: data.session_id,
+      role: data.role,
+      content: data.content,
+      opencode_message_id: data.opencode_message_id,
+      opencode_message_json: data.opencode_message_json ?? null,
+      opencode_parts_json: data.opencode_parts_json ?? null,
+      opencode_timeline_json: data.opencode_timeline_json ?? null,
+      created_at: data.created_at
+    })
+  }
+
+  getSessionMessages(sessionId: string): SessionMessage[] {
+    const db = this.getDb()
+    return db
+      .prepare('SELECT * FROM session_messages WHERE session_id = ? ORDER BY created_at ASC')
+      .all(sessionId) as SessionMessage[]
+  }
+
+  deleteSessionMessage(id: string): boolean {
+    const db = this.getDb()
+    const result = db.prepare('DELETE FROM session_messages WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  replaceSessionMessages(sessionId: string, messages: SessionMessageCreate[]): SessionMessage[] {
+    const db = this.getDb()
+    const tx = db.transaction(() => {
+      db.prepare('DELETE FROM session_messages WHERE session_id = ?').run(sessionId)
+      const created: SessionMessage[] = []
+      for (const message of messages) {
+        created.push(
+          this.createSessionMessage({
+            ...message,
+            session_id: sessionId
+          })
+        )
+      }
+      return created
+    })
+    return tx()
+  }
+
+  upsertSessionActivity(data: SessionActivityCreate): SessionActivity {
+    const db = this.getDb()
+    const now = data.created_at ?? new Date().toISOString()
+    const id = data.id ?? randomUUID()
+
+    db.prepare(
+      `INSERT INTO session_activities (
+        id,
+        session_id,
+        agent_session_id,
+        thread_id,
+        turn_id,
+        item_id,
+        request_id,
+        kind,
+        tone,
+        summary,
+        payload_json,
+        sequence,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        agent_session_id = excluded.agent_session_id,
+        thread_id = excluded.thread_id,
+        turn_id = excluded.turn_id,
+        item_id = excluded.item_id,
+        request_id = excluded.request_id,
+        kind = excluded.kind,
+        tone = excluded.tone,
+        summary = excluded.summary,
+        payload_json = excluded.payload_json,
+        sequence = excluded.sequence,
+        created_at = excluded.created_at`
+    ).run(
+      id,
+      data.session_id,
+      data.agent_session_id ?? null,
+      data.thread_id ?? null,
+      data.turn_id ?? null,
+      data.item_id ?? null,
+      data.request_id ?? null,
+      data.kind,
+      data.tone,
+      data.summary,
+      data.payload_json ?? null,
+      data.sequence ?? null,
+      now
+    )
+
+    db.prepare('UPDATE sessions SET updated_at = ? WHERE id = ?').run(now, data.session_id)
+
+    const row = db.prepare('SELECT * FROM session_activities WHERE id = ?').get(id) as
+      | SessionActivity
+      | undefined
+    if (!row) {
+      throw new Error(`Failed to load session activity after upsert: ${id}`)
+    }
+    return row
+  }
+
+  getSessionActivities(sessionId: string): SessionActivity[] {
+    const db = this.getDb()
+    return db
+      .prepare(
+        `SELECT * FROM session_activities
+         WHERE session_id = ?
+         ORDER BY
+           CASE WHEN sequence IS NULL THEN 1 ELSE 0 END,
+           sequence ASC,
+           created_at ASC,
+           id ASC`
+      )
+      .all(sessionId) as SessionActivity[]
+  }
+
+  // Connection operations
+  createConnection(data: ConnectionCreate): Connection {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    const connection: Connection = {
+      id: randomUUID(),
+      name: data.name,
+      custom_name: data.custom_name ?? null,
+      path: data.path,
+      color: data.color ?? null,
+      pinned: 0,
+      status: 'active',
+      created_at: now,
+      updated_at: now
+    }
+
+    db.prepare(
+      `INSERT INTO connections (id, name, custom_name, path, color, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      connection.id,
+      connection.name,
+      connection.custom_name,
+      connection.path,
+      connection.color,
+      connection.status,
+      connection.created_at,
+      connection.updated_at
+    )
+
+    return connection
+  }
+
+  getConnection(id: string): ConnectionWithMembers | null {
+    const db = this.getDb()
+    const row = db.prepare('SELECT * FROM connections WHERE id = ?').get(id) as
+      | Connection
+      | undefined
+    if (!row) return null
+
+    const members = db
+      .prepare(
+        `SELECT cm.*, w.name as worktree_name, w.branch_name as worktree_branch,
+                w.path as worktree_path, p.name as project_name
+         FROM connection_members cm
+         JOIN worktrees w ON cm.worktree_id = w.id
+         JOIN projects p ON cm.project_id = p.id
+         WHERE cm.connection_id = ?
+         ORDER BY cm.added_at ASC`
+      )
+      .all(id) as ConnectionWithMembers['members']
+
+    return { ...row, members }
+  }
+
+  getAllConnections(): ConnectionWithMembers[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare("SELECT * FROM connections WHERE status = 'active' ORDER BY updated_at DESC")
+      .all() as Connection[]
+
+    return rows.map((row) => {
+      const members = db
+        .prepare(
+          `SELECT cm.*, w.name as worktree_name, w.branch_name as worktree_branch,
+                  w.path as worktree_path, p.name as project_name
+           FROM connection_members cm
+           JOIN worktrees w ON cm.worktree_id = w.id
+           JOIN projects p ON cm.project_id = p.id
+           WHERE cm.connection_id = ?
+           ORDER BY cm.added_at ASC`
+        )
+        .all(row.id) as ConnectionWithMembers['members']
+      return { ...row, members }
+    })
+  }
+
+  updateConnection(id: string, data: Partial<Connection>): Connection | null {
+    const db = this.getDb()
+    const existing = db.prepare('SELECT * FROM connections WHERE id = ?').get(id) as
+      | Connection
+      | undefined
+    if (!existing) return null
+
+    const updates: string[] = ['updated_at = ?']
+    const values: (string | number | null)[] = [new Date().toISOString()]
+
+    if (data.name !== undefined) {
+      updates.push('name = ?')
+      values.push(data.name)
+    }
+    if (data.custom_name !== undefined) {
+      updates.push('custom_name = ?')
+      values.push(data.custom_name ?? null)
+    }
+    if (data.path !== undefined) {
+      updates.push('path = ?')
+      values.push(data.path)
+    }
+    if (data.status !== undefined) {
+      updates.push('status = ?')
+      values.push(data.status)
+    }
+    if (data.color !== undefined) {
+      updates.push('color = ?')
+      values.push(data.color)
+    }
+    if (data.pinned !== undefined) {
+      updates.push('pinned = ?')
+      values.push(data.pinned)
+    }
+
+    values.push(id)
+    db.prepare(`UPDATE connections SET ${updates.join(', ')} WHERE id = ?`).run(...values)
+
+    return db.prepare('SELECT * FROM connections WHERE id = ?').get(id) as Connection
+  }
+
+  deleteConnection(id: string): boolean {
+    const db = this.getDb()
+    const result = db.prepare('DELETE FROM connections WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  createConnectionMember(data: ConnectionMemberCreate): ConnectionMember {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    const member: ConnectionMember = {
+      id: randomUUID(),
+      connection_id: data.connection_id,
+      worktree_id: data.worktree_id,
+      project_id: data.project_id,
+      symlink_name: data.symlink_name,
+      added_at: now
+    }
+
+    db.prepare(
+      `INSERT INTO connection_members (id, connection_id, worktree_id, project_id, symlink_name, added_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(
+      member.id,
+      member.connection_id,
+      member.worktree_id,
+      member.project_id,
+      member.symlink_name,
+      member.added_at
+    )
+
+    return member
+  }
+
+  deleteConnectionMember(connectionId: string, worktreeId: string): boolean {
+    const db = this.getDb()
+    const result = db
+      .prepare('DELETE FROM connection_members WHERE connection_id = ? AND worktree_id = ?')
+      .run(connectionId, worktreeId)
+    return result.changes > 0
+  }
+
+  getConnectionMembersByWorktree(worktreeId: string): ConnectionMember[] {
+    const db = this.getDb()
+    return db
+      .prepare('SELECT * FROM connection_members WHERE worktree_id = ?')
+      .all(worktreeId) as ConnectionMember[]
+  }
+
+  getActiveSessionsByConnection(connectionId: string): Session[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        "SELECT * FROM sessions WHERE connection_id = ? AND status = 'active' ORDER BY updated_at DESC"
+      )
+      .all(connectionId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapSessionRow(row))
+  }
+
+  getSessionsByConnection(connectionId: string): Session[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare('SELECT * FROM sessions WHERE connection_id = ? ORDER BY updated_at DESC')
+      .all(connectionId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapSessionRow(row))
+  }
+
+  // Space operations
+  createSpace(data: SpaceCreate): Space {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+
+    // New spaces get sort_order at the end
+    const maxOrder = db
+      .prepare('SELECT COALESCE(MAX(sort_order), -1) as max_order FROM spaces')
+      .get() as { max_order: number }
+
+    const space: Space = {
+      id: randomUUID(),
+      name: data.name,
+      icon_type: data.icon_type ?? 'default',
+      icon_value: data.icon_value ?? 'Folder',
+      sort_order: maxOrder.max_order + 1,
+      created_at: now
+    }
+
+    db.prepare(
+      `INSERT INTO spaces (id, name, icon_type, icon_value, sort_order, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(
+      space.id,
+      space.name,
+      space.icon_type,
+      space.icon_value,
+      space.sort_order,
+      space.created_at
+    )
+
+    return space
+  }
+
+  getSpace(id: string): Space | null {
+    const db = this.getDb()
+    const row = db.prepare('SELECT * FROM spaces WHERE id = ?').get(id) as Space | undefined
+    return row ?? null
+  }
+
+  listSpaces(): Space[] {
+    const db = this.getDb()
+    return db.prepare('SELECT * FROM spaces ORDER BY sort_order ASC').all() as Space[]
+  }
+
+  updateSpace(id: string, data: SpaceUpdate): Space | null {
+    const db = this.getDb()
+    const existing = this.getSpace(id)
+    if (!existing) return null
+
+    const updates: string[] = []
+    const values: (string | number)[] = []
+
+    if (data.name !== undefined) {
+      updates.push('name = ?')
+      values.push(data.name)
+    }
+    if (data.icon_type !== undefined) {
+      updates.push('icon_type = ?')
+      values.push(data.icon_type)
+    }
+    if (data.icon_value !== undefined) {
+      updates.push('icon_value = ?')
+      values.push(data.icon_value)
+    }
+    if (data.sort_order !== undefined) {
+      updates.push('sort_order = ?')
+      values.push(data.sort_order)
+    }
+
+    if (updates.length === 0) return existing
+
+    values.push(id)
+    db.prepare(`UPDATE spaces SET ${updates.join(', ')} WHERE id = ?`).run(...values)
+
+    return this.getSpace(id)
+  }
+
+  deleteSpace(id: string): boolean {
+    const db = this.getDb()
+    const result = db.prepare('DELETE FROM spaces WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  reorderSpaces(orderedIds: string[]): void {
+    const db = this.getDb()
+    const stmt = db.prepare('UPDATE spaces SET sort_order = ? WHERE id = ?')
+    const tx = db.transaction(() => {
+      for (let i = 0; i < orderedIds.length; i++) {
+        stmt.run(i, orderedIds[i])
+      }
+    })
+    tx()
+  }
+
+  // Project-Space assignment operations
+  assignProjectToSpace(projectId: string, spaceId: string): void {
+    const db = this.getDb()
+    db.prepare('INSERT OR IGNORE INTO project_spaces (project_id, space_id) VALUES (?, ?)').run(
+      projectId,
+      spaceId
+    )
+  }
+
+  removeProjectFromSpace(projectId: string, spaceId: string): void {
+    const db = this.getDb()
+    db.prepare('DELETE FROM project_spaces WHERE project_id = ? AND space_id = ?').run(
+      projectId,
+      spaceId
+    )
+  }
+
+  getProjectIdsForSpace(spaceId: string): string[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare('SELECT project_id FROM project_spaces WHERE space_id = ?')
+      .all(spaceId) as { project_id: string }[]
+    return rows.map((r) => r.project_id)
+  }
+
+  getAllProjectSpaceAssignments(): ProjectSpaceAssignment[] {
+    const db = this.getDb()
+    return db
+      .prepare('SELECT project_id, space_id FROM project_spaces')
+      .all() as ProjectSpaceAssignment[]
+  }
+
+  // Utility methods
+  getSchemaVersion(): number {
+    const version = this.getSetting('schema_version')
+    return version ? parseInt(version, 10) : 0
+  }
+
+  // Kanban ticket operations
+
+  createKanbanTicket(data: KanbanTicketCreate): KanbanTicket {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+
+    const id = data.id ?? randomUUID()
+    const column = data.column ?? 'todo'
+    let sortOrder: number
+    if (data.sort_order != null) {
+      sortOrder = data.sort_order
+    } else {
+      const maxRow = db.prepare(
+        'SELECT MAX(sort_order) as max_sort FROM kanban_tickets WHERE project_id = ? AND "column" = ? AND archived_at IS NULL'
+      ).get(data.project_id, column) as { max_sort: number | null } | undefined
+      sortOrder = (maxRow?.max_sort ?? -1) + 1
+    }
+    const description = data.description ?? null
+    const attachmentsJson = data.attachments ? JSON.stringify(data.attachments) : '[]'
+    const currentSessionId = data.current_session_id ?? null
+    const worktreeId = data.worktree_id ?? null
+    const mode = data.mode ?? null
+    const planReady = data.plan_ready ? 1 : 0
+    const externalProvider = data.external_provider ?? null
+    const externalId = data.external_id ?? null
+    const externalUrl = data.external_url ?? null
+    const githubPrNumber = data.github_pr_number ?? null
+    const githubPrUrl = data.github_pr_url ?? null
+    const mark = data.mark ?? null
+
+    db.prepare(
+      `INSERT INTO kanban_tickets (id, project_id, title, description, attachments, "column", sort_order, current_session_id, worktree_id, mode, plan_ready, external_provider, external_id, external_url, github_pr_number, github_pr_url, mark, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      data.project_id,
+      data.title,
+      description,
+      attachmentsJson,
+      column,
+      sortOrder,
+      currentSessionId,
+      worktreeId,
+      mode,
+      planReady,
+      externalProvider,
+      externalId,
+      externalUrl,
+      githubPrNumber,
+      githubPrUrl,
+      mark,
+      now,
+      now
+    )
+
+    return this.mapKanbanTicketRow({
+      id,
+      project_id: data.project_id,
+      title: data.title,
+      description,
+      attachments: attachmentsJson,
+      column,
+      sort_order: sortOrder,
+      current_session_id: currentSessionId,
+      worktree_id: worktreeId,
+      mode,
+      plan_ready: planReady,
+      external_provider: externalProvider,
+      external_id: externalId,
+      external_url: externalUrl,
+      github_pr_number: githubPrNumber,
+      github_pr_url: githubPrUrl,
+      mark,
+      total_tokens: 0,
+      created_at: now,
+      updated_at: now
+    })
+  }
+
+  createKanbanTicketBatch(data: KanbanTicketBatchCreate): KanbanTicketBatchCreateResult {
+    return this.transaction(() => {
+      const db = this.getDb()
+      const drafts = this.normalizeBatchDrafts(data.drafts)
+      const createdTickets: KanbanTicket[] = []
+      const createdByDraftKey = new Map<string, KanbanTicket>()
+
+      for (const draft of drafts) {
+        const ticket = this.createKanbanTicket({
+          project_id: draft.project_id,
+          title: draft.title,
+          description: draft.description ?? null,
+          attachments: draft.attachments ?? [],
+          column: draft.column,
+          sort_order: draft.sort_order,
+          current_session_id: draft.current_session_id,
+          worktree_id: draft.worktree_id,
+          mode: draft.mode,
+          plan_ready: draft.plan_ready,
+          external_provider: draft.external_provider,
+          external_id: draft.external_id,
+          external_url: draft.external_url,
+          github_pr_number: draft.github_pr_number,
+          github_pr_url: draft.github_pr_url,
+          mark: draft.mark
+        })
+        createdTickets.push(ticket)
+        createdByDraftKey.set(draft.draft_key, ticket)
+      }
+
+      const dependencies: TicketDependency[] = []
+      for (const draft of drafts) {
+        const dependentTicket = createdByDraftKey.get(draft.draft_key)
+        if (!dependentTicket) continue
+
+        for (const blockerDraftKey of draft.depends_on) {
+          const blockerTicket = createdByDraftKey.get(blockerDraftKey)
+          if (!blockerTicket) continue
+
+          const createdAt = new Date().toISOString()
+          db.prepare(
+            'INSERT INTO ticket_dependencies (dependent_id, blocker_id, created_at) VALUES (?, ?, ?)'
+          ).run(dependentTicket.id, blockerTicket.id, createdAt)
+          dependencies.push({
+            dependent_id: dependentTicket.id,
+            blocker_id: blockerTicket.id,
+            created_at: createdAt
+          })
+        }
+      }
+
+      return {
+        tickets: createdTickets,
+        dependencies
+      }
+    })
+  }
+
+  getKanbanTicket(id: string): KanbanTicket | null {
+    const db = this.getDb()
+    const row = db.prepare('SELECT * FROM kanban_tickets WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined
+    return row ? this.mapKanbanTicketRow(row) : null
+  }
+
+  getKanbanTicketByExternalId(
+    externalProvider: string,
+    externalId: string,
+    projectId: string
+  ): KanbanTicket | null {
+    const db = this.getDb()
+    const row = db
+      .prepare(
+        'SELECT * FROM kanban_tickets WHERE external_provider = ? AND external_id = ? AND project_id = ?'
+      )
+      .get(externalProvider, externalId, projectId) as Record<string, unknown> | undefined
+    return row ? this.mapKanbanTicketRow(row) : null
+  }
+
+  getKanbanTicketsByProject(projectId: string, includeArchived: boolean = false): KanbanTicket[] {
+    const db = this.getDb()
+    const query = includeArchived
+      ? 'SELECT * FROM kanban_tickets WHERE project_id = ? ORDER BY "column" ASC, sort_order ASC'
+      : 'SELECT * FROM kanban_tickets WHERE project_id = ? AND archived_at IS NULL ORDER BY "column" ASC, sort_order ASC'
+    const rows = db.prepare(query).all(projectId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapKanbanTicketRow(row))
+  }
+
+  updateKanbanTicket(id: string, data: KanbanTicketUpdate): KanbanTicket | null {
+    const db = this.getDb()
+    const existing = this.getKanbanTicket(id)
+    if (!existing) return null
+
+    const updates: string[] = ['updated_at = ?']
+    const values: (string | number | null)[] = [new Date().toISOString()]
+
+    if (data.title !== undefined) {
+      if (typeof data.title !== 'string' || data.title.trim().length === 0) {
+        throw new Error('Kanban ticket title must be a non-empty string')
+      }
+      updates.push('title = ?')
+      values.push(data.title.trim())
+    }
+    if (data.description !== undefined) {
+      updates.push('description = ?')
+      values.push(data.description)
+    }
+    if (data.attachments !== undefined) {
+      updates.push('attachments = ?')
+      values.push(JSON.stringify(data.attachments))
+    }
+    if (data.column !== undefined) {
+      updates.push('"column" = ?')
+      values.push(data.column)
+    }
+    if (data.sort_order !== undefined) {
+      updates.push('sort_order = ?')
+      values.push(data.sort_order)
+    }
+    if (data.current_session_id !== undefined) {
+      updates.push('current_session_id = ?')
+      values.push(data.current_session_id)
+    }
+    if (data.worktree_id !== undefined) {
+      updates.push('worktree_id = ?')
+      values.push(data.worktree_id)
+    }
+    if (data.mode !== undefined) {
+      updates.push('mode = ?')
+      values.push(data.mode)
+    }
+    if (data.plan_ready !== undefined) {
+      updates.push('plan_ready = ?')
+      values.push(data.plan_ready ? 1 : 0)
+    }
+    if (data.github_pr_number !== undefined) {
+      updates.push('github_pr_number = ?')
+      values.push(data.github_pr_number)
+    }
+    if (data.github_pr_url !== undefined) {
+      updates.push('github_pr_url = ?')
+      values.push(data.github_pr_url)
+    }
+    if (data.mark !== undefined) {
+      updates.push('mark = ?')
+      values.push(data.mark)
+    }
+    if (data.pending_launch_config !== undefined) {
+      updates.push('pending_launch_config = ?')
+      values.push(data.pending_launch_config)
+    }
+    if (data.note !== undefined) {
+      updates.push('note = ?')
+      values.push(data.note)
+    }
+
+    if (updates.length === 1) return existing // Only updated_at, nothing meaningful changed
+
+    values.push(id)
+    db.prepare(`UPDATE kanban_tickets SET ${updates.join(', ')} WHERE id = ?`).run(...values)
+
+    return this.getKanbanTicket(id)
+  }
+
+  deleteKanbanTicket(id: string): boolean {
+    const db = this.getDb()
+
+    // Clean up image attachment files from disk
+    const ticket = this.getKanbanTicket(id)
+    if (ticket) {
+      for (const attachment of ticket.attachments) {
+        const a = attachment as { type?: string; url?: string }
+        if (a.type === 'image' && a.url) {
+          deleteAttachment(a.url) // Best-effort, don't fail the delete
+        }
+      }
+    }
+
+    const result = db.prepare('DELETE FROM kanban_tickets WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  archiveKanbanTicket(id: string): KanbanTicket | null {
+    const db = this.getDb()
+    const existing = this.getKanbanTicket(id)
+    if (!existing) return null
+    const now = new Date().toISOString()
+    db.prepare('UPDATE kanban_tickets SET archived_at = ?, updated_at = ? WHERE id = ?')
+      .run(now, now, id)
+    return this.getKanbanTicket(id)
+  }
+
+  archiveAllDoneKanbanTickets(projectId: string): number {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    const result = db.prepare(
+      'UPDATE kanban_tickets SET archived_at = ?, updated_at = ? WHERE project_id = ? AND "column" = ? AND archived_at IS NULL'
+    ).run(now, now, projectId, 'done')
+    return result.changes
+  }
+
+  unarchiveKanbanTicket(id: string): KanbanTicket | null {
+    const db = this.getDb()
+    const existing = this.getKanbanTicket(id)
+    if (!existing) return null
+    const now = new Date().toISOString()
+    db.prepare('UPDATE kanban_tickets SET archived_at = NULL, updated_at = ? WHERE id = ?')
+      .run(now, id)
+    return this.getKanbanTicket(id)
+  }
+
+  moveKanbanTicket(id: string, column: KanbanTicketColumn, sortOrder: number): KanbanTicket | null {
+    const db = this.getDb()
+    const existing = this.getKanbanTicket(id)
+    if (!existing) return null
+
+    const now = new Date().toISOString()
+    db.prepare(
+      'UPDATE kanban_tickets SET "column" = ?, sort_order = ?, updated_at = ? WHERE id = ?'
+    ).run(column, sortOrder, now, id)
+
+    return this.getKanbanTicket(id)
+  }
+
+  reorderKanbanTicket(id: string, sortOrder: number): void {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    db.prepare('UPDATE kanban_tickets SET sort_order = ?, updated_at = ? WHERE id = ?').run(
+      sortOrder,
+      now,
+      id
+    )
+  }
+
+  addTicketTokens(ticketId: string, tokens: number): void {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    db.prepare(
+      'UPDATE kanban_tickets SET total_tokens = total_tokens + ?, updated_at = ? WHERE id = ?'
+    ).run(tokens, now, ticketId)
+  }
+
+  getKanbanTicketsBySession(sessionId: string): KanbanTicket[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        'SELECT * FROM kanban_tickets WHERE current_session_id = ? ORDER BY sort_order ASC'
+      )
+      .all(sessionId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapKanbanTicketRow(row))
+  }
+
+  syncPRToTickets(worktreeId: string, prNumber: number, prUrl: string): void {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    db.prepare(
+      'UPDATE kanban_tickets SET github_pr_number = ?, github_pr_url = ?, updated_at = ? WHERE worktree_id = ?'
+    ).run(prNumber, prUrl, now, worktreeId)
+  }
+
+  clearPRFromTickets(worktreeId: string): void {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    db.prepare(
+      'UPDATE kanban_tickets SET github_pr_number = NULL, github_pr_url = NULL, updated_at = ? WHERE worktree_id = ?'
+    ).run(now, worktreeId)
+  }
+
+  attachPRToTicket(ticketId: string, projectId: string, prNumber: number, prUrl: string): void {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    db.prepare(
+      'UPDATE kanban_tickets SET github_pr_number = ?, github_pr_url = ?, updated_at = ? WHERE id = ? AND project_id = ?'
+    ).run(prNumber, prUrl, now, ticketId, projectId)
+  }
+
+  detachPRFromTicket(ticketId: string, projectId: string): void {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    db.prepare(
+      'UPDATE kanban_tickets SET github_pr_number = NULL, github_pr_url = NULL, updated_at = ? WHERE id = ? AND project_id = ?'
+    ).run(now, ticketId, projectId)
+  }
+
+  detachWorktreeFromTickets(worktreeId: string): number {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    const result = db.prepare(
+      'UPDATE kanban_tickets SET worktree_id = NULL, updated_at = ? WHERE worktree_id = ?'
+    ).run(now, worktreeId)
+    return result.changes
+  }
+
+  addTicketDependency(
+    dependentId: string,
+    blockerId: string
+  ): { success: boolean; error?: string } {
+    // Fix 1: Self-dependency check (CRITICAL)
+    if (dependentId === blockerId) {
+      return { success: false, error: 'A ticket cannot depend on itself' }
+    }
+
+    return this.transaction(() => {
+      const db = this.getDb()
+
+      // Validate same project
+      const dependentTicket = db
+        .prepare('SELECT project_id FROM kanban_tickets WHERE id = ?')
+        .get(dependentId) as { project_id: string } | undefined
+      const blockerTicket = db
+        .prepare('SELECT project_id FROM kanban_tickets WHERE id = ?')
+        .get(blockerId) as { project_id: string } | undefined
+
+      // Fix 3: Separate error messages for non-existent tickets vs same project
+      if (!dependentTicket || !blockerTicket) {
+        return { success: false, error: 'One or both tickets do not exist' }
+      }
+      if (dependentTicket.project_id !== blockerTicket.project_id) {
+        return { success: false, error: 'Tickets must be in the same project' }
+      }
+
+      if (this.wouldCreateTicketDependencyCycle(db, dependentId, blockerId)) {
+        return {
+          success: false,
+          error: 'Adding this dependency would create a circular dependency'
+        }
+      }
+
+      // Fix 2: Check for existing dependency
+      const existing = db.prepare(
+        'SELECT 1 FROM ticket_dependencies WHERE dependent_id = ? AND blocker_id = ?'
+      ).get(dependentId, blockerId)
+      if (existing) {
+        return { success: true } // Idempotent - already exists
+      }
+
+      // Safe to insert
+      const now = new Date().toISOString()
+      db.prepare(
+        'INSERT INTO ticket_dependencies (dependent_id, blocker_id, created_at) VALUES (?, ?, ?)'
+      ).run(dependentId, blockerId, now)
+
+      return { success: true }
+    })
+  }
+
+  removeTicketDependency(dependentId: string, blockerId: string): boolean {
+    const db = this.getDb()
+    const result = db
+      .prepare('DELETE FROM ticket_dependencies WHERE dependent_id = ? AND blocker_id = ?')
+      .run(dependentId, blockerId)
+    return result.changes > 0
+  }
+
+  getBlockersForTicket(ticketId: string): KanbanTicket[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        `SELECT kt.* FROM kanban_tickets kt
+         JOIN ticket_dependencies td ON td.blocker_id = kt.id
+         WHERE td.dependent_id = ?`
+      )
+      .all(ticketId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapKanbanTicketRow(row))
+  }
+
+  getDependentsOfTicket(ticketId: string): KanbanTicket[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        `SELECT kt.* FROM kanban_tickets kt
+         JOIN ticket_dependencies td ON td.dependent_id = kt.id
+         WHERE td.blocker_id = ?`
+      )
+      .all(ticketId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapKanbanTicketRow(row))
+  }
+
+  getDependenciesForProject(projectId: string): TicketDependency[] {
+    const db = this.getDb()
+    return db
+      .prepare(
+        `SELECT td.* FROM ticket_dependencies td
+         JOIN kanban_tickets kt1 ON kt1.id = td.dependent_id
+         JOIN kanban_tickets kt2 ON kt2.id = td.blocker_id
+         WHERE kt1.project_id = ? AND kt2.project_id = ?`
+      )
+      .all(projectId, projectId) as TicketDependency[]
+  }
+
+  removeAllDependenciesForTicket(ticketId: string): number {
+    const db = this.getDb()
+    const result = db
+      .prepare('DELETE FROM ticket_dependencies WHERE dependent_id = ? OR blocker_id = ?')
+      .run(ticketId, ticketId)
+    return result.changes
+  }
+
+  updateProjectSimpleMode(projectId: string, enabled: boolean): void {
+    const db = this.getDb()
+    db.prepare('UPDATE projects SET kanban_simple_mode = ? WHERE id = ?').run(
+      enabled ? 1 : 0,
+      projectId
+    )
+  }
+
+  // Ticket followup message operations
+
+  createTicketFollowupMessage(data: TicketFollowupMessageCreate): TicketFollowupMessage {
+    const db = this.getDb()
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    const sessionId = data.session_id ?? null
+    const source = data.source ?? 'direct'
+    const role = data.role ?? 'user'
+
+    db.prepare(
+      `INSERT INTO ticket_followup_messages (id, ticket_id, content, role, mode, session_id, source, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, data.ticket_id, data.content, role, data.mode, sessionId, source, now)
+
+    return {
+      id,
+      ticket_id: data.ticket_id,
+      content: data.content,
+      role: role as 'user' | 'assistant',
+      mode: data.mode as 'build' | 'plan' | 'super-plan',
+      session_id: sessionId,
+      source: source as 'direct' | 'supercharge' | 'error_retry',
+      created_at: now
+    }
+  }
+
+  getTicketFollowupMessages(ticketId: string): TicketFollowupMessage[] {
+    const db = this.getDb()
+    const rows = db.prepare(
+      'SELECT * FROM ticket_followup_messages WHERE ticket_id = ? ORDER BY created_at ASC'
+    ).all(ticketId) as TicketFollowupMessage[]
+    return rows
+  }
+
+  // Diff comment operations
+
+  createDiffComment(data: DiffCommentCreate): DiffComment {
+    const db = this.getDb()
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    const lineEnd = data.line_end ?? null
+    const anchorText = data.anchor_text ?? null
+    const anchorContextBefore = data.anchor_context_before ?? null
+    const anchorContextAfter = data.anchor_context_after ?? null
+
+    db.prepare(
+      `INSERT INTO diff_comments (id, worktree_id, file_path, line_start, line_end, anchor_text, anchor_context_before, anchor_context_after, body, is_outdated, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+    ).run(id, data.worktree_id, data.file_path, data.line_start, lineEnd, anchorText, anchorContextBefore, anchorContextAfter, data.body, now, now)
+
+    return {
+      id,
+      worktree_id: data.worktree_id,
+      file_path: data.file_path,
+      line_start: data.line_start,
+      line_end: lineEnd,
+      anchor_text: anchorText,
+      anchor_context_before: anchorContextBefore,
+      anchor_context_after: anchorContextAfter,
+      body: data.body,
+      is_outdated: false,
+      created_at: now,
+      updated_at: now
+    }
+  }
+
+  getDiffComment(id: string): DiffComment | null {
+    const db = this.getDb()
+    const row = db.prepare('SELECT * FROM diff_comments WHERE id = ?').get(id) as Record<string, unknown> | undefined
+    if (!row) return null
+    return this.mapDiffCommentRow(row)
+  }
+
+  getDiffCommentsByWorktree(worktreeId: string): DiffComment[] {
+    const db = this.getDb()
+    const rows = db.prepare(
+      'SELECT * FROM diff_comments WHERE worktree_id = ? ORDER BY file_path, line_start'
+    ).all(worktreeId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapDiffCommentRow(row))
+  }
+
+  updateDiffComment(id: string, data: DiffCommentUpdate): DiffComment | null {
+    const db = this.getDb()
+    const existing = this.getDiffComment(id)
+    if (!existing) return null
+
+    const updates: string[] = []
+    const values: (string | number | null)[] = []
+
+    if (data.body !== undefined) {
+      updates.push('body = ?')
+      values.push(data.body)
+    }
+    if (data.line_start !== undefined) {
+      updates.push('line_start = ?')
+      values.push(data.line_start)
+    }
+    if (data.line_end !== undefined) {
+      updates.push('line_end = ?')
+      values.push(data.line_end)
+    }
+    if (data.anchor_text !== undefined) {
+      updates.push('anchor_text = ?')
+      values.push(data.anchor_text)
+    }
+    if (data.anchor_context_before !== undefined) {
+      updates.push('anchor_context_before = ?')
+      values.push(data.anchor_context_before)
+    }
+    if (data.anchor_context_after !== undefined) {
+      updates.push('anchor_context_after = ?')
+      values.push(data.anchor_context_after)
+    }
+    if (data.is_outdated !== undefined) {
+      updates.push('is_outdated = ?')
+      values.push(data.is_outdated ? 1 : 0)
+    }
+
+    if (updates.length === 0) return existing
+
+    const now = new Date().toISOString()
+    updates.push('updated_at = ?')
+    values.push(now)
+
+    values.push(id)
+    db.prepare(`UPDATE diff_comments SET ${updates.join(', ')} WHERE id = ?`).run(...values)
+
+    return this.getDiffComment(id)
+  }
+
+  setDiffCommentOutdated(id: string, isOutdated: boolean): DiffComment | null {
+    const db = this.getDb()
+    const existing = this.getDiffComment(id)
+    if (!existing) return null
+
+    const now = new Date().toISOString()
+    db.prepare('UPDATE diff_comments SET is_outdated = ?, updated_at = ? WHERE id = ?').run(
+      isOutdated ? 1 : 0,
+      now,
+      id
+    )
+
+    return this.getDiffComment(id)
+  }
+
+  deleteDiffComment(id: string): boolean {
+    const db = this.getDb()
+    const result = db.prepare('DELETE FROM diff_comments WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  clearAllDiffComments(worktreeId: string): number {
+    const db = this.getDb()
+    const result = db.prepare('DELETE FROM diff_comments WHERE worktree_id = ?').run(worktreeId)
+    return result.changes
+  }
+
+  // Check if tables exist
+  tableExists(tableName: string): boolean {
+    const db = this.getDb()
+    const result = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+      .get(tableName) as { name: string } | undefined
+    return !!result
+  }
+
+  // Get all indexes
+  getIndexes(): { name: string; tbl_name: string }[] {
+    const db = this.getDb()
+    return db
+      .prepare(
+        "SELECT name, tbl_name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'"
+      )
+      .all() as { name: string; tbl_name: string }[]
+  }
+
+  // Transaction wrapper
+  transaction<T>(fn: () => T): T {
+    const db = this.getDb()
+    return db.transaction(fn)()
+  }
+}
+
+// Singleton instance
+let dbService: DatabaseService | null = null
+
+export function getDatabase(): DatabaseService {
+  if (!dbService) {
+    dbService = new DatabaseService()
+    dbService.init()
+  }
+  return dbService
+}
+
+export function closeDatabase(): void {
+  if (dbService) {
+    dbService.close()
+    dbService = null
+  }
+}

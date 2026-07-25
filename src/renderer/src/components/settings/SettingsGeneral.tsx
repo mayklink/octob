@@ -1,0 +1,732 @@
+import { useThemeStore } from '@/stores/useThemeStore'
+import { DEFAULT_THEME_ID } from '@/lib/themes'
+import { useSettingsStore, type UiLocale } from '@/stores/useSettingsStore'
+import { RotateCcw, Sparkles } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
+import { useShortcutStore } from '@/stores/useShortcutStore'
+import { toast } from '@/lib/toast'
+import type { UsageProvider } from '@shared/types/usage'
+import claudeIcon from '@/assets/model-icons/claude.svg'
+import openaiIcon from '@/assets/model-icons/openai.svg'
+import antigravityIcon from '@/assets/model-icons/antigravity.svg'
+import { isAgentSdkAvailable } from '@/lib/agent-sdk-availability'
+import {
+  ONBOARDING_TOUR_SETTING_KEY,
+  RESTART_ONBOARDING_TOUR_EVENT
+} from '@/components/onboarding'
+import { useTranslation } from 'react-i18next'
+
+export function SettingsGeneral(): React.JSX.Element {
+  const { t } = useTranslation()
+  const { setTheme } = useThemeStore()
+  const {
+    uiLocale,
+    autoStartSession,
+    autoPullBeforeWorktree,
+    boardMode,
+    followUpTriggerColumn,
+    autoCodeReviewEnabled,
+    vimModeEnabled,
+    keepAwakeEnabled,
+    mergeConflictMode,
+    tipsEnabled,
+    breedType,
+    showModelIcons,
+    showModelProvider,
+    usageIndicatorMode,
+    usageIndicatorProviders,
+    defaultAgentSdk,
+    availableAgentSdks,
+    stripAtMentions,
+    updateSetting,
+    resetToDefaults
+  } = useSettingsStore()
+  const { resetToDefaults: resetShortcuts } = useShortcutStore()
+
+  const handleResetAll = (): void => {
+    resetToDefaults()
+    resetShortcuts()
+    setTheme(DEFAULT_THEME_ID)
+    toast.success(t('settings.general.resetAllToast'))
+  }
+
+  const toggleProvider = (provider: UsageProvider): void => {
+    const current = usageIndicatorProviders
+    const updated = current.includes(provider)
+      ? current.filter((p) => p !== provider)
+      : [...current, provider]
+    updateSetting('usageIndicatorProviders', updated)
+  }
+
+  const setLocale = (locale: UiLocale): void => {
+    updateSetting('uiLocale', locale)
+  }
+
+  const opencodeAvailable = isAgentSdkAvailable('opencode', availableAgentSdks)
+  const claudeAvailable = isAgentSdkAvailable('claude-code', availableAgentSdks)
+  const codexAvailable = isAgentSdkAvailable('codex', availableAgentSdks)
+  const mistralVibeAvailable = isAgentSdkAvailable('mistral-vibe', availableAgentSdks)
+  const cursorCliAvailable = isAgentSdkAvailable('cursor-cli', availableAgentSdks)
+  const antigravityAvailable = isAgentSdkAvailable('antigravity', availableAgentSdks)
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-base font-medium mb-1">{t('settings.general.heading')}</h3>
+        <p className="text-sm text-muted-foreground">{t('settings.general.description')}</p>
+      </div>
+
+      <div className="space-y-2 pb-4 border-b">
+        <label className="text-sm font-medium">{t('settings.general.language')}</label>
+        <p className="text-xs text-muted-foreground">{t('settings.general.languageHint')}</p>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setLocale('en')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              uiLocale === 'en'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="ui-locale-en"
+          >
+            {t('settings.general.langEnglish')}
+          </button>
+          <button
+            type="button"
+            onClick={() => setLocale('pt-BR')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              uiLocale === 'pt-BR'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="ui-locale-pt-BR"
+          >
+            {t('settings.general.langPortuguese')}
+          </button>
+        </div>
+      </div>
+
+      {/* Auto-start session */}
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="text-sm font-medium">{t('settings.general.autoStartSession')}</label>
+          <p className="text-xs text-muted-foreground">{t('settings.general.autoStartSessionHint')}</p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={autoStartSession}
+          onClick={() => updateSetting('autoStartSession', !autoStartSession)}
+          className={cn(
+            'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+            autoStartSession ? 'bg-primary' : 'bg-muted'
+          )}
+          data-testid="auto-start-session-toggle"
+        >
+          <span
+            className={cn(
+              'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+              autoStartSession ? 'translate-x-4' : 'translate-x-0'
+            )}
+          />
+        </button>
+      </div>
+
+      {/* Auto-pull before worktree creation */}
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="text-sm font-medium">{t('settings.general.autoPull')}</label>
+          <p className="text-xs text-muted-foreground">{t('settings.general.autoPullHint')}</p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={autoPullBeforeWorktree}
+          onClick={() => updateSetting('autoPullBeforeWorktree', !autoPullBeforeWorktree)}
+          className={cn(
+            'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+            autoPullBeforeWorktree ? 'bg-primary' : 'bg-muted'
+          )}
+          data-testid="auto-pull-before-worktree-toggle"
+        >
+          <span
+            className={cn(
+              'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+              autoPullBeforeWorktree ? 'translate-x-4' : 'translate-x-0'
+            )}
+          />
+        </button>
+      </div>
+
+      {/* Board Mode */}
+      <div className="space-y-2">
+        <label className="text-sm font-medium">{t('settings.general.boardMode')}</label>
+        <p className="text-xs text-muted-foreground">{t('settings.general.boardModeHint')}</p>
+        <div className="flex gap-2">
+          <button
+            onClick={() => updateSetting('boardMode', 'toggle')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              boardMode === 'toggle'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="board-mode-toggle"
+          >
+            {t('settings.general.boardToggle')}
+          </button>
+          <button
+            onClick={() => updateSetting('boardMode', 'sticky-tab')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              boardMode === 'sticky-tab'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="board-mode-sticky-tab"
+          >
+            {t('settings.general.boardStickyTab')}
+          </button>
+        </div>
+      </div>
+
+      {/* Automatic code review */}
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="text-sm font-medium">{t('settings.general.autoCodeReview')}</label>
+          <p className="text-xs text-muted-foreground">{t('settings.general.autoCodeReviewHint')}</p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={autoCodeReviewEnabled}
+          onClick={() => updateSetting('autoCodeReviewEnabled', !autoCodeReviewEnabled)}
+          className={cn(
+            'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+            autoCodeReviewEnabled ? 'bg-primary' : 'bg-muted'
+          )}
+          data-testid="auto-code-review-toggle"
+        >
+          <span
+            className={cn(
+              'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+              autoCodeReviewEnabled ? 'translate-x-4' : 'translate-x-0'
+            )}
+          />
+        </button>
+      </div>
+
+      {/* Follow-up ticket trigger */}
+      <div className="space-y-2">
+        <label className="text-sm font-medium">{t('settings.general.followUpTrigger')}</label>
+        <p className="text-xs text-muted-foreground">{t('settings.general.followUpTriggerHint')}</p>
+        <div className="flex gap-2">
+          <button
+            onClick={() => updateSetting('followUpTriggerColumn', 'review')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              followUpTriggerColumn === 'review'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="follow-up-trigger-review"
+          >
+            {t('settings.general.review')}
+          </button>
+          <button
+            onClick={() => updateSetting('followUpTriggerColumn', 'done')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              followUpTriggerColumn === 'done'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="follow-up-trigger-done"
+          >
+            {t('settings.general.done')}
+          </button>
+        </div>
+      </div>
+
+      {/* Vim mode */}
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="text-sm font-medium">{t('settings.general.vimMode')}</label>
+          <p className="text-xs text-muted-foreground">{t('settings.general.vimModeHint')}</p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={vimModeEnabled}
+          onClick={() => updateSetting('vimModeEnabled', !vimModeEnabled)}
+          className={cn(
+            'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+            vimModeEnabled ? 'bg-primary' : 'bg-muted'
+          )}
+          data-testid="vim-mode-enabled-toggle"
+        >
+          <span
+            className={cn(
+              'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+              vimModeEnabled ? 'translate-x-4' : 'translate-x-0'
+            )}
+          />
+        </button>
+      </div>
+
+      {/* Keep computer awake during sessions */}
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="text-sm font-medium">{t('settings.general.keepAwake')}</label>
+          <p className="text-xs text-muted-foreground">{t('settings.general.keepAwakeHint')}</p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={keepAwakeEnabled}
+          onClick={() => updateSetting('keepAwakeEnabled', !keepAwakeEnabled)}
+          className={cn(
+            'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+            keepAwakeEnabled ? 'bg-primary' : 'bg-muted'
+          )}
+          data-testid="keep-awake-enabled-toggle"
+        >
+          <span
+            className={cn(
+              'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+              keepAwakeEnabled ? 'translate-x-4' : 'translate-x-0'
+            )}
+          />
+        </button>
+      </div>
+
+      {/* Merge conflict mode */}
+      <div className="space-y-2">
+        <label className="text-sm font-medium">{t('settings.general.mergeConflictMode')}</label>
+        <p className="text-xs text-muted-foreground">{t('settings.general.mergeConflictHint')}</p>
+        <div className="flex gap-2">
+          <button
+            onClick={() => updateSetting('mergeConflictMode', 'build')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              mergeConflictMode === 'build'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="merge-conflict-mode-build"
+          >
+            {t('settings.general.modeBuild')}
+          </button>
+          <button
+            onClick={() => updateSetting('mergeConflictMode', 'plan')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              mergeConflictMode === 'plan'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="merge-conflict-mode-plan"
+          >
+            {t('settings.general.modePlan')}
+          </button>
+          <button
+            onClick={() => updateSetting('mergeConflictMode', 'always-ask')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              mergeConflictMode === 'always-ask'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="merge-conflict-mode-always-ask"
+          >
+            {t('settings.general.alwaysAsk')}
+          </button>
+        </div>
+      </div>
+
+      {/* Tips */}
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="text-sm font-medium">{t('settings.general.showTips')}</label>
+          <p className="text-xs text-muted-foreground">{t('settings.general.showTipsHint')}</p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={tipsEnabled}
+          onClick={() => updateSetting('tipsEnabled', !tipsEnabled)}
+          className={cn(
+            'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+            tipsEnabled ? 'bg-primary' : 'bg-muted'
+          )}
+          data-testid="tips-enabled-toggle"
+        >
+          <span
+            className={cn(
+              'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+              tipsEnabled ? 'translate-x-4' : 'translate-x-0'
+            )}
+          />
+        </button>
+      </div>
+
+      {/* Model icons */}
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="text-sm font-medium">{t('settings.general.modelIcons')}</label>
+          <p className="text-xs text-muted-foreground">{t('settings.general.modelIconsHint')}</p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={showModelIcons}
+          onClick={() => updateSetting('showModelIcons', !showModelIcons)}
+          className={cn(
+            'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+            showModelIcons ? 'bg-primary' : 'bg-muted'
+          )}
+          data-testid="show-model-icons-toggle"
+        >
+          <span
+            className={cn(
+              'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+              showModelIcons ? 'translate-x-4' : 'translate-x-0'
+            )}
+          />
+        </button>
+      </div>
+
+      {/* Show model provider */}
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="text-sm font-medium">{t('settings.general.showModelProvider')}</label>
+          <p className="text-xs text-muted-foreground">
+            {t('settings.general.showModelProviderHint')}
+          </p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={showModelProvider}
+          onClick={() => updateSetting('showModelProvider', !showModelProvider)}
+          className={cn(
+            'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+            showModelProvider ? 'bg-primary' : 'bg-muted'
+          )}
+          data-testid="show-model-provider-toggle"
+        >
+          <span
+            className={cn(
+              'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+              showModelProvider ? 'translate-x-4' : 'translate-x-0'
+            )}
+          />
+        </button>
+      </div>
+
+      {/* Usage indicator */}
+      <div className="space-y-2">
+        <label className="text-sm font-medium">{t('settings.general.usageIndicator')}</label>
+        <p className="text-xs text-muted-foreground">{t('settings.general.usageIndicatorHint')}</p>
+        <div className="flex gap-2">
+          <button
+            onClick={() => updateSetting('usageIndicatorMode', 'current-agent')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              usageIndicatorMode === 'current-agent'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="usage-indicator-mode-current-agent"
+          >
+            {t('settings.general.currentAgent')}
+          </button>
+          <button
+            onClick={() => updateSetting('usageIndicatorMode', 'specific-providers')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              usageIndicatorMode === 'specific-providers'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="usage-indicator-mode-specific-providers"
+          >
+            {t('settings.general.specificProviders')}
+          </button>
+        </div>
+        {usageIndicatorMode === 'specific-providers' && (
+          <div className="ml-2 mt-2 space-y-2">
+            <button
+              role="checkbox"
+              aria-checked={usageIndicatorProviders.includes('anthropic')}
+              onClick={() => toggleProvider('anthropic')}
+              className={cn(
+                'flex items-center gap-2 px-3 py-1.5 rounded-md text-sm border transition-colors w-full',
+                usageIndicatorProviders.includes('anthropic')
+                  ? 'bg-primary text-primary-foreground border-primary'
+                  : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+              )}
+              data-testid="usage-provider-anthropic"
+            >
+              <img src={claudeIcon} alt="Claude" className="h-3.5 w-3.5" />
+              Claude
+            </button>
+            <button
+              role="checkbox"
+              aria-checked={usageIndicatorProviders.includes('openai')}
+              onClick={() => toggleProvider('openai')}
+              className={cn(
+                'flex items-center gap-2 px-3 py-1.5 rounded-md text-sm border transition-colors w-full',
+                usageIndicatorProviders.includes('openai')
+                  ? 'bg-primary text-primary-foreground border-primary'
+                  : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+              )}
+              data-testid="usage-provider-openai"
+            >
+              <img src={openaiIcon} alt="OpenAI" className="h-3.5 w-3.5" />
+              OpenAI
+            </button>
+            <button
+              role="checkbox"
+              aria-checked={usageIndicatorProviders.includes('google')}
+              onClick={() => toggleProvider('google')}
+              className={cn(
+                'flex items-center gap-2 px-3 py-1.5 rounded-md text-sm border transition-colors w-full',
+                usageIndicatorProviders.includes('google')
+                  ? 'bg-primary text-primary-foreground border-primary'
+                  : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+              )}
+              data-testid="usage-provider-google"
+            >
+              <img src={antigravityIcon} alt="Antigravity" className="h-3.5 w-3.5" />
+              Antigravity
+            </button>
+            {usageIndicatorProviders.length === 0 && (
+              <p className="text-xs text-muted-foreground/70 italic">
+                {t('settings.general.usageProviderPick')}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Default Agent SDK */}
+      <div className="space-y-2" data-testid="agent-sdk-selector">
+        <label className="text-sm font-medium">{t('settings.general.aiProvider')}</label>
+        <p className="text-xs text-muted-foreground">{t('settings.general.aiProviderHint')}</p>
+        <div className="flex gap-2">
+          <button
+            onClick={() => updateSetting('defaultAgentSdk', 'opencode')}
+            disabled={!opencodeAvailable}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+              defaultAgentSdk === 'opencode'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="agent-sdk-opencode"
+            title={!opencodeAvailable ? t('settings.general.opencodeUnavailable') : undefined}
+          >
+            OpenCode
+          </button>
+          <button
+            onClick={() => updateSetting('defaultAgentSdk', 'claude-code')}
+            disabled={!claudeAvailable}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+              defaultAgentSdk === 'claude-code'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="agent-sdk-claude-code"
+            title={!claudeAvailable ? t('settings.general.claudeUnavailable') : undefined}
+          >
+            Claude Code
+          </button>
+          <button
+            onClick={() => updateSetting('defaultAgentSdk', 'codex')}
+            disabled={!codexAvailable}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+              defaultAgentSdk === 'codex'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="agent-sdk-codex"
+            title={!codexAvailable ? t('settings.general.codexUnavailable') : undefined}
+          >
+            Codex
+          </button>
+          <button
+            onClick={() => updateSetting('defaultAgentSdk', 'mistral-vibe')}
+            disabled={!mistralVibeAvailable}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+              defaultAgentSdk === 'mistral-vibe'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="agent-sdk-mistral-vibe"
+            title={
+              !mistralVibeAvailable
+                ? 'Install Mistral Vibe (`vibe-acp`) and restart Octob.'
+                : undefined
+            }
+          >
+            Mistral Vibe
+          </button>
+          <button
+            onClick={() => updateSetting('defaultAgentSdk', 'cursor-cli')}
+            disabled={!cursorCliAvailable}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+              defaultAgentSdk === 'cursor-cli'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="agent-sdk-cursor-cli"
+            title={
+              !cursorCliAvailable
+                ? 'Install Cursor CLI (agent on PATH) and restart Octob.'
+                : undefined
+            }
+          >
+            Cursor CLI
+          </button>
+          <button
+            onClick={() => updateSetting('defaultAgentSdk', 'antigravity')}
+            disabled={!antigravityAvailable}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+              defaultAgentSdk === 'antigravity'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="agent-sdk-antigravity"
+            title={
+              !antigravityAvailable
+                ? 'Install Google Antigravity CLI (`agy`) and restart Octob.'
+                : availableAgentSdks?.antigravityVersion
+                  ? `Antigravity CLI v${availableAgentSdks.antigravityVersion}`
+                  : undefined
+            }
+          >
+            Antigravity
+            {availableAgentSdks?.antigravityVersion && (
+              <span className="ml-1 opacity-60">v{availableAgentSdks.antigravityVersion}</span>
+            )}
+          </button>
+          <button
+            onClick={() => updateSetting('defaultAgentSdk', 'terminal')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              defaultAgentSdk === 'terminal'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="agent-sdk-terminal"
+          >
+            Terminal
+          </button>
+        </div>
+        {availableAgentSdks &&
+          (!opencodeAvailable ||
+            !claudeAvailable ||
+            !codexAvailable ||
+            !mistralVibeAvailable ||
+            !cursorCliAvailable ||
+            !antigravityAvailable) && (
+          <p className="text-xs text-muted-foreground/70 italic">
+            {t('settings.general.providersDisabledHint')}
+          </p>
+        )}
+        {defaultAgentSdk === 'terminal' && (
+          <p className="text-xs text-muted-foreground/70 italic">
+            {t('settings.general.terminalManualHint')}
+          </p>
+        )}
+      </div>
+
+      {/* Strip @ from file mentions */}
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="text-sm font-medium">{t('settings.general.stripAtMentions')}</label>
+          <p className="text-xs text-muted-foreground">{t('settings.general.stripAtMentionsHint')}</p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={stripAtMentions}
+          onClick={() => updateSetting('stripAtMentions', !stripAtMentions)}
+          className={cn(
+            'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+            stripAtMentions ? 'bg-primary' : 'bg-muted'
+          )}
+          data-testid="strip-at-mentions-toggle"
+        >
+          <span
+            className={cn(
+              'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+              stripAtMentions ? 'translate-x-4' : 'translate-x-0'
+            )}
+          />
+        </button>
+      </div>
+
+      {/* Branch naming */}
+      <div className="space-y-2">
+        <label className="text-sm font-medium">{t('settings.general.branchNaming')}</label>
+        <p className="text-xs text-muted-foreground">{t('settings.general.branchNamingHint')}</p>
+        <div className="flex gap-2">
+          <button
+            onClick={() => updateSetting('breedType', 'dogs')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              breedType === 'dogs'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="breed-type-dogs"
+          >
+            {t('settings.general.dogs')}
+          </button>
+          <button
+            onClick={() => updateSetting('breedType', 'cats')}
+            className={cn(
+              'px-3 py-1.5 rounded-md text-sm border transition-colors',
+              breedType === 'cats'
+                ? 'bg-primary text-primary-foreground border-primary'
+                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
+            )}
+            data-testid="breed-type-cats"
+          >
+            {t('settings.general.cats')}
+          </button>
+        </div>
+      </div>
+
+      {/* Reset to defaults */}
+      <div className="pt-4 border-t">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={async () => {
+            await window.db.setting.delete(ONBOARDING_TOUR_SETTING_KEY)
+            window.dispatchEvent(new Event(RESTART_ONBOARDING_TOUR_EVENT))
+          }}
+          className="mr-2"
+          data-testid="restart-onboarding-tour"
+        >
+          <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+          {t('app.tour.restart')}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleResetAll}
+          className="text-destructive hover:text-destructive"
+          data-testid="reset-all-settings"
+        >
+          <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
+          {t('settings.general.resetAll')}
+        </Button>
+        <p className="text-xs text-muted-foreground mt-1">{t('settings.general.resetAllHint')}</p>
+      </div>
+    </div>
+  )
+}

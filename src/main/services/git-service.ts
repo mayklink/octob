@@ -324,6 +324,23 @@ export class GitService {
   }
 
   /**
+   * Create a linked worktree while opting Git for Windows into long-path support.
+   * The setting is scoped to this command so Octob does not mutate the user's
+   * repository or global Git configuration.
+   */
+  private async addWorktree(
+    branchName: string,
+    worktreePath: string,
+    startPoint: string
+  ): Promise<void> {
+    const args = ['worktree', 'add', '-b', branchName, worktreePath, startPoint]
+    if (platform() === 'win32') {
+      args.unshift('-c', 'core.longpaths=true')
+    }
+    await this.git.raw(args)
+  }
+
+  /**
    * Get all branch names in the repository
    */
   async getAllBranches(): Promise<string[]> {
@@ -505,7 +522,7 @@ export class GitService {
         const worktreePath = join(projectWorktreesDir, `${projectName}--${breedName}`)
 
         // Create the worktree with a new branch
-        await this.git.raw(['worktree', 'add', '-b', breedName, worktreePath, defaultBranch])
+        await this.addWorktree(breedName, worktreePath, defaultBranch)
 
         return {
           success: true,
@@ -1662,7 +1679,7 @@ export class GitService {
         worktreePath = join(projectWorktreesDir, `${projectName}--${newBranchName}`)
 
         try {
-          await this.git.raw(['worktree', 'add', '-b', newBranchName, worktreePath, sourceBranch])
+          await this.addWorktree(newBranchName, worktreePath, sourceBranch)
           created = true
           break
         } catch (error) {
@@ -1930,10 +1947,10 @@ export class GitService {
 
         try {
           if (prNumber != null || (options?.fetchRemoteUrl && options.fetchRef)) {
-            await this.git.raw(['worktree', 'add', '-b', worktreeName, worktreePath, 'FETCH_HEAD'])
+            await this.addWorktree(worktreeName, worktreePath, 'FETCH_HEAD')
           } else {
             // Create a new branch derived from the selected branch
-            await this.git.raw(['worktree', 'add', '-b', worktreeName, worktreePath, branchName])
+            await this.addWorktree(worktreeName, worktreePath, branchName)
           }
           return {
             success: true,

@@ -1,0 +1,55 @@
+name: Integrate main into octob
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integrate-main-into-octob
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'mayklink/Octo-b'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Merge into octob main
+        env:
+          OCTOB_SYNC_SSH_KEY: ${{ secrets.OCTOB_SYNC_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$OCTOB_SYNC_SSH_KEY"
+
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$OCTOB_SYNC_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+          TARGET_URL="git@github.com:mayklink/octob.git"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git branch source-main "$GITHUB_SHA"
+
+          if ! git ls-remote --exit-code --heads "$TARGET_URL" refs/heads/main >/dev/null 2>&1; then
+            git push "$TARGET_URL" source-main:main
+            exit 0
+          fi
+
+          git remote add target "$TARGET_URL"
+          git fetch target main
+          git checkout -B target-main target/main
+          git merge --no-edit --allow-unrelated-histories source-main
+          git push target target-main:main

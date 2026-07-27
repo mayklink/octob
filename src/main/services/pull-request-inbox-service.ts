@@ -63,7 +63,8 @@ function parseAzureRemote(
 }
 
 async function discoverLocalRepositories(
-  projects: PullRequestInboxProject[]
+  projects: PullRequestInboxProject[],
+  errors: Array<{ source: string; message: string }>
 ): Promise<LocalRepository[]> {
   const results = await Promise.all(
     projects.map(async (project): Promise<LocalRepository | null> => {
@@ -73,6 +74,21 @@ async function discoverLocalRepositories(
           windowsHide: true
         })
         const remoteUrl = stdout.trim()
+
+        try {
+          await execFileAsync('git', ['remote', 'update', '--prune'], {
+            cwd: project.path,
+            windowsHide: true
+          })
+        } catch (error) {
+          errors.push({
+            source: project.name,
+            message: `Could not update local Git references: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          })
+        }
+
         return {
           project,
           remoteUrl,
@@ -373,7 +389,7 @@ export async function listPullRequestInbox(
   const items: PullRequestInboxItem[] = []
   const repositories: PullRequestInboxRepository[] = []
   const errors: Array<{ source: string; message: string }> = []
-  const localRepositories = await discoverLocalRepositories(request.projects)
+  const localRepositories = await discoverLocalRepositories(request.projects, errors)
 
   await Promise.all([
     loadGitHub(localRepositories, request.githubToken ?? '', items, repositories, errors),

@@ -1,5 +1,5 @@
-# Full app packaging: electron-vite build + electron-builder (no GitHub Release publish).
-# Use this to download installers/zips from the Actions run summary -> Artifacts.
+# Full app packaging: electron-vite build + electron-builder.
+# Release files are published to Cloudflare R2 by publish-r2.yml.
 name: Build app (artifacts)
 
 on:
@@ -23,11 +23,6 @@ jobs:
         with:
           node-version: 22
           cache: yarn
-
-      - id: version
-        shell: bash
-        run: |
-          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Cache Windows node_modules
         id: cache-node-modules
@@ -68,13 +63,6 @@ jobs:
           find dist -maxdepth 1 -name '*.zip' | grep .
           echo "OK: installer and zip present"
 
-      - name: Upload Windows artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Octob-windows-v${{ steps.version.outputs.version }}
-          path: dist/
-          if-no-files-found: error
-
   build-linux:
     name: Linux (AppImage + deb + tar.gz)
     runs-on: ubuntu-latest
@@ -89,10 +77,6 @@ jobs:
         with:
           node-version: 22
           cache: yarn
-
-      - id: version
-        run: |
-          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Cache Electron downloads
         uses: actions/cache@v4
@@ -119,13 +103,6 @@ jobs:
           test "$(find dist -maxdepth 1 -name '*.AppImage' | head -1)" != "" || test "$(find dist -maxdepth 1 -name '*.deb' | head -1)" != ""
           echo "OK: Linux package(s) present"
 
-      - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Octob-linux-v${{ steps.version.outputs.version }}
-          path: dist/
-          if-no-files-found: error
-
   build-mac-unsigned:
     name: macOS unsigned (dmg + zip)
     runs-on: macos-latest
@@ -136,10 +113,6 @@ jobs:
         with:
           node-version: 22
           cache: yarn
-
-      - id: version
-        run: |
-          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Cache Electron downloads
         uses: actions/cache@v4
@@ -167,10 +140,3 @@ jobs:
           ls -la dist/
           test "$(find dist -maxdepth 1 \( -name '*.dmg' -o -name '*.zip' \) | head -1)" != ""
           echo "OK: macOS archive present"
-
-      - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Octob-macos-unsigned-v${{ steps.version.outputs.version }}
-          path: dist/
-          if-no-files-found: error

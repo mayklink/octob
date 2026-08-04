@@ -25,66 +25,67 @@ const CODEX_SOL_EFFORT_VARIANTS: Record<string, Record<string, never>> = {
   low: {}
 }
 
+const CODEX_LUNA_EFFORT_VARIANTS: Record<string, Record<string, never>> = {
+  max: {},
+  xhigh: {},
+  high: {},
+  medium: {},
+  low: {}
+}
+
 export const CODEX_MODELS: CodexModelInfo[] = [
   {
-    id: 'gpt-5.7-sol',
-    name: 'GPT-5.7-Sol',
-    limit: { context: 300000, output: 128000 },
-    variants: CODEX_SOL_EFFORT_VARIANTS,
-    defaultVariant: 'low'
-  },
-  {
     id: 'gpt-5.6-sol',
-    name: 'GPT-5.6-Sol',
+    name: 'GPT-5.6 Sol',
     limit: { context: 272000, output: 128000 },
     variants: CODEX_SOL_EFFORT_VARIANTS,
     defaultVariant: 'low'
   },
   {
-    id: 'gpt-5.6-codex',
-    name: 'GPT-5.6 Codex',
-    limit: { context: 272000, output: 64000 },
-    variants: CODEX_EFFORT_VARIANTS,
-    defaultVariant: 'high'
+    id: 'gpt-5.6-terra',
+    name: 'GPT-5.6 Terra',
+    limit: { context: 272000, output: 128000 },
+    variants: CODEX_SOL_EFFORT_VARIANTS,
+    defaultVariant: 'medium'
+  },
+  {
+    id: 'gpt-5.6-luna',
+    name: 'GPT-5.6 Luna',
+    limit: { context: 272000, output: 128000 },
+    variants: CODEX_LUNA_EFFORT_VARIANTS,
+    defaultVariant: 'medium'
   },
   {
     id: 'gpt-5.5',
     name: 'GPT-5.5',
-    limit: { context: 400000, output: 32000 },
+    limit: { context: 272000, output: 128000 },
     variants: CODEX_EFFORT_VARIANTS,
-    defaultVariant: 'high'
+    defaultVariant: 'medium'
   },
   {
     id: 'gpt-5.4',
     name: 'GPT-5.4',
-    limit: { context: 258400, output: 32000 },
+    limit: { context: 272000, output: 128000 },
     variants: CODEX_EFFORT_VARIANTS,
-    defaultVariant: 'high'
+    defaultVariant: 'medium'
   },
   {
-    id: 'gpt-5.3-codex',
-    name: 'GPT-5.3 Codex',
-    limit: { context: 258400, output: 32000 },
+    id: 'gpt-5.4-mini',
+    name: 'GPT-5.4 Mini',
+    limit: { context: 272000, output: 128000 },
     variants: CODEX_EFFORT_VARIANTS,
-    defaultVariant: 'high'
+    defaultVariant: 'medium'
   },
   {
     id: 'gpt-5.3-codex-spark',
     name: 'GPT-5.3 Codex Spark',
-    limit: { context: 258400, output: 16000 },
-    variants: CODEX_EFFORT_VARIANTS,
-    defaultVariant: 'high'
-  },
-  {
-    id: 'gpt-5.2-codex',
-    name: 'GPT-5.2 Codex',
-    limit: { context: 258400, output: 16000 },
+    limit: { context: 128000, output: 128000 },
     variants: CODEX_EFFORT_VARIANTS,
     defaultVariant: 'high'
   }
 ]
 
-export const CODEX_DEFAULT_MODEL = 'gpt-5.7-sol'
+export const CODEX_DEFAULT_MODEL = 'gpt-5.6-sol'
 
 /**
  * Returns all available Codex models in the format expected by the renderer.
@@ -133,21 +134,18 @@ export function getCodexModelInfo(
 // ── Model slug normalization ──────────────────────────────────────
 
 export const CODEX_MODEL_ALIASES: Record<string, string> = {
-  '5.7': 'gpt-5.7-sol',
-  'gpt-5.7': 'gpt-5.7-sol',
-  '5.7-sol': 'gpt-5.7-sol',
   '5.6': 'gpt-5.6-sol',
   'gpt-5.6': 'gpt-5.6-sol',
   '5.6-sol': 'gpt-5.6-sol',
-  '5.6-codex': 'gpt-5.6-codex',
+  '5.6-terra': 'gpt-5.6-terra',
+  '5.6-luna': 'gpt-5.6-luna',
   '5.5': 'gpt-5.5',
   '5.4': 'gpt-5.4',
-  '5.3': 'gpt-5.3-codex',
-  'gpt-5.3': 'gpt-5.3-codex',
+  '5.4-mini': 'gpt-5.4-mini',
+  '5.3': 'gpt-5.3-codex-spark',
+  'gpt-5.3': 'gpt-5.3-codex-spark',
   '5.3-spark': 'gpt-5.3-codex-spark',
-  'gpt-5.3-spark': 'gpt-5.3-codex-spark',
-  '5.2': 'gpt-5.2-codex',
-  'gpt-5.2': 'gpt-5.2-codex'
+  'gpt-5.3-spark': 'gpt-5.3-codex-spark'
 }
 
 export function normalizeCodexModelSlug(model: string | null | undefined): string | null {

@@ -2963,14 +2963,13 @@ export function SessionView({ sessionId }: SessionViewProps): React.JSX.Element 
         // renders immediately before the first thread/tokenUsage/updated event.
         if (sessionRecord?.agent_sdk === 'codex') {
           const codexModels = [
-            { id: 'gpt-5.7-sol', context: 300000 },
             { id: 'gpt-5.6-sol', context: 272000 },
-            { id: 'gpt-5.6-codex', context: 272000 },
-            { id: 'gpt-5.5', context: 400000 },
-            { id: 'gpt-5.4', context: 258400 },
-            { id: 'gpt-5.3-codex', context: 258400 },
-            { id: 'gpt-5.3-codex-spark', context: 258400 },
-            { id: 'gpt-5.2-codex', context: 258400 }
+            { id: 'gpt-5.6-terra', context: 272000 },
+            { id: 'gpt-5.6-luna', context: 272000 },
+            { id: 'gpt-5.5', context: 272000 },
+            { id: 'gpt-5.4', context: 272000 },
+            { id: 'gpt-5.4-mini', context: 272000 },
+            { id: 'gpt-5.3-codex-spark', context: 128000 }
           ]
           for (const m of codexModels) {
             useContextStore.getState().setModelLimit(m.id, m.context, 'codex')

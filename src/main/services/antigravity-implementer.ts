@@ -119,6 +119,17 @@ export class AntigravityImplementer implements AgentSdkImplementer {
     this.send('session.materialized', state, { newSessionId: id, wasFork: false })
   }
 
+  private async awaitMaterialization(state: AntigravitySessionState): Promise<void> {
+    if (state.conversationId) return
+    // Antigravity updates last_conversations.json asynchronously after the CLI exits.
+    // Keep polling briefly so the real conversation id reaches SQLite via
+    // session.materialized instead of leaving the temporary UUID persisted.
+    for (let attempt = 0; attempt < 20 && !state.conversationId; attempt += 1) {
+      await this.materialize(state)
+      if (!state.conversationId) await new Promise((resolveDelay) => setTimeout(resolveDelay, 100))
+    }
+  }
+
   private async primeTranscript(state: AntigravitySessionState): Promise<void> {
     if (!state.conversationId) return
     try {
@@ -234,7 +245,7 @@ export class AntigravityImplementer implements AgentSdkImplementer {
     const model = modelOverride?.modelID?.trim() || this.selectedModelId
     const args = ['--model', model]
     if (state.conversationId) args.push('--conversation', state.conversationId)
-    args.push('--print-timeout', '1800', '-p', text)
+    args.push('--print-timeout', '1800s', '-p', text)
     const emittedStepCountBeforePrompt = state.emittedSteps.size
 
     await new Promise<void>((resolvePromise, reject) => {
@@ -256,6 +267,8 @@ export class AntigravityImplementer implements AgentSdkImplementer {
       child.once('close', async (code) => {
         clearInterval(timer)
         state.child = null
+        await this.pollTranscript(state)
+        await this.awaitMaterialization(state)
         await this.pollTranscript(state)
         if (code !== 0) {
           const error = (stderr || stdout || `agy exited with code ${code}`).trim().slice(-2000)

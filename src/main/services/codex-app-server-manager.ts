@@ -494,7 +494,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         cwd: resolvedCwd,
         config: buildCodexConfigOverrides(options) ?? null,
         experimentalRawEvents: false,
-        persistExtendedHistory: false,
+        persistExtendedHistory: true,
         ...getDefaultCodexRuntimeConfig()
       }
 
@@ -504,7 +504,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           const resumeParams: Omit<ThreadResumeParams, 'serviceTier'> & { serviceTier?: string | null } = {
             ...threadStartParams,
             threadId: options.resumeThreadId,
-            persistExtendedHistory: false
+            persistExtendedHistory: true
           }
           threadOpenResponse = await this.sendRequest(context, 'thread/resume', resumeParams)
         } catch (error) {

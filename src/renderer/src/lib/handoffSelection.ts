@@ -37,10 +37,10 @@ const SDK_DISPLAY_NAMES: Record<HandoffAgentSdk, string> = {
 const FALLBACK_MODELS: Record<HandoffAgentSdk, SelectedModel> = {
   opencode: { providerID: 'anthropic', modelID: 'claude-opus-4-8' },
   'claude-code': { providerID: 'claude-code', modelID: 'opus', variant: 'xhigh' },
-  codex: { providerID: 'codex', modelID: 'gpt-5.7-sol' },
+  codex: { providerID: 'codex', modelID: 'gpt-5.6-sol' },
   'mistral-vibe': { providerID: 'mistral-vibe', modelID: 'devstral-large-latest' },
   'cursor-cli': { providerID: 'cursor-cli', modelID: 'auto' },
-  antigravity: { providerID: 'antigravity', modelID: 'Gemini 3.6 Flash (High)' }
+  antigravity: { providerID: 'antigravity', modelID: 'gemini-3.6-flash-high' }
 }
 
 const modelCatalogCache = new Map<HandoffAgentSdk, ProviderModels[]>()

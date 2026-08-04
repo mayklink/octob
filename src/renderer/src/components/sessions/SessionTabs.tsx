@@ -805,29 +805,7 @@ export function SessionTabs(): React.JSX.Element | null {
     }
   }
 
-  // Handle creating a new session
-  const handleCreateSession = async () => {
-    if (isConnectionMode && selectedConnectionId) {
-      const result = await createConnectionSession(selectedConnectionId)
-      if (!result.success) {
-        toast.error(result.error || 'Failed to create session')
-      } else {
-        useLayoutStore.getState().setWorkspaceContentView('session')
-      }
-      return
-    }
-
-    if (!selectedWorktreeId || !project) return
-
-    const result = await createSession(selectedWorktreeId, project.id)
-    if (!result.success) {
-      toast.error(result.error || 'Failed to create session')
-    } else {
-      useLayoutStore.getState().setWorkspaceContentView('session')
-    }
-  }
-
-  // Handle creating a new session with a specific agent SDK (from context menu)
+  // Handle creating a new session with the agent SDK selected from the create menu.
   const handleCreateSessionWithSdk = async (
     sdk: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
   ) => {
@@ -1244,68 +1222,68 @@ export function SessionTabs(): React.JSX.Element | null {
     >
       {/* New session / new ticket button - on the left */}
       {boardMode === 'sticky-tab' || !isBoardViewActive ? (
-        /* Session create button with right-click provider menu */
+        /* Session create button with provider selection menu */
         <Tip tipId="provider-right-click" enabled={multipleProvidersAvailable}>
           <div className="shrink-0">
-            <ContextMenu>
-              <ContextMenuTrigger asChild>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
                 <button
-                  onClick={handleCreateSession}
                   className="p-1.5 hover:bg-accent transition-colors border-r border-border"
                   data-testid="create-session"
-                  title="Create new session (right-click for options)"
+                  title="Create new session"
+                  aria-label="Create new session"
                 >
                   <Plus className="h-4 w-4" />
                 </button>
-              </ContextMenuTrigger>
-              <ContextMenuContent>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
                 {availableAgentSdks?.opencode && (
-                  <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('opencode')}>
+                  <DropdownMenuItem onSelect={() => handleCreateSessionWithSdk('opencode')}>
                     New OpenCode Session
-                  </ContextMenuItem>
+                  </DropdownMenuItem>
                 )}
                 {availableAgentSdks?.claude && (
-                  <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('claude-code')}>
+                  <DropdownMenuItem onSelect={() => handleCreateSessionWithSdk('claude-code')}>
                     New Claude Code Session
-                  </ContextMenuItem>
+                  </DropdownMenuItem>
                 )}
                 {availableAgentSdks?.codex && (
-                  <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('codex')}>
+                  <DropdownMenuItem onSelect={() => handleCreateSessionWithSdk('codex')}>
                     New Codex Session
-                  </ContextMenuItem>
+                  </DropdownMenuItem>
                 )}
                 {availableAgentSdks?.mistralVibe && (
-                  <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('mistral-vibe')}>
+                  <DropdownMenuItem onSelect={() => handleCreateSessionWithSdk('mistral-vibe')}>
                     New Mistral Vibe Session
-                  </ContextMenuItem>
+                  </DropdownMenuItem>
                 )}
                 {availableAgentSdks?.cursorCli && (
-                  <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('cursor-cli')}>
+                  <DropdownMenuItem onSelect={() => handleCreateSessionWithSdk('cursor-cli')}>
                     New Cursor CLI Session
-                  </ContextMenuItem>
+                  </DropdownMenuItem>
                 )}
                 {availableAgentSdks?.antigravity && (
-                  <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('antigravity')}>
+                  <DropdownMenuItem onSelect={() => handleCreateSessionWithSdk('antigravity')}>
                     New Antigravity Session
-                  </ContextMenuItem>
+                  </DropdownMenuItem>
                 )}
                 {(availableAgentSdks?.opencode ||
                   availableAgentSdks?.claude ||
                   availableAgentSdks?.codex ||
                   availableAgentSdks?.mistralVibe ||
                   availableAgentSdks?.cursorCli ||
-                  availableAgentSdks?.antigravity) && <ContextMenuSeparator />}
-                <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('terminal')}>
+                  availableAgentSdks?.antigravity) && <DropdownMenuSeparator />}
+                <DropdownMenuItem onSelect={() => handleCreateSessionWithSdk('terminal')}>
                   <TerminalSquare className="h-4 w-4 mr-2 text-emerald-500" />
                   New Terminal
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem onSelect={handleCreateBoardAssistant}>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={handleCreateBoardAssistant}>
                   <KanbanIcon className="h-4 w-4 mr-2 text-blue-500" />
                   New Board Assistant
-                </ContextMenuItem>
-              </ContextMenuContent>
-            </ContextMenu>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </Tip>
       ) : isBoardViewActive && !isConnectionBoardActive ? (

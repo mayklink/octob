@@ -33,7 +33,7 @@ export const TIP_DEFINITIONS: Record<string, TipDefinition> = {
   },
   'provider-right-click': {
     id: 'provider-right-click',
-    description: 'Right-click to start a new session with a different provider.',
+    description: 'Click to choose which provider starts the new session.',
     trigger: 'mount',
     priority: 4,
     side: 'bottom',

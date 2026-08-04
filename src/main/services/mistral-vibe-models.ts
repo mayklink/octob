@@ -19,23 +19,13 @@ const MISTRAL_VIBE_VARIANTS: Record<string, Record<string, never>> = {
   low: {}
 }
 
-export const MISTRAL_VIBE_DEFAULT_MODEL_ID = 'devstral-medium-latest'
+export const MISTRAL_VIBE_DEFAULT_MODEL_ID = 'devstral-large-latest'
 
 export const MISTRAL_VIBE_MODELS: MistralVibeModelInfo[] = [
   {
-    id: 'mistral-medium-3.5',
-    name: 'Mistral Medium 3.5',
+    id: 'devstral-large-latest',
+    name: 'Devstral Large (latest)',
     limit: { context: 262144, output: 65536 }
-  },
-  {
-    id: 'devstral-small',
-    name: 'Devstral Small',
-    limit: { context: 262144, output: 65536 }
-  },
-  {
-    id: 'local',
-    name: 'Local',
-    limit: { context: 131072, output: 8192 }
   },
   {
     id: 'devstral-medium-latest',
@@ -50,6 +40,31 @@ export const MISTRAL_VIBE_MODELS: MistralVibeModelInfo[] = [
   {
     id: 'mistral-large-latest',
     name: 'Mistral Large (latest)',
+    limit: { context: 131072, output: 8192 }
+  },
+  {
+    id: 'mistral-medium-3.5',
+    name: 'Mistral Medium 3.5',
+    limit: { context: 262144, output: 65536 }
+  },
+  {
+    id: 'mistral-small-latest',
+    name: 'Mistral Small (latest)',
+    limit: { context: 131072, output: 8192 }
+  },
+  {
+    id: 'codestral-latest',
+    name: 'Codestral (latest)',
+    limit: { context: 262144, output: 65536 }
+  },
+  {
+    id: 'devstral-small',
+    name: 'Devstral Small',
+    limit: { context: 262144, output: 65536 }
+  },
+  {
+    id: 'local',
+    name: 'Local',
     limit: { context: 131072, output: 8192 }
   }
 ]

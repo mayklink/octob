@@ -45,6 +45,23 @@ interface TranscriptRecord {
   step_index?: number
 }
 
+interface AntigravityStreamEvent {
+  event?: string
+  conversation_id?: string
+  step_update?: {
+    conversation_id?: string
+    step_index?: number
+    state?: string
+    step_type?: string
+    text_delta?: string
+  }
+  result?: {
+    conversation_id?: string
+    status?: string
+    response?: string
+  }
+}
+
 function normalizeWorkspace(value: string): string {
   const normalized = resolve(value).replace(/[\\/]+$/, '')
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized
@@ -109,14 +126,19 @@ export class AntigravityImplementer implements AgentSdkImplementer {
     return join(AGY_DATA_DIR, 'brain', conversationId, '.system_generated', 'logs', 'transcript.jsonl')
   }
 
+  private setConversationId(state: AntigravitySessionState, id: string): void {
+    if (!id || state.conversationId === id) return
+    state.conversationId = id
+    this.sessions.set(id, state)
+    this.send('session.materialized', state, { newSessionId: id, wasFork: false })
+  }
+
   private async materialize(state: AntigravitySessionState): Promise<void> {
     if (state.conversationId) return
     const id = await this.readConversationId(state.worktreePath)
     if (!id) return
     if (id === state.baselineConversationId) return
-    state.conversationId = id
-    this.sessions.set(id, state)
-    this.send('session.materialized', state, { newSessionId: id, wasFork: false })
+    this.setConversationId(state, id)
   }
 
   private async awaitMaterialization(state: AntigravitySessionState): Promise<void> {
@@ -245,9 +267,7 @@ export class AntigravityImplementer implements AgentSdkImplementer {
     const model = modelOverride?.modelID?.trim() || this.selectedModelId
     const args = ['--model', model]
     if (state.conversationId) args.push('--conversation', state.conversationId)
-    args.push('--print-timeout', '1800s', '-p', text)
-    const emittedStepCountBeforePrompt = state.emittedSteps.size
-
+    args.push('--output-format', 'stream-json', '--print-timeout', '1800s', '-p', text)
     await new Promise<void>((resolvePromise, reject) => {
       const child = spawn(this.binaryPath!, args, {
         cwd: worktreePath,
@@ -257,19 +277,53 @@ export class AntigravityImplementer implements AgentSdkImplementer {
       })
       state.child = child
       let stdout = ''
+      let stdoutRemainder = ''
       let stderr = ''
-      child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf-8') })
+      let resultResponse = ''
+      let emittedStreamText = false
+
+      const handleStreamLine = (line: string): void => {
+        if (!line.trim()) return
+        let event: AntigravityStreamEvent
+        try {
+          event = JSON.parse(line) as AntigravityStreamEvent
+        } catch {
+          return
+        }
+        captureAntigravityUsagePayload(event)
+        const conversationId =
+          event.conversation_id ?? event.step_update?.conversation_id ?? event.result?.conversation_id
+        if (conversationId) this.setConversationId(state, conversationId)
+
+        const update = event.step_update
+        if (
+          event.event === 'step_update' && update?.step_type === 'agent_response' &&
+          typeof update.text_delta === 'string' && update.text_delta.length > 0
+        ) {
+          emittedStreamText = true
+          this.emitAssistantText(state, update.text_delta)
+        }
+
+        if (event.event === 'result' && typeof event.result?.response === 'string') {
+          resultResponse = event.result.response
+        }
+      }
+
+      child.stdout.on('data', (chunk: Buffer) => {
+        const textChunk = chunk.toString('utf-8')
+        stdout += textChunk
+        const lines = (stdoutRemainder + textChunk).split(/\r?\n/)
+        stdoutRemainder = lines.pop() ?? ''
+        for (const line of lines) handleStreamLine(line)
+      })
       child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf-8') })
-      const timer = setInterval(() => void this.pollTranscript(state), 350)
       child.once('error', (error) => {
-        clearInterval(timer); state.child = null; reject(error)
+        state.child = null; reject(error)
       })
       child.once('close', async (code) => {
-        clearInterval(timer)
         state.child = null
-        await this.pollTranscript(state)
+        handleStreamLine(stdoutRemainder)
         await this.awaitMaterialization(state)
-        await this.pollTranscript(state)
         if (code !== 0) {
           const error = (stderr || stdout || `agy exited with code ${code}`).trim().slice(-2000)
           this.send('session.error', state, { error })
@@ -277,8 +331,8 @@ export class AntigravityImplementer implements AgentSdkImplementer {
           return
         }
         log.info('Antigravity prompt completed', { conversationId: state.conversationId, code })
-        if (state.emittedSteps.size === emittedStepCountBeforePrompt && stdout.trim()) {
-          this.emitAssistantText(state, stdout.trim())
+        if (!emittedStreamText && resultResponse.trim()) {
+          this.emitAssistantText(state, resultResponse.trim())
         }
         resolvePromise()
       })

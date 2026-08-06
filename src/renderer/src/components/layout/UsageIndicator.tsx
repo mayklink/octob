@@ -15,7 +15,7 @@ function getBarColor(percent: number): string {
   return 'bg-green-500'
 }
 
-function formatResetTime(isoString: string, type: 'five_hour' | 'seven_day'): string {
+function formatResetTime(isoString: string, windowSeconds?: number): string {
   const date = new Date(isoString)
   if (isNaN(date.getTime())) return ''
 
@@ -26,7 +26,7 @@ function formatResetTime(isoString: string, type: 'five_hour' | 'seven_day'): st
   const timeStr =
     minutes === 0 ? `${hour12}${ampm}` : `${hour12}:${String(minutes).padStart(2, '0')}${ampm}`
 
-  if (type === 'five_hour') {
+  if (windowSeconds !== undefined && windowSeconds < 86400) {
     return timeStr
   }
 
@@ -153,8 +153,7 @@ function ProviderUsageBlock({
                 />
               </button>
               <div className="flex-1 space-y-0.5">
-                <UsageRow label="5h" percent={0} resetTime="N/A" />
-                <UsageRow label="7d" percent={0} resetTime="N/A" />
+                <UsageRow label="—" percent={0} resetTime="N/A" />
               </div>
             </div>
           </div>
@@ -169,10 +168,6 @@ function ProviderUsageBlock({
     )
   }
 
-  const fiveHourPercent = Math.round(usage.five_hour.utilization)
-  const sevenDayPercent = Math.round(usage.seven_day.utilization)
-  const fiveHourReset = formatResetTime(usage.five_hour.resets_at, 'five_hour')
-  const sevenDayReset = formatResetTime(usage.seven_day.resets_at, 'seven_day')
   const extra = usage.extra_usage
 
   return (
@@ -196,8 +191,14 @@ function ProviderUsageBlock({
               />
             </button>
             <div className="flex-1 space-y-0.5">
-              <UsageRow label="5h" percent={fiveHourPercent} resetTime={fiveHourReset} />
-              <UsageRow label="7d" percent={sevenDayPercent} resetTime={sevenDayReset} />
+              {usage.windows.map((window) => (
+                <UsageRow
+                  key={window.id}
+                  label={window.label}
+                  percent={Math.round(window.utilization)}
+                  resetTime={formatResetTime(window.resets_at, window.window_seconds)}
+                />
+              ))}
             </div>
           </div>
         </div>
@@ -206,12 +207,12 @@ function ProviderUsageBlock({
         <div className="space-y-1">
           <div className="font-medium">{tooltipTitle}</div>
           {email && <div className="text-[10px] text-muted-foreground">{email}</div>}
-          <div className="text-[10px]">
-            5-hour: {Math.round(fiveHourPercent)}% (resets {fiveHourReset})
-          </div>
-          <div className="text-[10px]">
-            7-day: {Math.round(sevenDayPercent)}% (resets {sevenDayReset})
-          </div>
+          {usage.windows.map((window) => (
+            <div key={window.id} className="text-[10px]">
+              {window.label}: {Math.round(window.utilization)}% (resets{' '}
+              {formatResetTime(window.resets_at, window.window_seconds)})
+            </div>
+          ))}
           {provider === 'anthropic' && extra?.is_enabled && (
             <div className="border-t border-background/20 pt-1 text-[10px]">
               Extra: ${(extra.used_credits ?? 0).toFixed(2)} / ${(extra.monthly_limit ?? 0).toFixed(2)} used (

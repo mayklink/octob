@@ -25,7 +25,43 @@ interface StartCodeReviewOptions {
   autoFocus?: boolean
 }
 
+// Creating a session is asynchronous, while review requests can arrive from
+// multiple UI/lifecycle entry points in the same renderer tick. Share the same
+// promise so concurrent callers receive one session instead of creating two.
+const reviewStartsInFlight = new Map<string, Promise<string | null>>()
+
 export async function startCodeReviewSession({
+  worktreeId,
+  projectId,
+  worktreePath,
+  targetBranch,
+  manual = false,
+  agentSdk,
+  modelOverride,
+  promptPresetId,
+  pullRequest,
+  autoFocus = false
+}: StartCodeReviewOptions): Promise<string | null> {
+  const existingStart = reviewStartsInFlight.get(worktreeId)
+  if (existingStart) return existingStart
+
+  const start = startCodeReviewSessionInternal({
+    worktreeId,
+    projectId,
+    worktreePath,
+    targetBranch,
+    manual,
+    agentSdk,
+    modelOverride,
+    promptPresetId,
+    pullRequest,
+    autoFocus
+  }).finally(() => reviewStartsInFlight.delete(worktreeId))
+  reviewStartsInFlight.set(worktreeId, start)
+  return start
+}
+
+async function startCodeReviewSessionInternal({
   worktreeId,
   projectId,
   worktreePath,
@@ -39,12 +75,12 @@ export async function startCodeReviewSession({
 }: StartCodeReviewOptions): Promise<string | null> {
   const statusStore = useWorktreeStatusStore.getState()
 
+  const activeReviewSessionId = statusStore.reviewSessionByWorktree[worktreeId]
+  if (activeReviewSessionId) return manual ? activeReviewSessionId : null
   if (!manual) {
     if (!useSettingsStore.getState().autoCodeReviewEnabled) return null
-    if (statusStore.reviewSessionByWorktree[worktreeId]) return null
     if (statusStore.completedReviewSessionByWorktree[worktreeId]) return null
   }
-
   const currentBranchInfo = useGitStore.getState().branchInfoByWorktree.get(worktreePath)
   const currentReviewTarget = useGitStore.getState().reviewTargetBranch.get(worktreeId)
   const target = targetBranch || currentReviewTarget || currentBranchInfo?.tracking || 'origin/main'
@@ -75,7 +111,9 @@ export async function startCodeReviewSession({
 
   const sessionStore = useSessionStore.getState()
   const result = await sessionStore.createSession(worktreeId, projectId, agentSdk, undefined, {
-    autoFocus,
+    // Visible reviews are focused only after their prompt/name/status are ready.
+    // This prevents SessionView and this helper from racing to connect the same session.
+    autoFocus: false,
     ...(modelOverride ? { modelOverride } : {})
   })
   if (!result.success || !result.session) {
@@ -97,6 +135,12 @@ export async function startCodeReviewSession({
   const sessionModel = result.session.model_provider_id && result.session.model_id
     ? { providerID: result.session.model_provider_id, modelID: result.session.model_id, variant: result.session.model_variant ?? undefined }
     : resolveModelForSdk(sessionAgentSdk || 'opencode') ?? undefined
+
+  if (autoFocus) {
+    sessionStore.setPendingMessage(sessionId, prompt)
+    sessionStore.setActiveSession(sessionId)
+    return sessionId
+  }
 
   void (async () => {
     try {

@@ -291,6 +291,7 @@ export class CodexImplementer implements AgentSdkImplementer {
   private selectedVariant: string | undefined
   private manager: CodexAppServerManager = new CodexAppServerManager()
   private sessions = new Map<string, CodexSessionState>()
+  private pendingConnections = new Map<string, Promise<{ sessionId: string }>>()
   private pendingQuestions = new Map<string, PendingHitlEntry>()
   private pendingApprovalSessions = new Map<string, PendingHitlEntry>()
 
@@ -507,6 +508,37 @@ export class CodexImplementer implements AgentSdkImplementer {
   // ── Lifecycle ────────────────────────────────────────────────────
 
   async connect(worktreePath: string, octobSessionId: string): Promise<{ sessionId: string }> {
+    const existing = [...this.sessions.values()].find(
+      (session) =>
+        session.worktreePath === worktreePath && session.octobSessionId === octobSessionId
+    )
+    if (existing) {
+      log.info('Connect: reusing existing session', {
+        worktreePath,
+        octobSessionId,
+        threadId: existing.threadId
+      })
+      return { sessionId: existing.threadId }
+    }
+
+    const connectionKey = this.getSessionKey(worktreePath, octobSessionId)
+    const pending = this.pendingConnections.get(connectionKey)
+    if (pending) {
+      log.info('Connect: joining in-flight connection', { worktreePath, octobSessionId })
+      return pending
+    }
+
+    const connection = this.connectNewSession(worktreePath, octobSessionId).finally(() => {
+      this.pendingConnections.delete(connectionKey)
+    })
+    this.pendingConnections.set(connectionKey, connection)
+    return connection
+  }
+
+  private async connectNewSession(
+    worktreePath: string,
+    octobSessionId: string
+  ): Promise<{ sessionId: string }> {
     const resolvedModel = resolveCodexModelSlug(this.selectedModel)
     log.info('Connecting', { worktreePath, octobSessionId, model: resolvedModel })
 

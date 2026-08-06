@@ -142,7 +142,6 @@ export function registerScriptHandlers(mainWindow: BrowserWindow): void {
   )
 
   ipcMain.handle('port:get', async (_event, { cwd }: { cwd: string }) => {
-    const { getAssignedPort } = await import('../services/port-registry')
     return { port: getAssignedPort(cwd) }
   })
 

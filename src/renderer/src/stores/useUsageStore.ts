@@ -1,5 +1,11 @@
 import { create } from 'zustand'
-import type { UsageData, OpenAIUsageData, UsageProvider } from '@shared/types/usage'
+import type {
+  DisplayUsageData,
+  DisplayUsageWindow,
+  UsageData,
+  OpenAIUsageData,
+  UsageProvider
+} from '@shared/types/usage'
 
 export type { UsageData, UsageProvider }
 
@@ -204,15 +210,17 @@ export function normalizeUsage(
   anthropicUsage: UsageData | null | undefined,
   openaiUsage: OpenAIUsageData | null | undefined,
   googleUsage?: UsageData | null
-): UsageData | null {
+): DisplayUsageData | null {
   if (provider === 'none') return null
 
   if (provider === 'anthropic') {
-    return isAnthropicUsageData(anthropicUsage) ? anthropicUsage : null
+    return isAnthropicUsageData(anthropicUsage)
+      ? { windows: legacyUsageWindows(anthropicUsage), extra_usage: anthropicUsage.extra_usage }
+      : null
   }
 
   if (provider === 'google') {
-    return isAnthropicUsageData(googleUsage) ? googleUsage : null
+    return isAnthropicUsageData(googleUsage) ? { windows: legacyUsageWindows(googleUsage) } : null
   }
 
   if (!openaiUsage) return null
@@ -221,14 +229,35 @@ export function normalizeUsage(
   const primary = rateLimit?.primary_window
   const secondary = rateLimit?.secondary_window
 
+  const windows: DisplayUsageWindow[] = []
+  if (primary) windows.push(openAIUsageWindow('primary', primary))
+  if (secondary) windows.push(openAIUsageWindow('secondary', secondary))
+  return windows.length > 0 ? { windows } : null
+}
+
+function formatWindowLabel(seconds: number): string {
+  if (seconds > 0 && seconds % 604800 === 0) return `${seconds / 604800}w`
+  if (seconds > 0 && seconds % 86400 === 0) return `${seconds / 86400}d`
+  if (seconds > 0 && seconds % 3600 === 0) return `${seconds / 3600}h`
+  return 'Usage'
+}
+
+function openAIUsageWindow(
+  id: string,
+  window: NonNullable<OpenAIUsageData['rate_limit']['primary_window']>
+): DisplayUsageWindow {
   return {
-    five_hour: {
-      utilization: primary ? primary.used_percent : 0,
-      resets_at: primary ? new Date(primary.reset_at * 1000).toISOString() : ''
-    },
-    seven_day: {
-      utilization: secondary ? secondary.used_percent : 0,
-      resets_at: secondary ? new Date(secondary.reset_at * 1000).toISOString() : ''
-    }
+    id,
+    label: formatWindowLabel(window.limit_window_seconds),
+    utilization: window.used_percent,
+    resets_at: new Date(window.reset_at * 1000).toISOString(),
+    window_seconds: window.limit_window_seconds
   }
+}
+
+function legacyUsageWindows(usage: UsageData): DisplayUsageWindow[] {
+  return [
+    { id: 'five_hour', label: '5h', window_seconds: 18000, ...usage.five_hour },
+    { id: 'seven_day', label: '7d', window_seconds: 604800, ...usage.seven_day }
+  ]
 }

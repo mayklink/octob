@@ -7,6 +7,7 @@ interface ContextIndicatorProps {
   sessionId: string
   modelId: string
   providerId?: string
+  agentSdk?: string
 }
 
 function formatNumber(n: number): string {
@@ -23,7 +24,8 @@ function getBarColor(percent: number): string {
 export function ContextIndicator({
   sessionId,
   modelId,
-  providerId
+  providerId,
+  agentSdk
 }: ContextIndicatorProps): React.JSX.Element | null {
   const tokenInfo = useContextStore((state) => state.tokensBySession[sessionId])
   const sessionModel = useContextStore((state) => state.modelBySession[sessionId])
@@ -96,9 +98,9 @@ export function ContextIndicator({
               {tokens.reasoning > 0 && <div>Reasoning: {formatNumber(tokens.reasoning)}</div>}
             </div>
           )}
-          {cost > 0 && (
+          {cost > 0 && agentSdk !== 'codex' && (
             <div className="border-t border-border pt-1.5">
-              <div>Session cost: ${cost.toFixed(4)}</div>
+              <div>Provider-reported session cost: ${cost.toFixed(4)}</div>
             </div>
           )}
         </div>

@@ -42,3 +42,16 @@ export interface OpenAIUsageResult {
   data?: OpenAIUsageData
   error?: string
 }
+
+export interface DisplayUsageWindow {
+  id: string
+  label: string
+  utilization: number
+  resets_at: string
+  window_seconds?: number
+}
+
+export interface DisplayUsageData {
+  windows: DisplayUsageWindow[]
+  extra_usage?: UsageData['extra_usage']
+}

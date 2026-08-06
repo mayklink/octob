@@ -6004,6 +6004,7 @@ export function SessionView({ sessionId }: SessionViewProps): React.JSX.Element 
                   sessionId={sessionId}
                   modelId={currentModelId}
                   providerId={currentProviderId}
+                  agentSdk={sessionRecord?.agent_sdk}
                 />
                 <span
                   className={cn(

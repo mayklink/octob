@@ -6,6 +6,7 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { readFileAsBase64 } from '../services/file-ops'
 import { telemetryService } from '../services/telemetry-service'
+import { listPullRequestInbox } from '../services/pull-request-inbox-service'
 import { openPathWithPreferredEditor } from './settings-handlers'
 import type { PRReviewComment } from '@shared/types/git'
 import type { PullRequestInboxRequest } from '@shared/types/pull-request-inbox'
@@ -91,7 +92,6 @@ interface GQLReviewThread {
 export function registerGitFileHandlers(window: BrowserWindow): void {
   ipcMain.handle('git:listPullRequestInbox', async (_event, request: PullRequestInboxRequest) => {
     try {
-      const { listPullRequestInbox } = await import('../services/pull-request-inbox-service')
       return await listPullRequestInbox(request)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

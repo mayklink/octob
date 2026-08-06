@@ -4,12 +4,72 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { containsAnsi } from '@/lib/ansi-utils'
 import { coerceOpenCodeRenderableString } from '@/lib/opencode-transcript'
+import { useConnectionStore } from '@/stores/useConnectionStore'
+import { useFileViewerStore } from '@/stores/useFileViewerStore'
+import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { CodeBlock } from './CodeBlock'
 import type { Components } from 'react-markdown'
 
 interface MarkdownRendererProps {
   /** May be structured wire payloads (e.g. `{ content: string }`) from some backends. */
   content: string | unknown
+}
+
+function decodeLinkTarget(href: string): string {
+  try {
+    return decodeURIComponent(href)
+  } catch {
+    return href
+  }
+}
+
+function localFilePath(href: string | undefined): string | null {
+  if (!href) return null
+  const decoded = decodeLinkTarget(href)
+  if (decoded.startsWith('file://')) {
+    try {
+      return new URL(decoded).pathname
+    } catch {
+      return null
+    }
+  }
+  if (/^\/(?!\/)/.test(decoded) || /^[A-Za-z]:[\\/]/.test(decoded)) {
+    return decoded.replace(/:\d+(?::\d+)?$/, '')
+  }
+  return null
+}
+
+function MarkdownLink({ href, children }: { href?: string; children?: React.ReactNode }): React.JSX.Element {
+  const path = localFilePath(href)
+  if (!path) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-blue-500 hover:text-blue-400 underline underline-offset-2"
+      >
+        {children}
+      </a>
+    )
+  }
+
+  return (
+    <a
+      href={href}
+      className="text-blue-500 hover:text-blue-400 underline underline-offset-2"
+      onClick={(event) => {
+        event.preventDefault()
+        const worktreeId = useWorktreeStore.getState().selectedWorktreeId
+        const connectionId = useConnectionStore.getState().selectedConnectionId
+        const contextId = worktreeId ?? connectionId ?? 'local-file'
+        const name = path.replace(/\\/g, '/').split('/').pop() || path
+        useFileViewerStore.getState().openFile(path, name, contextId)
+      }}
+    >
+      {children}
+    </a>
+  )
 }
 
 const components: Components = {
@@ -38,16 +98,7 @@ const components: Components = {
     </th>
   ),
   td: ({ children }) => <td className="border border-border px-3 py-1.5">{children}</td>,
-  a: ({ href, children }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="text-blue-500 hover:text-blue-400 underline underline-offset-2"
-    >
-      {children}
-    </a>
-  ),
+  a: MarkdownLink,
   hr: () => <hr className="my-4 border-border" />,
   strong: ({ children }) => <strong className="font-bold">{children}</strong>,
   em: ({ children }) => <em className="italic">{children}</em>,

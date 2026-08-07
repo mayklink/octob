@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, unlinkSync } from 'fs'
 import { dirname, isAbsolute, relative, resolve } from 'path'
 import { getImageMimeType } from '@shared/types/file-utils'
 
@@ -76,6 +76,38 @@ export function writeFile(filePath: string, content: string): { success: boolean
       return { success: false, error: 'Path is a directory' }
     }
     writeFileSync(filePath, content, 'utf-8')
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }
+  }
+}
+
+export function deleteFile(
+  worktreePath: string,
+  filePath: string
+): { success: boolean; error?: string } {
+  try {
+    if (!worktreePath || typeof worktreePath !== 'string') {
+      return { success: false, error: 'Invalid worktree path' }
+    }
+    if (!filePath || typeof filePath !== 'string') {
+      return { success: false, error: 'Invalid file path' }
+    }
+
+    const root = resolve(worktreePath)
+    const target = resolve(filePath)
+    const relToRoot = relative(root, target)
+    if (!relToRoot || relToRoot.startsWith('..') || isAbsolute(relToRoot)) {
+      return { success: false, error: 'File path must stay inside the worktree' }
+    }
+    if (!existsSync(target)) {
+      return { success: false, error: 'File does not exist' }
+    }
+    if (statSync(target).isDirectory()) {
+      return { success: false, error: 'Deleting directories is not supported' }
+    }
+
+    unlinkSync(target)
     return { success: true }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' }

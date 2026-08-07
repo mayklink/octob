@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron'
 import { createLogger } from '../services/logger'
-import { createFile, readFile, readFileAsBase64, writeFile } from '../services/file-ops'
+import { createFile, deleteFile, readFile, readFileAsBase64, writeFile } from '../services/file-ops'
 
 const log = createLogger({ component: 'FileHandlers' })
 
@@ -59,6 +59,24 @@ export function registerFileHandlers(): void {
       const result = writeFile(filePath, content)
       if (!result.success) {
         log.error('Failed to write file', new Error(result.error ?? 'Unknown error'), { filePath })
+      }
+      return result
+    }
+  )
+
+  ipcMain.handle(
+    'file:delete',
+    async (
+      _event,
+      worktreePath: string,
+      filePath: string
+    ): Promise<{ success: boolean; error?: string }> => {
+      const result = deleteFile(worktreePath, filePath)
+      if (!result.success) {
+        log.error('Failed to delete file', new Error(result.error ?? 'Unknown error'), {
+          worktreePath,
+          filePath
+        })
       }
       return result
     }

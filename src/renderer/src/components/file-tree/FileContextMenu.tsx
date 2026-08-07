@@ -19,7 +19,9 @@ import {
   FileDiff
 } from 'lucide-react'
 import { useGitStore, type GitStatusCode } from '@/stores/useGitStore'
+import { useFileViewerStore } from '@/stores/useFileViewerStore'
 import { DiffModal } from '@/components/diff'
+import { toast } from '@/lib/toast'
 
 interface FileTreeNode {
   name: string
@@ -52,6 +54,7 @@ export function FileContextMenu({
   hideGitContextActions
 }: FileContextMenuProps): React.JSX.Element {
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showDiffModal, setShowDiffModal] = useState(false)
   const { stageFile, unstageFile, discardChanges, addToGitignore } = useGitStore()
 
@@ -122,6 +125,24 @@ export function FileContextMenu({
     onClose?.()
   }, [node.isDirectory, node.relativePath, onCreateFile, onClose])
 
+  const handleDelete = useCallback(async () => {
+    if (!showDeleteConfirm) {
+      setShowDeleteConfirm(true)
+      return
+    }
+
+    const result = await window.fileOps.deleteFile(worktreePath, node.path)
+    if (result.success) {
+      useFileViewerStore.getState().confirmCloseFile(node.path)
+      await useGitStore.getState().refreshStatuses(worktreePath)
+      toast.success(`Deleted ${node.name}`)
+      setShowDeleteConfirm(false)
+      onClose?.()
+    } else {
+      toast.error(`Failed to delete: ${result.error}`)
+    }
+  }, [showDeleteConfirm, worktreePath, node.path, node.name, onClose])
+
   // Determine which git actions to show
   const showStage = !hideGitContextActions && gitStatus && !staged && gitStatus !== 'C'
   const showUnstage = !hideGitContextActions && staged
@@ -132,7 +153,14 @@ export function FileContextMenu({
 
   return (
     <>
-      <ContextMenu onOpenChange={(open) => !open && setShowDiscardConfirm(false)}>
+      <ContextMenu
+        onOpenChange={(open) => {
+          if (!open) {
+            setShowDiscardConfirm(false)
+            setShowDeleteConfirm(false)
+          }
+        }}
+      >
         {children}
         <ContextMenuContent className="w-56">
           {/* Git actions */}
@@ -194,6 +222,17 @@ export function FileContextMenu({
             <FolderOpen className="mr-2 h-4 w-4" />
             {revealLabel(node.isDirectory)}
           </ContextMenuItem>
+
+          {!node.isDirectory && (
+            <ContextMenuItem
+              onClick={handleDelete}
+              className={showDeleteConfirm ? 'text-red-500' : ''}
+            >
+              <Trash2 className="mr-2 h-4 w-4 text-red-500" />
+              {showDeleteConfirm ? 'Click again to confirm' : 'Delete File'}
+              {showDeleteConfirm && <AlertCircle className="ml-auto h-4 w-4 text-red-500" />}
+            </ContextMenuItem>
+          )}
 
           <ContextMenuSeparator />
 

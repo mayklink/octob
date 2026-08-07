@@ -961,6 +961,13 @@ declare global {
         success: boolean
         error?: string
       }>
+      deleteFile: (
+        worktreePath: string,
+        filePath: string
+      ) => Promise<{
+        success: boolean
+        error?: string
+      }>
       createFile: (
         worktreePath: string,
         relativePath: string,

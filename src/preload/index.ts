@@ -1724,6 +1724,11 @@ const fileOps = {
     ipcRenderer.invoke('file:read', filePath),
   writeFile: (filePath: string, content: string): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('file:write', filePath, content),
+  deleteFile: (
+    worktreePath: string,
+    filePath: string
+  ): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('file:delete', worktreePath, filePath),
   createFile: (
     worktreePath: string,
     relativePath: string,

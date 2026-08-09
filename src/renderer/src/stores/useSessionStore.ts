@@ -3,7 +3,6 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import type { SelectedModel } from './useSettingsStore'
 import { useWorktreeStore } from './useWorktreeStore'
 import { useFileViewerStore } from './useFileViewerStore'
-import { notifyKanbanSessionSync, notifyKanbanNewSession } from './store-coordination'
 import { useSettingsStore } from './useSettingsStore'
 import { getUnavailableAgentSdkMessage } from '@/lib/agent-sdk-availability'
 import { resolveSessionCreationSelection } from '@/lib/handoffSelection'
@@ -23,18 +22,6 @@ const pushQueuedState = (sessionId: string, hasQueued: boolean): void => {
   // cases. An IPC failure just falls back to the default (show notification),
   // which is the safer behavior.
   window.systemOps?.setSessionQueuedState?.(sessionId, hasQueued)?.catch?.(() => {})
-}
-
-export const BOARD_TAB_ID = '__board__'
-export const BOARD_ASSISTANT_SESSION_NAME_PREFIX = '[Board Assistant]'
-
-export function isBoardAssistantSessionName(name: string | null | undefined): boolean {
-  return typeof name === 'string' && name.startsWith(BOARD_ASSISTANT_SESSION_NAME_PREFIX)
-}
-
-function isVisibleSession(session: { name: string | null; session_type?: string }): boolean {
-  if (session.session_type === 'board-assistant') return false
-  return !isBoardAssistantSessionName(session.name)
 }
 
 function getUnavailableProviderError(
@@ -65,7 +52,6 @@ interface Session {
   opencode_session_id: string | null
   agent_sdk: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
   mode: SessionMode
-  session_type: 'default' | 'board-assistant'
   model_provider_id: string | null
   model_id: string | null
   model_variant: string | null
@@ -115,14 +101,6 @@ interface SessionState {
 
   // Orphaned sessions (from archived worktrees) - read-only, not attached to any worktree
   orphanedSessions: Map<string, Session>
-
-  // Pinned session state — sessions pinned to the kanban board
-  pinnedSessionIds: Set<string>
-  activePinnedSessionId: string | null
-
-  // Board assistant state — project-scoped, one per project
-  boardAssistantByProject: Map<string, Session>
-  activeBoardAssistantProjectId: string | null
 
   // Actions
   acknowledgeClosedTerminals: (ids: Set<string>) => void
@@ -179,26 +157,10 @@ interface SessionState {
   clearPendingPlan: (sessionId: string) => void
   getPendingPlan: (sessionId: string) => PendingPlan | null
 
-  // Pinned session actions
-  pinSessionToBoard: (sessionId: string) => Promise<void>
-  unpinSessionFromBoard: (sessionId: string) => void
-  setActivePinnedSession: (sessionId: string | null) => void
-  loadPinnedSessions: (worktreeId: string) => Promise<void>
-
   // Inline connection session actions
   setInlineConnectionSession: (sessionId: string | null) => void
   clearInlineConnectionSession: () => void
   loadConnectionSessionsBackground: (connectionId: string) => Promise<void>
-
-  // Board assistant actions
-  loadBoardAssistantSession: (projectId: string) => Promise<void>
-  createBoardAssistantSession: (
-    projectId: string
-  ) => Promise<{ success: boolean; session?: Session; error?: string }>
-  closeBoardAssistantSession: (projectId: string) => Promise<{ success: boolean; error?: string }>
-  focusBoardAssistantSession: (projectId: string) => void
-  openBoardAssistantProject: (projectId: string) => void
-  clearBoardAssistantFocus: () => void
 
   // Connection session actions
   loadConnectionSessions: (connectionId: string) => Promise<void>
@@ -264,13 +226,6 @@ export const useSessionStore = create<SessionState>()(
       orphanedSessions: new Map(),
 
       // Pinned session state
-      pinnedSessionIds: new Set<string>(),
-      activePinnedSessionId: null,
-
-      // Board assistant state
-      boardAssistantByProject: new Map(),
-      activeBoardAssistantProjectId: null,
-
       acknowledgeClosedTerminals: (ids: Set<string>) => {
         set((state) => {
           const remaining = new Set(state.closedTerminalSessionIds)
@@ -281,8 +236,6 @@ export const useSessionStore = create<SessionState>()(
 
       // Load sessions for a worktree from database (only active sessions for tabs)
       loadSessions: async (worktreeId: string, _projectId: string) => {
-        // Also load board assistant session for this project (fire-and-forget)
-        void get().loadBoardAssistantSession(_projectId)
         // Only show loading indicator when no sessions are cached yet.
         // When sessions already exist (e.g., after createSession populated them),
         // skip the indicator to avoid unmounting active SessionViews mid-init.
@@ -292,13 +245,9 @@ export const useSessionStore = create<SessionState>()(
           // Only load active sessions - completed sessions appear in history only
           const sessions = await window.db.session.getActiveByWorktree(worktreeId)
 
-          // Also load pinned sessions for this worktree
-          const pinnedSessions = await window.db.session.getPinnedSessions(worktreeId)
-          const pinnedIds = new Set(pinnedSessions.map((s: { id: string }) => s.id))
-
           // Sort by updated_at descending (most recent first)
           const sortedSessions = sessions
-            .filter(isVisibleSession)
+
             .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
 
           set((state) => {
@@ -308,7 +257,7 @@ export const useSessionStore = create<SessionState>()(
             // This prevents a race where createSession adds a session to the store,
             // but a concurrent loadSessions (triggered by selectedWorktreeId change)
             // reads from the DB before the write commits and overwrites with an empty list.
-            const existingInStore = (newSessionsMap.get(worktreeId) || []).filter(isVisibleSession)
+            const existingInStore = (newSessionsMap.get(worktreeId) || [])
             const dbSessionIds = new Set(sortedSessions.map((s) => s.id))
             const missingFromDb = existingInStore.filter((s) => !dbSessionIds.has(s.id))
             const merged = missingFromDb.length > 0
@@ -352,33 +301,16 @@ export const useSessionStore = create<SessionState>()(
             ) {
               // Try to restore persisted active session
               const persistedSessionId = state.activeSessionByWorktree[worktreeId]
-              const boardMode = useSettingsStore.getState().boardMode
-
-              if (persistedSessionId === BOARD_TAB_ID && boardMode === 'sticky-tab') {
-                // Board tab is valid in sticky-tab mode
-                activeSessionId = BOARD_TAB_ID
-              } else if (persistedSessionId === BOARD_TAB_ID && boardMode === 'toggle') {
-                // Mode was switched away from sticky — fall back to first session
-                if (sortedSessions.length > 0) {
-                  const tabOrder = newTabOrderMap.get(worktreeId)!
-                  activeSessionId = tabOrder[0] || sortedSessions[0].id
-                }
-              } else if (sortedSessions.length > 0) {
+              if (sortedSessions.length > 0) {
                 const sessionExists =
                   persistedSessionId && sortedSessions.some((s) => s.id === persistedSessionId)
 
                 if (sessionExists) {
                   activeSessionId = persistedSessionId
-                } else if (boardMode === 'sticky-tab') {
-                  // No persisted session, sticky-tab mode: default to board
-                  activeSessionId = BOARD_TAB_ID
                 } else {
                   const tabOrder = newTabOrderMap.get(worktreeId)!
                   activeSessionId = tabOrder[0] || sortedSessions[0].id
                 }
-              } else if (boardMode === 'sticky-tab') {
-                // No sessions at all, sticky-tab mode: default to board
-                activeSessionId = BOARD_TAB_ID
               }
             }
 
@@ -386,7 +318,6 @@ export const useSessionStore = create<SessionState>()(
               sessionsByWorktree: newSessionsMap,
               tabOrderByWorktree: newTabOrderMap,
               modeBySession: newModeMap,
-              pinnedSessionIds: pinnedIds,
               isLoading: false,
               activeSessionId
             }
@@ -483,16 +414,8 @@ export const useSessionStore = create<SessionState>()(
             return base
           })
 
-          // Notify kanban store — auto-attaches pre-assigned tickets to this session.
-          // Wrapped in its own try-catch so a handler error can never break session creation.
-          try {
-            notifyKanbanNewSession(session.id, worktreeId, projectId, session.mode || 'build')
-          } catch {
-            // Non-critical — session was created successfully regardless
-          }
-
           // Auto-attach non-outdated diff comments so the new session starts with context.
-          // Lazy import to avoid circular dependencies (same pattern as kanban above).
+          // Lazy import to avoid circular dependencies.
           try {
             const { useDiffCommentStore } = await import('./useDiffCommentStore')
             useDiffCommentStore.getState().attachAllToChat(worktreeId)
@@ -633,8 +556,7 @@ export const useSessionStore = create<SessionState>()(
                     const newIndex = Math.min(sessionIndex, newOrder.length - 1)
                     newActiveSessionId = newOrder[newIndex]
                   } else {
-                    const boardMode = useSettingsStore.getState().boardMode
-                    newActiveSessionId = boardMode === 'sticky-tab' ? BOARD_TAB_ID : null
+                    newActiveSessionId = null
                   }
                 }
                 break
@@ -660,8 +582,7 @@ export const useSessionStore = create<SessionState>()(
                       const newIndex = Math.min(sessionIndex, newOrder.length - 1)
                       newActiveSessionId = newOrder[newIndex]
                     } else {
-                      const boardMode = useSettingsStore.getState().boardMode
-                      newActiveSessionId = boardMode === 'sticky-tab' ? BOARD_TAB_ID : null
+                      newActiveSessionId = null
                     }
                   }
                   break
@@ -696,10 +617,6 @@ export const useSessionStore = create<SessionState>()(
               ? new Set([...state.closedTerminalSessionIds, sessionId])
               : state.closedTerminalSessionIds
 
-            // Clean up pinned session state if the closed session was pinned
-            const newPinnedIds = new Set(state.pinnedSessionIds)
-            newPinnedIds.delete(sessionId)
-
             return {
               sessionsByWorktree: newWorktreeSessionsMap,
               tabOrderByWorktree: newWorktreeTabOrderMap,
@@ -709,10 +626,7 @@ export const useSessionStore = create<SessionState>()(
               activeSessionByWorktree: newActiveByWorktree,
               activeSessionByConnection: newActiveByConnection,
               closedTerminalSessionIds: newClosedTerminals,
-              pinnedSessionIds: newPinnedIds,
               pendingFollowUpMessages: newPendingFollowUps,
-              activePinnedSessionId:
-                state.activePinnedSessionId === sessionId ? null : state.activePinnedSessionId
             }
           })
 
@@ -915,43 +829,25 @@ export const useSessionStore = create<SessionState>()(
         set({
           activeWorktreeId: worktreeId,
           activeConnectionId: null,
-          inlineConnectionSessionId: null,
-          activeBoardAssistantProjectId: null
+          inlineConnectionSessionId: null
         })
 
         if (worktreeId) {
           // Check if we already have sessions for this worktree
-          const existingSessions = (state.sessionsByWorktree.get(worktreeId) || []).filter(
-            isVisibleSession
-          )
+          const existingSessions = (state.sessionsByWorktree.get(worktreeId) || [])
           if (existingSessions) {
             // Try to restore persisted active session for this worktree
             const persistedSessionId = state.activeSessionByWorktree[worktreeId]
-            const boardMode = useSettingsStore.getState().boardMode
+            const sessionExists =
+              persistedSessionId && existingSessions.some((s) => s.id === persistedSessionId)
 
-            if (persistedSessionId === BOARD_TAB_ID && boardMode === 'sticky-tab') {
-              set({ activeSessionId: BOARD_TAB_ID })
-            } else if (persistedSessionId === BOARD_TAB_ID && boardMode === 'toggle') {
-              // Mode was switched away from sticky — fall back to first session
+            if (sessionExists) {
+              set({ activeSessionId: persistedSessionId })
+            } else {
               const tabOrder = state.tabOrderByWorktree.get(worktreeId) || []
               const activeId =
                 tabOrder[0] || (existingSessions.length > 0 ? existingSessions[0].id : null)
               set({ activeSessionId: activeId })
-            } else {
-              const sessionExists =
-                persistedSessionId && existingSessions.some((s) => s.id === persistedSessionId)
-
-              if (sessionExists) {
-                set({ activeSessionId: persistedSessionId })
-              } else if (boardMode === 'sticky-tab') {
-                set({ activeSessionId: BOARD_TAB_ID })
-              } else {
-                // Fallback to first tab
-                const tabOrder = state.tabOrderByWorktree.get(worktreeId) || []
-                const activeId =
-                  tabOrder[0] || (existingSessions.length > 0 ? existingSessions[0].id : null)
-                set({ activeSessionId: activeId })
-              }
             }
           } else {
             // Clear active session until sessions are loaded
@@ -1034,14 +930,14 @@ export const useSessionStore = create<SessionState>()(
 
       // Get sessions for a worktree
       getSessionsForWorktree: (worktreeId: string) => {
-        return (get().sessionsByWorktree.get(worktreeId) || []).filter(isVisibleSession)
+        return (get().sessionsByWorktree.get(worktreeId) || [])
       },
 
       // Get tab order for a worktree
       getTabOrderForWorktree: (worktreeId: string) => {
         const visibleIds = new Set(
           (get().sessionsByWorktree.get(worktreeId) || [])
-            .filter(isVisibleSession)
+
             .map((session) => session.id)
         )
         return (get().tabOrderByWorktree.get(worktreeId) || []).filter((id) => visibleIds.has(id))
@@ -1067,9 +963,6 @@ export const useSessionStore = create<SessionState>()(
           const found = sessions.find((s) => s.id === sessionId)
           if (found) return found
         }
-        for (const session of get().boardAssistantByProject.values()) {
-          if (session.id === sessionId) return session
-        }
         return null
       },
 
@@ -1082,16 +975,6 @@ export const useSessionStore = create<SessionState>()(
         if (get().getSessionById(session.id)) return
 
         set((state) => {
-          if (session.session_type === 'board-assistant') {
-            const newMap = new Map(state.boardAssistantByProject)
-            newMap.set(session.project_id, session)
-
-            const newModeMap = new Map(state.modeBySession)
-            newModeMap.set(session.id, session.mode || 'build')
-
-            return { boardAssistantByProject: newMap, modeBySession: newModeMap }
-          }
-
           if (session.worktree_id) {
             const newMap = new Map(state.sessionsByWorktree)
             const existing = newMap.get(session.worktree_id) || []
@@ -1148,8 +1031,6 @@ export const useSessionStore = create<SessionState>()(
         // Auto-apply mode-specific model if configured
         await get().applyModeDefaultModel(sessionId, newMode)
 
-        // Notify Kanban board of mode change
-        notifyKanbanSessionSync(sessionId, { type: 'mode_change', sessionMode: newMode })
       },
 
       // Toggle super mode for a session (only works when in plan modes)
@@ -1190,8 +1071,6 @@ export const useSessionStore = create<SessionState>()(
         // Auto-apply mode-specific model if configured
         await get().applyModeDefaultModel(sessionId, newMode)
 
-        // Notify Kanban board of mode change
-        notifyKanbanSessionSync(sessionId, { type: 'mode_change', sessionMode: newMode })
       },
 
       // Toggle super-plan shortcut: super-plan → plan, everything else → super-plan
@@ -1213,7 +1092,6 @@ export const useSessionStore = create<SessionState>()(
         }
 
         await get().applyModeDefaultModel(sessionId, newMode)
-        notifyKanbanSessionSync(sessionId, { type: 'mode_change', sessionMode: newMode })
       },
 
       // Set session mode explicitly (also applies mode-specific model default)
@@ -1233,8 +1111,6 @@ export const useSessionStore = create<SessionState>()(
         // Apply mode-specific default model (same as toggleSessionMode)
         await get().applyModeDefaultModel(sessionId, mode)
 
-        // Notify Kanban board of mode change
-        notifyKanbanSessionSync(sessionId, { type: 'mode_change', sessionMode: mode })
       },
 
       // Set model for a specific session (per-session model selection, scope-agnostic)
@@ -1314,15 +1190,6 @@ export const useSessionStore = create<SessionState>()(
             }
           }
         }
-        if (agentSdk === 'opencode') {
-          for (const session of get().boardAssistantByProject.values()) {
-            if (session.id === sessionId && session.agent_sdk) {
-              agentSdk = session.agent_sdk
-              break
-            }
-          }
-        }
-
         // Push to agent backend (SDK-aware) — skip for terminal sessions
         try {
           if (agentSdk !== 'terminal') {
@@ -1419,17 +1286,6 @@ export const useSessionStore = create<SessionState>()(
               newConnectionSessionsMap.set(connectionId, updatedSessions)
               return { sessionsByConnection: newConnectionSessionsMap }
             }
-          }
-
-          const newBoardAssistantMap = new Map(state.boardAssistantByProject)
-          for (const [projectId, session] of newBoardAssistantMap.entries()) {
-            if (session.id !== sessionId) continue
-            updatedAny = true
-            newBoardAssistantMap.set(projectId, {
-              ...session,
-              opencode_session_id: opencodeSessionId
-            })
-            return { boardAssistantByProject: newBoardAssistantMap }
           }
 
           return {}
@@ -1572,197 +1428,6 @@ export const useSessionStore = create<SessionState>()(
         return get().pendingPlans.get(sessionId) ?? null
       },
 
-      // ─── Board assistant actions ──────────────────────────────────────
-
-      loadBoardAssistantSession: async (projectId: string) => {
-        try {
-          const session = await window.db.session.getActiveBoardAssistant(projectId)
-          set((state) => {
-            const map = new Map(state.boardAssistantByProject)
-            const newModeMap = new Map(state.modeBySession)
-            if (session) {
-              map.set(projectId, session)
-              newModeMap.set(session.id, session.mode || 'build')
-            } else {
-              map.delete(projectId)
-            }
-            return { boardAssistantByProject: map, modeBySession: newModeMap }
-          })
-        } catch {
-          // Non-fatal: board assistant tab won't show until next load
-        }
-      },
-
-      createBoardAssistantSession: async (projectId: string) => {
-        try {
-          // If one already exists, just focus it
-          const existing = get().boardAssistantByProject.get(projectId)
-          if (existing) {
-            get().focusBoardAssistantSession(projectId)
-            return { success: true, session: existing }
-          }
-
-          const session = await window.db.session.create({
-            worktree_id: null,
-            project_id: projectId,
-            name: 'Board Assistant',
-            session_type: 'board-assistant',
-            agent_sdk: useSettingsStore.getState().defaultAgentSdk ?? 'opencode'
-          })
-
-          useFileViewerStore.getState().clearActiveViews()
-
-          set((state) => {
-            const map = new Map(state.boardAssistantByProject)
-            const newModeMap = new Map(state.modeBySession)
-            map.set(projectId, session)
-            newModeMap.set(session.id, session.mode || 'build')
-            return {
-              boardAssistantByProject: map,
-              modeBySession: newModeMap,
-              activeBoardAssistantProjectId: projectId,
-              // Clear other active states so the board assistant view shows
-              activeSessionId: null,
-              activePinnedSessionId: null,
-              inlineConnectionSessionId: null
-            }
-          })
-
-          return { success: true, session }
-        } catch (error) {
-          return {
-            success: false,
-            error: error instanceof Error ? error.message : 'Failed to create board assistant'
-          }
-        }
-      },
-
-      closeBoardAssistantSession: async (projectId: string) => {
-        try {
-          const session = get().boardAssistantByProject.get(projectId)
-          if (!session) {
-            // Clear stale focus/map state so the UI doesn't get stuck
-            set((state) => {
-              const map = new Map(state.boardAssistantByProject)
-              map.delete(projectId)
-              return {
-                boardAssistantByProject: map,
-                activeBoardAssistantProjectId:
-                  state.activeBoardAssistantProjectId === projectId
-                    ? null
-                    : state.activeBoardAssistantProjectId
-              }
-            })
-            return { success: true }
-          }
-
-          // Clean up the runtime BEFORE updating store state.
-          // We must do this here rather than relying on component unmount,
-          // because the BoardAssistantView may not be mounted (e.g. user
-          // switched to a file tab and then closed the board assistant tab).
-          const { useBoardChatStore } = await import('./useBoardChatStore')
-          const chatSession = useBoardChatStore.getState().getSessionSnapshot(session.id)
-          if (chatSession) {
-            const { useQuestionStore } = await import('./useQuestionStore')
-            const { usePermissionStore } = await import('./usePermissionStore')
-            const { useCommandApprovalStore } = await import('./useCommandApprovalStore')
-
-            useQuestionStore.getState().clearSession(session.id)
-            usePermissionStore.getState().clearSession(session.id)
-            useCommandApprovalStore.getState().clearSession(session.id)
-
-            if (chatSession.snapshot.runtimePath && chatSession.snapshot.opencodeSessionId) {
-              try {
-                await window.opencodeOps.abort(
-                  chatSession.snapshot.runtimePath,
-                  chatSession.snapshot.opencodeSessionId
-                )
-              } catch {
-                // Best-effort cleanup
-              }
-              try {
-                await window.opencodeOps.disconnect(
-                  chatSession.snapshot.runtimePath,
-                  chatSession.snapshot.opencodeSessionId
-                )
-              } catch {
-                // Best-effort cleanup
-              }
-            }
-
-          }
-          useBoardChatStore.getState().clearProjectSnapshot(projectId)
-
-          await window.db.session.update(session.id, {
-            status: 'completed',
-            completed_at: new Date().toISOString()
-          })
-
-          set((state) => {
-            const map = new Map(state.boardAssistantByProject)
-            map.delete(projectId)
-
-            // If this was the active board assistant, clear focus and
-            // restore the previously active session for this worktree
-            const clearFocus = state.activeBoardAssistantProjectId === projectId
-
-            if (clearFocus) {
-              const worktreeId = state.activeWorktreeId
-              const connectionId = state.activeConnectionId
-              const restoredSessionId =
-                (worktreeId ? state.activeSessionByWorktree[worktreeId] : null) ??
-                (connectionId ? state.activeSessionByConnection[connectionId] : null) ??
-                null
-
-              return {
-                boardAssistantByProject: map,
-                activeBoardAssistantProjectId: null,
-                activeSessionId: restoredSessionId
-              }
-            }
-
-            return { boardAssistantByProject: map }
-          })
-
-          return { success: true }
-        } catch (error) {
-          return {
-            success: false,
-            error: error instanceof Error ? error.message : 'Failed to close board assistant'
-          }
-        }
-      },
-
-      focusBoardAssistantSession: (projectId: string) => {
-        const session = get().boardAssistantByProject.get(projectId)
-        if (!session) return
-
-        useFileViewerStore.getState().clearActiveViews()
-
-        set({
-          activeBoardAssistantProjectId: projectId,
-          // Clear other active states so the board assistant view shows
-          activeSessionId: null,
-          activePinnedSessionId: null,
-          inlineConnectionSessionId: null
-        })
-      },
-
-      openBoardAssistantProject: (projectId: string) => {
-        useFileViewerStore.getState().clearActiveViews()
-
-        set({
-          activeBoardAssistantProjectId: projectId,
-          activeSessionId: null,
-          activePinnedSessionId: null,
-          inlineConnectionSessionId: null
-        })
-      },
-
-      clearBoardAssistantFocus: () => {
-        set({ activeBoardAssistantProjectId: null })
-      },
-
       // ─── Inline connection session actions ─────────────────────────────
 
       setInlineConnectionSession: (sessionId: string | null) => {
@@ -1779,7 +1444,7 @@ export const useSessionStore = create<SessionState>()(
         try {
           const sessions = await window.db.session.getActiveByConnection(connectionId)
           const sortedSessions = sessions
-            .filter(isVisibleSession)
+
             .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
 
           set((state) => {
@@ -1831,7 +1496,7 @@ export const useSessionStore = create<SessionState>()(
         try {
           const sessions = await window.db.session.getActiveByConnection(connectionId)
           const sortedSessions = sessions
-            .filter(isVisibleSession)
+
             .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
 
           set((state) => {
@@ -1870,29 +1535,16 @@ export const useSessionStore = create<SessionState>()(
               !activeSessionId
             ) {
               const persistedSessionId = state.activeSessionByConnection[connectionId]
-              const boardMode = useSettingsStore.getState().boardMode
-
-              if (persistedSessionId === BOARD_TAB_ID && boardMode === 'sticky-tab') {
-                activeSessionId = BOARD_TAB_ID
-              } else if (persistedSessionId === BOARD_TAB_ID && boardMode === 'toggle') {
-                if (sortedSessions.length > 0) {
-                  const tabOrder = newTabOrderMap.get(connectionId)!
-                  activeSessionId = tabOrder[0] || sortedSessions[0].id
-                }
-              } else if (sortedSessions.length > 0) {
+              if (sortedSessions.length > 0) {
                 const sessionExists =
                   persistedSessionId && sortedSessions.some((s) => s.id === persistedSessionId)
 
                 if (sessionExists) {
                   activeSessionId = persistedSessionId
-                } else if (boardMode === 'sticky-tab') {
-                  activeSessionId = BOARD_TAB_ID
                 } else {
                   const tabOrder = newTabOrderMap.get(connectionId)!
                   activeSessionId = tabOrder[0] || sortedSessions[0].id
                 }
-              } else if (boardMode === 'sticky-tab') {
-                activeSessionId = BOARD_TAB_ID
               }
             }
 
@@ -2026,33 +1678,18 @@ export const useSessionStore = create<SessionState>()(
         set({ activeConnectionId: connectionId, activeWorktreeId: null })
 
         if (connectionId) {
-          const existingSessions = (state.sessionsByConnection.get(connectionId) || []).filter(
-            isVisibleSession
-          )
+          const existingSessions = (state.sessionsByConnection.get(connectionId) || [])
           if (existingSessions) {
             const persistedSessionId = state.activeSessionByConnection[connectionId]
-            const boardMode = useSettingsStore.getState().boardMode
-
-            if (persistedSessionId === BOARD_TAB_ID && boardMode === 'sticky-tab') {
-              set({ activeSessionId: BOARD_TAB_ID })
-            } else if (persistedSessionId === BOARD_TAB_ID && boardMode === 'toggle') {
+            const sessionExists =
+              persistedSessionId && existingSessions.some((s) => s.id === persistedSessionId)
+            if (sessionExists) {
+              set({ activeSessionId: persistedSessionId })
+            } else {
               const tabOrder = state.tabOrderByConnection.get(connectionId) || []
               const activeId =
                 tabOrder[0] || (existingSessions.length > 0 ? existingSessions[0].id : null)
               set({ activeSessionId: activeId })
-            } else {
-              const sessionExists =
-                persistedSessionId && existingSessions.some((s) => s.id === persistedSessionId)
-              if (sessionExists) {
-                set({ activeSessionId: persistedSessionId })
-              } else if (boardMode === 'sticky-tab') {
-                set({ activeSessionId: BOARD_TAB_ID })
-              } else {
-                const tabOrder = state.tabOrderByConnection.get(connectionId) || []
-                const activeId =
-                  tabOrder[0] || (existingSessions.length > 0 ? existingSessions[0].id : null)
-                set({ activeSessionId: activeId })
-              }
             }
           } else {
             set({ activeSessionId: null })
@@ -2064,14 +1701,14 @@ export const useSessionStore = create<SessionState>()(
 
       // Get sessions for a connection
       getSessionsForConnection: (connectionId: string) => {
-        return (get().sessionsByConnection.get(connectionId) || []).filter(isVisibleSession)
+        return (get().sessionsByConnection.get(connectionId) || [])
       },
 
       // Get tab order for a connection
       getTabOrderForConnection: (connectionId: string) => {
         const visibleIds = new Set(
           (get().sessionsByConnection.get(connectionId) || [])
-            .filter(isVisibleSession)
+
             .map((session) => session.id)
         )
         return (get().tabOrderByConnection.get(connectionId) || []).filter((id) => visibleIds.has(id))
@@ -2149,59 +1786,6 @@ export const useSessionStore = create<SessionState>()(
           useFileViewerStore.getState().setActiveFile(null)
           useFileViewerStore.getState().clearActiveDiff()
         })
-      },
-
-      // Pinned session actions
-      pinSessionToBoard: async (sessionId: string) => {
-        // Optimistic update
-        set((state) => {
-          const newPinnedIds = new Set(state.pinnedSessionIds)
-          newPinnedIds.add(sessionId)
-          return { pinnedSessionIds: newPinnedIds }
-        })
-        try {
-          await window.db.session.setPinnedToBoard(sessionId, true)
-        } catch {
-          // Rollback on failure
-          set((state) => {
-            const newPinnedIds = new Set(state.pinnedSessionIds)
-            newPinnedIds.delete(sessionId)
-            return {
-              pinnedSessionIds: newPinnedIds,
-              activePinnedSessionId:
-                state.activePinnedSessionId === sessionId ? null : state.activePinnedSessionId
-            }
-          })
-        }
-      },
-
-      unpinSessionFromBoard: (sessionId: string) => {
-        set((state) => {
-          const newPinnedIds = new Set(state.pinnedSessionIds)
-          newPinnedIds.delete(sessionId)
-          return {
-            pinnedSessionIds: newPinnedIds,
-            activePinnedSessionId:
-              state.activePinnedSessionId === sessionId ? null : state.activePinnedSessionId
-          }
-        })
-        // Fire-and-forget DB update
-        window.db.session.setPinnedToBoard(sessionId, false).catch(() => {})
-      },
-
-      setActivePinnedSession: (sessionId: string | null) => {
-        set({ activePinnedSessionId: sessionId })
-      },
-
-      loadPinnedSessions: async (worktreeId: string) => {
-        try {
-          const pinnedSessions = await window.db.session.getPinnedSessions(worktreeId)
-          set({
-            pinnedSessionIds: new Set(pinnedSessions.map((s) => s.id))
-          })
-        } catch {
-          // Silently fail — pinned sessions are non-critical
-        }
       },
 
       // Close all orphaned sessions (called when navigating away)

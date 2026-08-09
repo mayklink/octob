@@ -1,20 +1,15 @@
 import { useState, useEffect } from 'react'
-import { KanbanSquare, FileText, MessageSquareText, X } from 'lucide-react'
-import { ProviderIcon } from '@/components/ui/provider-icon'
-import type { ParsedTicket, ParsedPrComment, ParsedFile, ParsedDataAttachment, ParsedDiffComment } from '@/lib/parse-user-message-attachments'
+import { FileText, MessageSquareText, X } from 'lucide-react'
+import type { ParsedFile, ParsedDataAttachment, ParsedDiffComment } from '@/lib/parse-user-message-attachments'
 import { useGhosttySuppression } from '@/hooks'
 
 interface UserMessageAttachmentCardsProps {
-  tickets: ParsedTicket[]
-  prComments: ParsedPrComment[]
   files: ParsedFile[]
   dataAttachments: ParsedDataAttachment[]
   diffComments: ParsedDiffComment[]
 }
 
 export function UserMessageAttachmentCards({
-  tickets,
-  prComments,
   files,
   dataAttachments,
   diffComments
@@ -36,60 +31,11 @@ export function UserMessageAttachmentCards({
     return () => window.removeEventListener('keydown', handleEscape)
   }, [expandedImage])
 
-  if (tickets.length === 0 && prComments.length === 0 && files.length === 0 && dataAttachments.length === 0 && diffComments.length === 0) return null
+  if (files.length === 0 && dataAttachments.length === 0 && diffComments.length === 0) return null
 
   return (
     <>
     <div className="flex flex-wrap gap-2 justify-end mb-2">
-      {tickets.map((t, i) => (
-        <div
-          key={`ticket-${i}`}
-          className="flex flex-col gap-1 px-3 py-2 rounded-lg bg-background border border-border text-sm max-w-[400px] min-w-[220px]"
-          data-testid="parsed-ticket-card"
-        >
-          <div className="flex items-center gap-2">
-            <KanbanSquare className="h-3.5 w-3.5 shrink-0 text-blue-400" />
-            <span className="font-medium text-foreground truncate">{t.title}</span>
-          </div>
-          {t.description && (
-            <span
-              className="text-xs text-muted-foreground line-clamp-2"
-              data-testid="parsed-ticket-description"
-            >
-              {t.description.length > 120 ? t.description.slice(0, 120) + '...' : t.description}
-            </span>
-          )}
-        </div>
-      ))}
-
-      {prComments.map((c, i) => {
-        const fileName = c.file.split('/').pop() ?? c.file
-        const lineLabel = c.line === 'file-level' ? '' : `:${c.line}`
-        return (
-          <div
-            key={`pr-${i}`}
-            className="flex flex-col gap-1 px-3 py-2 rounded-lg bg-background border border-border text-sm max-w-[400px] min-w-[220px]"
-            data-testid="parsed-pr-comment-card"
-          >
-            <div className="flex items-center gap-2">
-              <ProviderIcon provider="github" />
-              <span className="font-medium text-foreground truncate">{c.author}</span>
-            </div>
-            <span className="text-xs text-muted-foreground truncate">
-              {fileName}{lineLabel}
-            </span>
-            {c.body && (
-              <span
-                className="text-xs text-muted-foreground line-clamp-2"
-                data-testid="parsed-pr-comment-body"
-              >
-                {c.body.length > 80 ? c.body.slice(0, 80) + '...' : c.body}
-              </span>
-            )}
-          </div>
-        )
-      })}
-
       {diffComments.map((dc, i) => {
         const fileName = dc.file.split('/').pop() ?? dc.file
         const bodyPreview = dc.body.length > 80 ? dc.body.slice(0, 80) + '...' : dc.body

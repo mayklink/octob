@@ -114,7 +114,7 @@ function stringifyValue(value: unknown): string | undefined {
 
 /**
  * Normalize wire-format payloads where `content` / `text` may be structured objects (e.g. Cursor ACP).
- * Prevents passing plain objects into React children (Markdown, bubbles, kanban summaries).
+ * Prevents passing plain objects into React children (Markdown and message bubbles).
  */
 export function coerceOpenCodeRenderableString(raw: unknown, depth = 0): string {
   if (depth > 10) return ''

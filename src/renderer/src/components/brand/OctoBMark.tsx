@@ -1,8 +1,8 @@
 import type { ImgHTMLAttributes } from 'react'
 import { cn } from '@/lib/utils'
-import octobMarkPng from '@/pet/registry/octob/assets/octob.png'
+import octobMarkPng from '@/assets/octob.png'
 
-/** In-app Octob mark — PNG from pet registry (same asset as the desktop pet). */
+/** In-app Octob brand mark. */
 export function OctobMark({
   className,
   ...props

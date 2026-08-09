@@ -45,6 +45,46 @@ function normalizeMcpServers(value: unknown): McpServerConfig[] {
     .filter((server): server is McpServerConfig => server !== null)
 }
 
+function getSelectedMcpServers(
+  parsed: Record<string, unknown>,
+  dbService: DatabaseService,
+  contextPath?: string
+): McpServerConfig[] {
+  const enabledServers = normalizeMcpServers(parsed.mcpServers).filter((server) => server.enabled)
+  if (!contextPath) return enabledServers
+
+  const projectIds = new Set<string>()
+  const worktree = dbService.getWorktreeByPath(contextPath)
+  if (worktree) projectIds.add(worktree.project_id)
+
+  const project = dbService.getProjectByPath(contextPath)
+  if (project) projectIds.add(project.id)
+
+  const connection = dbService.getConnectionByPath(contextPath)
+  for (const member of connection?.members ?? []) projectIds.add(member.project_id)
+
+  if (projectIds.size === 0) return enabledServers
+
+  const selections =
+    parsed.projectMcpServerIds && typeof parsed.projectMcpServerIds === 'object'
+      ? (parsed.projectMcpServerIds as Record<string, unknown>)
+      : {}
+
+  const allowedIds = new Set<string>()
+  for (const projectId of projectIds) {
+    const selected = selections[projectId]
+    if (!Array.isArray(selected)) {
+      for (const server of enabledServers) allowedIds.add(server.id)
+      continue
+    }
+    for (const serverId of selected) {
+      if (typeof serverId === 'string') allowedIds.add(serverId)
+    }
+  }
+
+  return enabledServers.filter((server) => allowedIds.has(server.id))
+}
+
 const INHERITED_MCP_ENV_NAMES = new Set([
   'PATH',
   'Path',
@@ -175,7 +215,10 @@ function recordToKeyValues(record: Record<string, string>): McpKeyValue[] {
   return Object.entries(record).map(([name, value]) => ({ name, value }))
 }
 
-export function getConfiguredMcpServers(dbService: DatabaseService | null): McpServer[] {
+export function getConfiguredMcpServers(
+  dbService: DatabaseService | null,
+  contextPath?: string
+): McpServer[] {
   if (!dbService) return []
 
   try {
@@ -183,8 +226,7 @@ export function getConfiguredMcpServers(dbService: DatabaseService | null): McpS
     if (!raw) return []
     const parsed = JSON.parse(raw) as Record<string, unknown>
 
-    return normalizeMcpServers(parsed.mcpServers)
-      .filter((server) => server.enabled)
+    return getSelectedMcpServers(parsed, dbService, contextPath)
       .map((server): McpServer | null => {
         const name = server.name.trim()
         if (!name) return null
@@ -219,7 +261,8 @@ export function getConfiguredMcpServers(dbService: DatabaseService | null): McpS
 }
 
 export function getConfiguredCodexMcpServers(
-  dbService: DatabaseService | null
+  dbService: DatabaseService | null,
+  contextPath?: string
 ): { [key in string]?: JsonValue } | null {
   if (!dbService) return null
 
@@ -229,8 +272,7 @@ export function getConfiguredCodexMcpServers(
     const parsed = JSON.parse(raw) as Record<string, unknown>
     const entries: Array<[string, { [key in string]?: JsonValue }]> = []
 
-    for (const server of normalizeMcpServers(parsed.mcpServers)) {
-      if (!server.enabled) continue
+    for (const server of getSelectedMcpServers(parsed, dbService, contextPath)) {
 
       const name = server.name.trim()
       if (!name) continue
@@ -267,7 +309,8 @@ export function getConfiguredCodexMcpServers(
 }
 
 export function getConfiguredClaudeMcpServers(
-  dbService: DatabaseService | null
+  dbService: DatabaseService | null,
+  contextPath?: string
 ): Record<string, ClaudeMcpServerConfig> {
   if (!dbService) return {}
 
@@ -277,8 +320,7 @@ export function getConfiguredClaudeMcpServers(
     const parsed = JSON.parse(raw) as Record<string, unknown>
     const entries: Array<[string, ClaudeMcpServerConfig]> = []
 
-    for (const server of normalizeMcpServers(parsed.mcpServers)) {
-      if (!server.enabled) continue
+    for (const server of getSelectedMcpServers(parsed, dbService, contextPath)) {
 
       const name = server.name.trim()
       if (!name) continue

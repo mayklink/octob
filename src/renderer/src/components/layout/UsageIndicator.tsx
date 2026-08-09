@@ -247,7 +247,7 @@ export function UsageIndicator(): React.JSX.Element | null {
         const provider = resolveUsageProvider(session)
         setActiveProvider(provider)
       } else {
-        // BOARD_TAB_ID or stale session — fall back to default SDK
+        // Stale session — fall back to the default SDK
         const { defaultAgentSdk } = useSettingsStore.getState()
         setActiveProvider(resolveDefaultUsageProvider(defaultAgentSdk))
       }

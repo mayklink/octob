@@ -29,14 +29,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
-import { KanbanBoard } from '@/components/kanban/KanbanBoard'
 import { LanguageIcon } from './LanguageIcon'
 import { GitInitDialog } from './GitInitDialog'
 import { BranchPickerDialog } from '@/components/worktrees'
 import { ManageConnectionWorktreesDialog } from '@/components/connections/ManageConnectionWorktreesDialog'
 import {
   useConnectionStore,
-  useKanbanStore,
   useLayoutStore,
   usePinnedStore,
   useProjectStore,
@@ -226,7 +224,6 @@ function ProjectCard({ project }: { project: Project }) {
     useLayoutStore.getState().setWorkspaceContentView('overview')
     selectProject(project.id)
     selectWorktree(null)
-    useKanbanStore.setState({ isBoardViewActive: false })
   }, [project.id, selectProject, selectWorktree])
 
   const createDefaultWorktree = useCallback(async () => {
@@ -446,7 +443,6 @@ function ConnectionCard({
     useProjectStore.getState().selectProject(null)
     useWorktreeStore.getState().selectWorktree(null)
     useSessionStore.getState().setActiveSession(null)
-    useKanbanStore.setState({ isBoardViewActive: true, isPinnedBoardActive: false })
   }, [connection.id, selectConnection])
 
   const handleSaveRename = useCallback(async () => {
@@ -669,6 +665,7 @@ export function ProjectDashboard(): React.JSX.Element {
   )
   const loadProjects = useProjectStore((s) => s.loadProjects)
   const worktreesByProject = useWorktreeStore((s) => s.worktreesByProject)
+  const loadWorktrees = useWorktreeStore((s) => s.loadWorktrees)
   const worktrees = useWorktreeStore((s) =>
     selectedProjectId ? s.worktreesByProject.get(selectedProjectId) ?? EMPTY_WORKTREES : EMPTY_WORKTREES
   )
@@ -691,6 +688,15 @@ export function ProjectDashboard(): React.JSX.Element {
   useEffect(() => {
     if (selectedProject) void syncWorktrees(selectedProject.id, selectedProject.path)
   }, [selectedProject, syncWorktrees])
+
+  useEffect(() => {
+    if (!selectedConnection || workspaceView !== 'connection') return
+
+    const projectIds = new Set(selectedConnection.members.map((member) => member.project_id))
+    for (const projectId of projectIds) {
+      void loadWorktrees(projectId)
+    }
+  }, [loadWorktrees, selectedConnection, workspaceView])
 
   const filteredProjects = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -879,16 +885,6 @@ export function ProjectDashboard(): React.JSX.Element {
           </div>
         </section>
 
-        <section className="mx-8 mb-8 flex min-h-[420px] flex-1 flex-col overflow-hidden rounded-lg border border-border/70 bg-card/45">
-          <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
-            <div>
-              <h2 className="text-base font-bold">Board</h2>
-              <p className="text-sm text-muted-foreground">Track work across this connection</p>
-            </div>
-          </div>
-          <KanbanBoard connectionId={selectedConnection.id} />
-        </section>
-
         <ManageConnectionWorktreesDialog
           connectionId={manageConnectionId}
           open={Boolean(manageConnectionId)}
@@ -963,15 +959,6 @@ export function ProjectDashboard(): React.JSX.Element {
           </div>
         </section>
 
-        <section className="mx-8 mb-8 flex min-h-[420px] flex-1 flex-col overflow-hidden rounded-lg border border-border/70 bg-card/45">
-          <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
-            <div>
-              <h2 className="text-base font-bold">Board</h2>
-              <p className="text-sm text-muted-foreground">Track work and manage tasks in this project</p>
-            </div>
-          </div>
-          <KanbanBoard projectId={selectedProject.id} projectPath={selectedProject.path} />
-        </section>
       </div>
     )
   }

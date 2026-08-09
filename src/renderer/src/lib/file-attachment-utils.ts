@@ -55,20 +55,6 @@ export const buildMessageParts = (attachments: Attachment[], promptText: string,
     parts.push({ type: 'text', text: xmlBlock })
   }
 
-  // Ticket attachments -> each becomes an XML <ticket> block
-  const ticketAttachments = attachments.filter(
-    (a): a is Extract<Attachment, { kind: 'ticket' }> => a.kind === 'ticket'
-  )
-  if (ticketAttachments.length > 0) {
-    const ticketBlocks = ticketAttachments
-      .map(
-        (t) =>
-          `<ticket title="${escapeXmlAttr(t.title)}">\n${t.description ?? ''}\n</ticket>`
-      )
-      .join('\n')
-    parts.push({ type: 'text', text: ticketBlocks })
-  }
-
   if (diffComments && diffComments.length > 0) {
     const diffXml = buildDiffCommentsXml(diffComments)
     parts.push({ type: 'text', text: diffXml })
@@ -112,21 +98,6 @@ export const buildDisplayContent = (attachments: Attachment[], promptText: strin
       '<attached_files>\n' +
       pathAttachments.map((a) => `<file path="${a.filePath}">${a.name}</file>`).join('\n') +
       '\n</attached_files>'
-    )
-  }
-
-  // Ticket attachments -> XML blocks
-  const ticketAttachments = attachments.filter(
-    (a): a is Extract<Attachment, { kind: 'ticket' }> => a.kind === 'ticket'
-  )
-  if (ticketAttachments.length > 0) {
-    textParts.push(
-      ticketAttachments
-        .map(
-          (t) =>
-            `<ticket title="${escapeXmlAttr(t.title)}">\n${t.description ?? ''}\n</ticket>`
-        )
-        .join('\n')
     )
   }
 

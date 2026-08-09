@@ -5,7 +5,7 @@ export type BottomPanelTab = 'setup' | 'run' | 'terminal'
 export type CollapsedPanel = 'none' | 'top' | 'bottom'
 export type WorkspaceView = 'projects' | 'project' | 'connection' | 'pull-requests'
 export type WorkspaceContentView = 'overview' | 'session'
-export type VisualizationMode = 'basic' | 'advanced'
+export type DisplayLayout = 'overview' | 'compact'
 export type WorkspaceMode = 'chat' | 'code' | 'git' | 'board'
 export type RightSidebarTab = 'changes' | 'files' | 'diffs' | 'comments'
 
@@ -32,7 +32,7 @@ interface LayoutState {
   bottomPanelTab: BottomPanelTab
   workspaceView: WorkspaceView
   workspaceContentView: WorkspaceContentView
-  visualizationMode: VisualizationMode
+  displayLayout: DisplayLayout
   workspaceMode: WorkspaceMode
   rightSidebarTab: RightSidebarTab
   ghosttyOverlaySuppressed: boolean
@@ -51,7 +51,7 @@ interface LayoutState {
   setBottomPanelTab: (tab: BottomPanelTab) => void
   setWorkspaceView: (view: WorkspaceView) => void
   setWorkspaceContentView: (view: WorkspaceContentView) => void
-  setVisualizationMode: (mode: VisualizationMode) => void
+  setDisplayLayout: (mode: DisplayLayout) => void
   setWorkspaceMode: (mode: WorkspaceMode) => void
   setRightSidebarTab: (tab: RightSidebarTab) => void
   setGhosttyOverlaySuppressed: (suppressed: boolean) => void
@@ -73,7 +73,7 @@ export const useLayoutStore = create<LayoutState>()(
       bottomPanelTab: 'setup' as BottomPanelTab,
       workspaceView: 'projects' as WorkspaceView,
       workspaceContentView: 'overview' as WorkspaceContentView,
-      visualizationMode: 'advanced' as VisualizationMode,
+      displayLayout: 'compact' as DisplayLayout,
       workspaceMode: 'chat' as WorkspaceMode,
       rightSidebarTab: 'changes' as RightSidebarTab,
       ghosttyOverlaySuppressed: false,
@@ -131,8 +131,8 @@ export const useLayoutStore = create<LayoutState>()(
         set({ workspaceContentView: view })
       },
 
-      setVisualizationMode: (mode: VisualizationMode) => {
-        set({ visualizationMode: mode })
+      setDisplayLayout: (mode: DisplayLayout) => {
+        set({ displayLayout: mode })
       },
 
       setWorkspaceMode: (mode: WorkspaceMode) => {
@@ -182,12 +182,18 @@ export const useLayoutStore = create<LayoutState>()(
     }),
     {
       name: 'octob-layout',
-      version: 2,
+      version: 3,
       storage: createJSONStorage(() => localStorage),
       migrate: (persistedState, version) => {
-        const state = persistedState as Partial<LayoutState>
+        const state = persistedState as Partial<LayoutState> & {
+          visualizationMode?: 'basic' | 'advanced'
+        }
         if (version < 2) {
-          return { ...state, rightSidebarCollapsed: true }
+          state.rightSidebarCollapsed = true
+        }
+        if (version < 3 && state.visualizationMode) {
+          state.displayLayout = state.visualizationMode === 'basic' ? 'overview' : 'compact'
+          delete state.visualizationMode
         }
         return state
       },
@@ -196,7 +202,7 @@ export const useLayoutStore = create<LayoutState>()(
         leftSidebarCollapsed: state.leftSidebarCollapsed,
         rightSidebarWidth: state.rightSidebarWidth,
         rightSidebarCollapsed: state.rightSidebarCollapsed,
-        visualizationMode: state.visualizationMode,
+        displayLayout: state.displayLayout,
         workspaceMode: state.workspaceMode,
         collapsedPanel: state.collapsedPanel,
         splitFractionByEntity: state.splitFractionByEntity,

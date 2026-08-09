@@ -28,9 +28,7 @@ import {
   registerConnectionHandlers,
   registerUsageHandlers,
   registerAccountHandlers,
-  registerKanbanHandlers,
-  registerAttachmentHandlers,
-  registerPetHandlers
+  registerAttachmentHandlers
 } from './ipc'
 import { buildMenu, updateMenuState, shutdownMenu } from './menu'
 import type { MenuState } from './menu'
@@ -71,24 +69,13 @@ import { ptyService } from './services/pty-service'
 import { scriptRunner } from './services/script-runner'
 import { bashService } from './services/bash-service'
 import { registerBashHandlers } from './ipc/bash-handlers'
-import { registerTicketImportHandlers } from './ipc/ticket-import-handlers'
-import {
-  initTicketProviderManager,
-  GitHubProvider,
-  JiraProvider,
-  AzureDevOpsProvider
-} from './services/ticket-providers'
 import { APP_SETTINGS_DB_KEY } from '../shared/types/settings'
 import { openCodeService } from './services/opencode-service'
 import { setKeepAwake, cleanupPowerSaveBlocker } from './services/power-save-blocker'
-import { configurePetWindow, destroyPetWindow, getPetWindow } from './services/pet-window'
 import { registerUpdateService } from './services/update-service'
-import { AutomaticPRReviewService } from './services/automatic-pr-review-service'
-import type { AutomaticPullRequestReviewSettings } from '@shared/types/pull-request-inbox'
 
 const log = createLogger({ component: 'Main' })
 let activeCodexImplementer: CodexImplementer | null = null
-let automaticPRReviewService: AutomaticPRReviewService | null = null
 
 // Global error handlers — prevent uncaught errors from crashing the Electron process
 process.on('uncaughtException', (error) => {
@@ -201,8 +188,6 @@ function createWindow(): void {
       sandbox: true
     }
   })
-  automaticPRReviewService?.setMainWindow(mainWindow)
-
   ensureDockVisible('create-main-window')
 
   // Restore maximized state
@@ -567,15 +552,6 @@ app.whenReady().then(async () => {
   registerConnectionHandlers()
   registerUsageHandlers()
   registerAccountHandlers()
-  registerKanbanHandlers()
-  configurePetWindow({ getMainWindow: () => mainWindow })
-  registerPetHandlers()
-  initTicketProviderManager([
-    new GitHubProvider(),
-    new JiraProvider(),
-    new AzureDevOpsProvider()
-  ])
-  registerTicketImportHandlers()
 
   // Telemetry IPC
   ipcMain.handle(
@@ -700,21 +676,6 @@ app.whenReady().then(async () => {
     sdkManager.setMainWindow(mainWindow)
 
     const databaseService = getDatabase()
-    automaticPRReviewService = new AutomaticPRReviewService(databaseService, sdkManager)
-    automaticPRReviewService.setMainWindow(mainWindow)
-    ipcMain.handle('automaticPRReview:getSnapshot', () =>
-      automaticPRReviewService?.getSnapshot()
-    )
-    ipcMain.handle(
-      'automaticPRReview:updateSettings',
-      (_event, settings: AutomaticPullRequestReviewSettings) =>
-        automaticPRReviewService?.updateSettings(settings)
-    )
-    ipcMain.handle('automaticPRReview:pollNow', async () => {
-      await automaticPRReviewService?.pollNow()
-      return automaticPRReviewService?.getSnapshot()
-    })
-    automaticPRReviewService.start()
 
     log.info('Registering OpenCode handlers')
     registerOpenCodeHandlers(mainWindow, sdkManager, databaseService)
@@ -796,11 +757,8 @@ app.whenReady().then(async () => {
   app.on('activate', function () {
     ensureDockVisible('activate')
 
-    // The pet overlay is an auxiliary window and should not count as a main app
-    // window for Dock activation. If only the pet exists, re-create Octob.
-    const petWindow = getPetWindow()
     const hasMainAppWindow = BrowserWindow.getAllWindows().some(
-      (window) => window !== petWindow && !window.isDestroyed()
+      (window) => !window.isDestroyed()
     )
 
     if (!hasMainAppWindow) {
@@ -834,8 +792,6 @@ app.on('window-all-closed', () => {
 app.on('will-quit', async () => {
   // Prevent further menu mutations — must be first to avoid native WeakPtr errors
   shutdownMenu()
-  // Destroy ambient pet overlay before tearing down app services
-  destroyPetWindow()
   // Cleanup performance diagnostics
   perfDiagnostics.cleanup()
   // Cleanup terminal PTYs
@@ -846,7 +802,6 @@ app.on('will-quit', async () => {
   bashService.killAll()
   // Release any held power save blocker so the display can sleep again
   cleanupPowerSaveBlocker()
-  automaticPRReviewService?.stop()
   // Cleanup file tree watchers
   await cleanupFileTreeWatchers()
   // Cleanup worktree watchers (git status monitoring)

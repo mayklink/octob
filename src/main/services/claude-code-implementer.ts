@@ -489,7 +489,7 @@ export class ClaudeCodeImplementer implements AgentSdkImplementer {
         this.selectedVariant ??
         modelDef?.defaultVariant ??
         'high') as Options['effort']
-      const mcpServers = getConfiguredClaudeMcpServers(this.dbService)
+      const mcpServers = getConfiguredClaudeMcpServers(this.dbService, session.worktreePath)
 
       // Build SDK query options
       const options: Options = {

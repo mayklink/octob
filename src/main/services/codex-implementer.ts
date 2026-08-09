@@ -544,7 +544,7 @@ export class CodexImplementer implements AgentSdkImplementer {
 
     // Ensure the manager event listener is attached for HITL flows
     this.attachManagerListener()
-    const mcpServers = getConfiguredCodexMcpServers(this.dbService)
+    const mcpServers = getConfiguredCodexMcpServers(this.dbService, worktreePath)
 
     const providerSession = await this.manager.startSession({
       cwd: worktreePath,
@@ -620,7 +620,7 @@ export class CodexImplementer implements AgentSdkImplementer {
       this.attachManagerListener()
 
       const resolvedModel = resolveCodexModelSlug(this.selectedModel)
-      const mcpServers = getConfiguredCodexMcpServers(this.dbService)
+      const mcpServers = getConfiguredCodexMcpServers(this.dbService, worktreePath)
       const providerSession = await this.manager.startSession({
         cwd: worktreePath,
         model: resolvedModel,
@@ -3011,7 +3011,7 @@ export class CodexImplementer implements AgentSdkImplementer {
     }
 
     try {
-      const mcpServers = getConfiguredCodexMcpServers(this.dbService)
+      const mcpServers = getConfiguredCodexMcpServers(this.dbService, worktreePath)
       const providerSession = await this.manager.startSession({
         cwd: worktreePath,
         model: resolveCodexModelSlug(persistedSession.model_id ?? this.selectedModel),

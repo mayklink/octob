@@ -6,12 +6,10 @@ import {
   useThemeStore,
   useSessionHistoryStore,
   useLayoutStore,
-  useSettingsStore,
-  useKanbanStore
+  useSettingsStore
 } from '@/stores'
 
 import { useFileViewerStore } from '@/stores/useFileViewerStore'
-import { BOARD_TAB_ID } from '@/stores/useSessionStore'
 import { useGitStore } from '@/stores/useGitStore'
 import { useShortcutStore } from '@/stores/useShortcutStore'
 import { useCommandPaletteStore, type Command } from '@/stores/useCommandPaletteStore'
@@ -40,7 +38,6 @@ export function useCommands() {
   const { togglePanel: toggleSessionHistory } = useSessionHistoryStore()
   const { stageAll, unstageAll, refreshStatuses, push, pull, isPushing, isPulling } = useGitStore()
   const { toggleLeftSidebar, toggleRightSidebar } = useLayoutStore()
-  const { toggleBoardView } = useKanbanStore()
   const { getDisplayString } = useShortcutStore()
   const {
     searchQuery,
@@ -199,38 +196,6 @@ export function useCommands() {
           })
         },
         isVisible: () => activeWorktreeId !== null
-      },
-
-      // =====================
-      // BOARD COMMANDS
-      // =====================
-      {
-        id: 'kanban:toggle',
-        label: 'Open Board',
-        description: 'Toggle the board view',
-        category: 'navigation',
-        icon: 'KanbanIcon',
-        keywords: ['kanban', 'board', 'tickets', 'todo'],
-        action: () => {
-          const boardMode = useSettingsStore.getState().boardMode
-          if (boardMode === 'sticky-tab') {
-            useFileViewerStore.getState().clearActiveViews()
-            useSessionStore.getState().setActiveSession(BOARD_TAB_ID)
-          } else {
-            const { isBoardViewActive } = useKanbanStore.getState()
-            const fileStore = useFileViewerStore.getState()
-            if (!isBoardViewActive) {
-              fileStore.clearActiveViews()
-              toggleBoardView()
-            } else if (fileStore.hasActiveOverlay()) {
-              fileStore.clearActiveViews()
-            } else {
-              toggleBoardView()
-            }
-          }
-          closeCommandPalette()
-        },
-        isVisible: () => true
       },
 
       // =====================
@@ -639,8 +604,7 @@ export function useCommands() {
     getActiveWorktreePath,
     closeCommandPalette,
     pushCommandLevel,
-    isPackaged,
-    toggleBoardView
+    isPackaged
   ])
 
   // Get filtered commands based on search query

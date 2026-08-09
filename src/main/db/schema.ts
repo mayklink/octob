@@ -1,4 +1,4 @@
-export const CURRENT_SCHEMA_VERSION = 26
+export const CURRENT_SCHEMA_VERSION = 25
 
 export const SCHEMA_SQL = `
 -- Projects table
@@ -54,7 +54,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   opencode_session_id TEXT,
   mode TEXT NOT NULL DEFAULT 'build',
   draft_input TEXT DEFAULT NULL,
-  pinned_to_board INTEGER NOT NULL DEFAULT 0,
   model_provider_id TEXT,
   model_id TEXT,
   model_variant TEXT,
@@ -293,92 +292,6 @@ export const MIGRATIONS: Migration[] = [
     down: `-- SQLite cannot drop columns; this is a no-op for safety`
   },
   {
-    version: 11,
-    name: 'add_kanban_tickets',
-    up: `
-      CREATE TABLE IF NOT EXISTS kanban_tickets (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-        title TEXT NOT NULL,
-        description TEXT,
-        attachments TEXT NOT NULL DEFAULT '[]',
-        "column" TEXT NOT NULL DEFAULT 'todo',
-        sort_order REAL NOT NULL DEFAULT 0,
-        current_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
-        worktree_id TEXT REFERENCES worktrees(id) ON DELETE SET NULL,
-        mode TEXT,
-        plan_ready INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_kanban_tickets_project ON kanban_tickets(project_id);
-      CREATE INDEX IF NOT EXISTS idx_kanban_tickets_session ON kanban_tickets(current_session_id);
-      CREATE INDEX IF NOT EXISTS idx_kanban_tickets_worktree ON kanban_tickets(worktree_id);
-    `,
-    down: `
-      DROP INDEX IF EXISTS idx_kanban_tickets_worktree;
-      DROP INDEX IF EXISTS idx_kanban_tickets_session;
-      DROP INDEX IF EXISTS idx_kanban_tickets_project;
-      DROP TABLE IF EXISTS kanban_tickets;
-    `
-  },
-  {
-    version: 12,
-    name: 'add_kanban_archived_at',
-    up: `ALTER TABLE kanban_tickets ADD COLUMN archived_at TEXT DEFAULT NULL`,
-    down: `-- SQLite cannot drop columns; no-op for safety`
-  },
-  {
-    version: 13,
-    name: 'add_ticket_followup_messages',
-    up: `
-      CREATE TABLE IF NOT EXISTS ticket_followup_messages (
-        id TEXT PRIMARY KEY,
-        ticket_id TEXT NOT NULL REFERENCES kanban_tickets(id) ON DELETE CASCADE,
-        content TEXT NOT NULL,
-        mode TEXT NOT NULL DEFAULT 'build',
-        session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
-        source TEXT NOT NULL DEFAULT 'direct',
-        created_at TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_ticket_followup_messages_ticket
-        ON ticket_followup_messages(ticket_id, created_at);
-    `,
-    down: `
-      DROP INDEX IF EXISTS idx_ticket_followup_messages_ticket;
-      DROP TABLE IF EXISTS ticket_followup_messages;
-    `
-  },
-  {
-    version: 14,
-    name: 'add_ticket_followup_messages_role',
-    up: `
-      ALTER TABLE ticket_followup_messages ADD COLUMN role TEXT NOT NULL DEFAULT 'user';
-    `,
-    down: `
-      ALTER TABLE ticket_followup_messages DROP COLUMN role;
-    `
-  },
-  {
-    version: 15,
-    name: 'add_kanban_ticket_external_source',
-    up: `
-      ALTER TABLE kanban_tickets ADD COLUMN external_provider TEXT DEFAULT NULL;
-      ALTER TABLE kanban_tickets ADD COLUMN external_id TEXT DEFAULT NULL;
-      ALTER TABLE kanban_tickets ADD COLUMN external_url TEXT DEFAULT NULL;
-      CREATE INDEX IF NOT EXISTS idx_kanban_tickets_external
-        ON kanban_tickets(external_provider, external_id);
-    `,
-    down: `
-      DROP INDEX IF EXISTS idx_kanban_tickets_external;
-      ALTER TABLE kanban_tickets DROP COLUMN external_url;
-      ALTER TABLE kanban_tickets DROP COLUMN external_id;
-      ALTER TABLE kanban_tickets DROP COLUMN external_provider;
-    `
-  },
-  {
     version: 16,
     name: 'add_composite_performance_indexes',
     up: `
@@ -405,55 +318,9 @@ export const MIGRATIONS: Migration[] = [
     down: `-- SQLite cannot drop columns; this is a no-op for safety`
   },
   {
-    version: 18,
-    name: 'add_ticket_total_tokens',
-    up: `ALTER TABLE kanban_tickets ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0`,
-    down: `-- SQLite cannot drop columns; this is a no-op for safety`
-  },
-  {
     version: 19,
     name: 'add_project_detected_icon',
     up: `ALTER TABLE projects ADD COLUMN detected_icon TEXT DEFAULT NULL`,
-    down: `-- SQLite cannot drop columns; this is a no-op for safety`
-  },
-  {
-    version: 20,
-    name: 'add_pinned_to_board_and_ticket_pr',
-    up: `ALTER TABLE sessions ADD COLUMN pinned_to_board INTEGER NOT NULL DEFAULT 0;
-         ALTER TABLE kanban_tickets ADD COLUMN github_pr_number INTEGER DEFAULT NULL;
-         ALTER TABLE kanban_tickets ADD COLUMN github_pr_url TEXT DEFAULT NULL;`,
-    down: `-- SQLite cannot drop columns; this is a no-op for safety`
-  },
-  {
-    version: 21,
-    name: 'add_ticket_mark',
-    up: `ALTER TABLE kanban_tickets ADD COLUMN mark TEXT DEFAULT NULL`,
-    down: `-- SQLite cannot drop columns; this is a no-op for safety`
-  },
-  {
-    version: 22,
-    name: 'add_ticket_dependencies',
-    up: `CREATE TABLE IF NOT EXISTS ticket_dependencies (
-  dependent_id TEXT NOT NULL REFERENCES kanban_tickets(id) ON DELETE CASCADE,
-  blocker_id TEXT NOT NULL REFERENCES kanban_tickets(id) ON DELETE CASCADE,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (dependent_id, blocker_id)
-);
-CREATE INDEX idx_ticket_deps_dependent ON ticket_dependencies(dependent_id);
-CREATE INDEX idx_ticket_deps_blocker ON ticket_dependencies(blocker_id);
-ALTER TABLE kanban_tickets ADD COLUMN pending_launch_config TEXT DEFAULT NULL;`,
-    down: `-- SQLite cannot drop columns; this is a no-op for safety`
-  },
-  {
-    version: 23,
-    name: 'add_session_type',
-    up: `ALTER TABLE sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'default'`,
-    down: `-- SQLite cannot drop columns; this is a no-op for safety`
-  },
-  {
-    version: 24,
-    name: 'add_ticket_note',
-    up: `ALTER TABLE kanban_tickets ADD COLUMN note TEXT DEFAULT NULL`,
     down: `-- SQLite cannot drop columns; this is a no-op for safety`
   },
   {
@@ -479,31 +346,4 @@ CREATE INDEX IF NOT EXISTS idx_diff_comments_worktree_file ON diff_comments(work
 DROP INDEX IF EXISTS idx_diff_comments_worktree;
 DROP TABLE IF EXISTS diff_comments;`
   },
-  {
-    version: 26,
-    name: 'add_automatic_pr_review_runs',
-    up: `CREATE TABLE IF NOT EXISTS automatic_pr_review_runs (
-  id TEXT PRIMARY KEY,
-  provider TEXT NOT NULL,
-  repository_id TEXT NOT NULL,
-  pr_number INTEGER NOT NULL,
-  head_sha TEXT NOT NULL,
-  title TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'queued',
-  worktree_id TEXT REFERENCES worktrees(id) ON DELETE SET NULL,
-  session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
-  attempt_count INTEGER NOT NULL DEFAULT 0,
-  error TEXT,
-  discovered_at TEXT NOT NULL,
-  started_at TEXT,
-  completed_at TEXT,
-  updated_at TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_pr_review_revision
-  ON automatic_pr_review_runs(provider, repository_id, pr_number, head_sha);
-CREATE INDEX IF NOT EXISTS idx_auto_pr_review_status
-  ON automatic_pr_review_runs(status, discovered_at);`,
-    down: `DROP TABLE IF EXISTS automatic_pr_review_runs;`
-  }
 ]

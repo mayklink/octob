@@ -10,7 +10,7 @@
 
 ## Sobre o projeto
 
-O Octob reúne o fluxo de desenvolvimento em uma aplicação Electron para Windows, macOS e Linux. Cada repositório adicionado se torna um projeto; a partir dele, é possível criar worktrees isoladas, conversar com diferentes agentes de código, acompanhar alterações e organizar o trabalho em um quadro Kanban.
+O Octob reúne o fluxo de desenvolvimento em uma aplicação Electron para Windows, macOS e Linux. Cada repositório adicionado se torna um projeto; a partir dele, é possível criar worktrees isoladas, conversar com diferentes agentes de código e acompanhar as alterações produzidas em cada sessão.
 
 Os dados da aplicação são armazenados localmente em `~/.octob`, incluindo o banco SQLite (`~/.octob/octob.db`) e anexos. As credenciais e a autenticação dos agentes continuam sendo gerenciadas pelas respectivas CLIs.
 
@@ -20,8 +20,6 @@ Os dados da aplicação são armazenados localmente em `~/.octob`, incluindo o b
 - sessões independentes e paralelas com agentes de IA;
 - suporte a OpenCode, Claude Code, Codex, Mistral Vibe, Cursor CLI e Google Antigravity;
 - modo de terminal manual para usar outras ferramentas;
-- quadro Kanban por projeto, com execução de tarefas por agente;
-- importação de tickets do GitHub, Jira e Azure DevOps;
 - visualização e edição de arquivos, busca, status Git e diffs;
 - operações de commit, push, pull, merge e criação/revisão de pull requests;
 - terminal integrado com xterm.js e, no macOS, backend opcional do Ghostty;
@@ -130,7 +128,7 @@ O processo principal concentra o acesso ao sistema de arquivos, Git, terminal, b
 
 ## Integrações e privacidade
 
-O Octob pode se conectar a GitHub, Jira e Azure DevOps para importar tarefas e trabalhar com pull requests. Servidores MCP também podem ser cadastrados nas configurações e são enviados apenas para novas sessões de agentes compatíveis quando estiverem ativados.
+O Octob usa as credenciais configuradas no GitHub CLI para criar e trabalhar com pull requests. Servidores MCP também podem ser cadastrados nas configurações e são enviados apenas para novas sessões de agentes compatíveis quando estiverem ativados.
 
 A telemetria pode ser desativada em **Configurações → Privacidade**. Quando habilitada, registra contagens de uso, versão e plataforma; segundo a implementação atual, não envia nomes de projetos, conteúdo de arquivos, prompts, respostas de IA ou dados Git.
 

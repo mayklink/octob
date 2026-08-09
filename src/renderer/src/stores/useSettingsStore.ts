@@ -2,7 +2,6 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { APP_SETTINGS_DB_KEY } from '@shared/types/settings'
 import type { UsageProvider } from '@shared/types/usage'
-import type { PetSettings } from '@shared/types/pet'
 import type { McpServerConfig } from '@shared/types/mcp'
 import {
   DEFAULT_REVIEW_PROMPT_PRESET_ID,
@@ -29,7 +28,6 @@ export type TerminalOption =
 export type EmbeddedTerminalBackend = 'xterm' | 'ghostty'
 export type TerminalPosition = 'sidebar' | 'bottom'
 export type MergeConflictMode = 'build' | 'plan' | 'always-ask'
-export type FollowUpTriggerColumn = 'review' | 'done'
 
 export interface SelectedModel {
   providerID: string
@@ -77,8 +75,6 @@ export interface AppSettings {
   keepAwakeEnabled: boolean
   taskListCollapsed: boolean
   mergeConflictMode: MergeConflictMode
-  boardMode: 'toggle' | 'sticky-tab'
-  followUpTriggerColumn: FollowUpTriggerColumn
   autoCodeReviewEnabled: boolean
 
   // Editor
@@ -151,14 +147,13 @@ export interface AppSettings {
   // Tips
   tipsEnabled: boolean
 
-  // Pet
-  pet: PetSettings
-
   // Advanced
   environmentVariables: Array<{ key: string; value: string }>
 
   // MCP
   mcpServers: McpServerConfig[]
+  /** Explicit MCP server IDs selected for each project. Missing projects inherit all enabled MCPs. */
+  projectMcpServerIds: Record<string, string[]>
 
   // Diagnostics
   perfDiagnosticsEnabled: boolean
@@ -175,9 +170,6 @@ export interface AppSettings {
   taskSessionPromptTemplates: TaskSessionPromptTemplate[]
   /** Starts the picker with this template applied when valid; null uses built-in prefixes. */
   lastTaskSessionPromptTemplateId: string | null
-
-  // Migration flags
-  _boardModeMigratedToStickyTab?: boolean
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -189,8 +181,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   keepAwakeEnabled: false,
   taskListCollapsed: false,
   mergeConflictMode: 'always-ask',
-  boardMode: 'sticky-tab',
-  followUpTriggerColumn: 'done',
   autoCodeReviewEnabled: true,
   defaultEditor: 'vscode',
   customEditorCommand: '',
@@ -239,15 +229,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   telemetryEnabled: true,
   tipsEnabled: true,
-  pet: {
-    enabled: false,
-    petId: 'octob',
-    size: 'M',
-    opacity: 1,
-    hasHatched: false
-  },
   environmentVariables: [],
   mcpServers: [],
+  projectMcpServerIds: {},
   perfDiagnosticsEnabled: false,
   codexJsonlLoggingEnabled: false,
   codexJsonlResetPerSession: true,
@@ -255,7 +239,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   codeReviewPromptTemplates: [],
   taskSessionPromptTemplates: [],
   lastTaskSessionPromptTemplateId: null,
-  _boardModeMigratedToStickyTab: false
 }
 
 interface SettingsState extends AppSettings {
@@ -353,6 +336,17 @@ function normalizeMcpServers(value: unknown): McpServerConfig[] {
     .filter((server): server is McpServerConfig => server !== null)
 }
 
+function normalizeProjectMcpServerIds(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).flatMap(([projectId, serverIds]) =>
+      Array.isArray(serverIds)
+        ? [[projectId, serverIds.filter((id): id is string => typeof id === 'string')]]
+        : []
+    )
+  )
+}
+
 async function loadSettingsFromDatabase(): Promise<AppSettings | null> {
   try {
     if (typeof window !== 'undefined' && window.db?.setting) {
@@ -414,22 +408,9 @@ async function loadSettingsFromDatabase(): Promise<AppSettings | null> {
             ...DEFAULT_SETTINGS.commandFilter,
             ...(parsed.commandFilter || {})
           },
-          pet: {
-            ...DEFAULT_SETTINGS.pet,
-            ...(parsed.pet || {})
-          },
-          mcpServers: normalizeMcpServers(parsed.mcpServers)
+          mcpServers: normalizeMcpServers(parsed.mcpServers),
+          projectMcpServerIds: normalizeProjectMcpServerIds(parsed.projectMcpServerIds)
         }
-
-        if (result.pet.petId === 'bee' || result.pet.petId === 'corgi') {
-          result.pet = { ...result.pet, petId: 'octob' }
-        }
-
-        const petWasLegacy =
-          typeof parsed.pet === 'object' &&
-          parsed.pet !== null &&
-          ((parsed.pet as PetSettings).petId === 'bee' ||
-            (parsed.pet as PetSettings).petId === 'corgi')
 
         delete (result as Record<string, unknown>).reviewPromptType
 
@@ -453,14 +434,6 @@ async function loadSettingsFromDatabase(): Promise<AppSettings | null> {
           delete (result as Record<string, unknown>).showUsageIndicator
         }
 
-        // Migrate boardMode default from 'toggle' to 'sticky-tab' (one-time)
-        if (!parsed._boardModeMigratedToStickyTab) {
-          if (result.boardMode === 'toggle') {
-            result.boardMode = 'sticky-tab'
-          }
-          result._boardModeMigratedToStickyTab = true
-        }
-
         if (result.uiLocale !== 'en' && result.uiLocale !== 'pt-BR') {
           result.uiLocale = DEFAULT_SETTINGS.uiLocale
         }
@@ -477,10 +450,6 @@ async function loadSettingsFromDatabase(): Promise<AppSettings | null> {
           )
         ) {
           result.lastTaskSessionPromptTemplateId = null
-        }
-
-        if (petWasLegacy) {
-          await saveToDatabase(result)
         }
 
         return result
@@ -502,8 +471,6 @@ function extractSettings(state: SettingsState): AppSettings {
     keepAwakeEnabled: state.keepAwakeEnabled,
     taskListCollapsed: state.taskListCollapsed,
     mergeConflictMode: state.mergeConflictMode,
-    boardMode: state.boardMode,
-    followUpTriggerColumn: state.followUpTriggerColumn,
     autoCodeReviewEnabled: state.autoCodeReviewEnabled,
     defaultEditor: state.defaultEditor,
     customEditorCommand: state.customEditorCommand,
@@ -536,9 +503,9 @@ function extractSettings(state: SettingsState): AppSettings {
     commandFilter: state.commandFilter,
     telemetryEnabled: state.telemetryEnabled,
     tipsEnabled: state.tipsEnabled,
-    pet: state.pet,
     environmentVariables: state.environmentVariables,
     mcpServers: state.mcpServers,
+    projectMcpServerIds: state.projectMcpServerIds,
     perfDiagnosticsEnabled: state.perfDiagnosticsEnabled,
     codexJsonlLoggingEnabled: state.codexJsonlLoggingEnabled,
     codexJsonlResetPerSession: state.codexJsonlResetPerSession,
@@ -546,7 +513,6 @@ function extractSettings(state: SettingsState): AppSettings {
     codeReviewPromptTemplates: state.codeReviewPromptTemplates,
     taskSessionPromptTemplates: state.taskSessionPromptTemplates,
     lastTaskSessionPromptTemplateId: state.lastTaskSessionPromptTemplateId,
-    _boardModeMigratedToStickyTab: state._boardModeMigratedToStickyTab
   }
 }
 
@@ -597,52 +563,6 @@ export const useSettingsStore = create<SettingsState>()(
         // Persist to database
         const settings = extractSettings({ ...get(), [key]: value } as SettingsState)
         await saveToDatabase(settings)
-        if (key === 'pet' && window.petOps) {
-          const pet = value as PetSettings
-          window.petOps.updateSettings(pet)
-          if (pet.enabled) {
-            window.petOps.show().catch(() => {})
-          } else {
-            window.petOps.hide().catch(() => {})
-          }
-        }
-        // Handle board mode switching side effects
-        if (key === 'boardMode') {
-          // setTimeout ensures the state update completes before side effects run.
-          // Dynamic import() avoids circular dependency (useSessionStore imports useSettingsStore).
-          setTimeout(() => {
-            Promise.all([
-              import('./useKanbanStore'),
-              import('./useSessionStore')
-            ]).then(([{ useKanbanStore }, { useSessionStore, BOARD_TAB_ID }]) => {
-              if (value === 'sticky-tab') {
-                // Toggle → Sticky Tab: deactivate toggle board view, activate board tab
-                if (useKanbanStore.getState().isBoardViewActive) {
-                  useKanbanStore.getState().toggleBoardView()
-                }
-                useSessionStore.getState().setActiveSession(BOARD_TAB_ID)
-              } else {
-                // Sticky Tab → Toggle: if on board tab, fall back to first real session
-                const sessionStore = useSessionStore.getState()
-                if (sessionStore.activeSessionId === BOARD_TAB_ID) {
-                  const worktreeId = sessionStore.activeWorktreeId
-                  if (worktreeId) {
-                    const tabOrder =
-                      sessionStore.tabOrderByWorktree.get(worktreeId) || []
-                    const sessions =
-                      sessionStore.sessionsByWorktree.get(worktreeId) || []
-                    const fallbackId =
-                      tabOrder.find((id) => id !== BOARD_TAB_ID) ||
-                      (sessions.length > 0 ? sessions[0].id : null)
-                    sessionStore.setActiveSession(fallbackId)
-                  } else {
-                    sessionStore.setActiveSession(null)
-                  }
-                }
-              }
-            }).catch(console.error)
-          }, 0)
-        }
       },
 
       setSelectedModel: async (
@@ -746,8 +666,6 @@ export const useSettingsStore = create<SettingsState>()(
         window.systemOps?.configureCodexBinaryPath('').then(() => {
           get().detectAvailableAgentSdks()
         }).catch(() => {})
-        window.petOps?.updateSettings(DEFAULT_SETTINGS.pet)
-        window.petOps?.hide().catch(() => {})
       },
 
       loadFromDatabase: async () => {
@@ -759,14 +677,9 @@ export const useSettingsStore = create<SettingsState>()(
             initialSetupComplete: dbSettings.initialSetupComplete ?? true,
             isLoading: false
           })
-          window.petOps?.updateSettings(dbSettings.pet)
-          if (dbSettings.pet.enabled) {
-            window.petOps?.show().catch(() => {})
-          }
         } else {
           set({ isLoading: false })
           await saveToDatabase(extractSettings(get()))
-          window.petOps?.updateSettings(get().pet)
         }
       },
 
@@ -792,8 +705,6 @@ export const useSettingsStore = create<SettingsState>()(
         keepAwakeEnabled: state.keepAwakeEnabled,
         taskListCollapsed: state.taskListCollapsed,
         mergeConflictMode: state.mergeConflictMode,
-        boardMode: state.boardMode,
-        followUpTriggerColumn: state.followUpTriggerColumn,
         autoCodeReviewEnabled: state.autoCodeReviewEnabled,
         defaultEditor: state.defaultEditor,
         customEditorCommand: state.customEditorCommand,
@@ -827,17 +738,16 @@ export const useSettingsStore = create<SettingsState>()(
         commandFilter: state.commandFilter,
         telemetryEnabled: state.telemetryEnabled,
         tipsEnabled: state.tipsEnabled,
-        pet: state.pet,
         environmentVariables: state.environmentVariables,
         mcpServers: state.mcpServers,
+        projectMcpServerIds: state.projectMcpServerIds,
         perfDiagnosticsEnabled: state.perfDiagnosticsEnabled,
         codexJsonlLoggingEnabled: state.codexJsonlLoggingEnabled,
         codexJsonlResetPerSession: state.codexJsonlResetPerSession,
         reviewPromptPresetId: state.reviewPromptPresetId,
         codeReviewPromptTemplates: state.codeReviewPromptTemplates,
         taskSessionPromptTemplates: state.taskSessionPromptTemplates,
-        lastTaskSessionPromptTemplateId: state.lastTaskSessionPromptTemplateId,
-        _boardModeMigratedToStickyTab: state._boardModeMigratedToStickyTab
+        lastTaskSessionPromptTemplateId: state.lastTaskSessionPromptTemplateId
       })
     }
   )

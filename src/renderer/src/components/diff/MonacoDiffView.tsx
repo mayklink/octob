@@ -7,13 +7,10 @@ import { parseHunks, getMonacoLanguage } from '@/lib/diff-utils'
 import type { Hunk } from '@/lib/diff-utils'
 import { MonacoDiffToolbar } from './MonacoDiffToolbar'
 import { HunkActionGutter } from './HunkActionGutter'
-import { PrCommentGutter } from './PrCommentGutter'
 import { DiffCommentGutter } from './DiffCommentGutter'
 import { DiffCommentToolbar } from './DiffCommentToolbar'
 import { DiffCommentSidePanel } from './DiffCommentSidePanel'
-import { usePRReviewStore } from '@/stores/usePRReviewStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
-import type { PRReviewComment } from '@shared/types/git'
 import type { editor } from 'monaco-editor'
 
 interface MonacoDiffViewProps {
@@ -30,7 +27,6 @@ interface MonacoDiffViewProps {
   onClose: () => void
 }
 
-const EMPTY_COMMENTS: PRReviewComment[] = []
 
 export default function MonacoDiffView({
   worktreePath,
@@ -59,7 +55,6 @@ export default function MonacoDiffView({
   const diffEditorRef = useRef<editor.IStandaloneDiffEditor | null>(null)
   const modifiedEditorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const [editorReady, setEditorReady] = useState(false)
-  const [zonesReady, setZonesReady] = useState(!prReviewWorktreeId)
 
   // Worktree ID for diff comment toolbar
   const worktreeId = useWorktreeStore((s) => s.selectedWorktreeId)
@@ -69,18 +64,6 @@ export default function MonacoDiffView({
   const handleToggleSidePanel = useCallback(() => {
     setSidePanelOpen(prev => !prev)
   }, [])
-
-  // PR review comments for this file (when in PR review mode)
-  const allPrComments = usePRReviewStore(
-    (s) => (prReviewWorktreeId ? s.comments.get(prReviewWorktreeId) : undefined) ?? EMPTY_COMMENTS
-  )
-  const fileComments = useMemo(
-    () =>
-      prReviewWorktreeId
-        ? allPrComments.filter((c) => c.path === filePath)
-        : EMPTY_COMMENTS,
-    [allPrComments, filePath, prReviewWorktreeId]
-  )
 
   // Fetch file contents for the diff
   const fetchContent = useCallback(async () => {
@@ -195,17 +178,16 @@ export default function MonacoDiffView({
 
   // Auto-scroll to the target line (e.g. when navigating from a PR comment).
   // Waits for: editor mounted (editorReady), content loaded (!isLoading),
-  // and view zones created + sized (zonesReady — signalled by PrCommentGutter).
   // scrollTrigger changes on every navigation so re-clicking the same comment
   // (same scrollToLine value) still triggers a scroll.
   useEffect(() => {
-    if (!scrollToLine || !editorReady || isLoading || !zonesReady) return
+    if (!scrollToLine || !editorReady || isLoading) return
     const modEditor = modifiedEditorRef.current
     if (!modEditor) return
 
     modEditor.revealLineInCenter(scrollToLine)
     modEditor.setPosition({ lineNumber: scrollToLine, column: 1 })
-  }, [scrollToLine, scrollTrigger, editorReady, isLoading, zonesReady])
+  }, [scrollToLine, scrollTrigger, editorReady, isLoading])
 
   // Register theme before Monaco loads
   const handleBeforeMount = useCallback((monaco: Monaco) => {
@@ -391,17 +373,6 @@ export default function MonacoDiffView({
               onContentChanged={handleContentChanged}
             />
           )}
-          {prReviewWorktreeId &&
-            fileComments.length > 0 &&
-            originalContent !== null &&
-            modifiedContent !== null && (
-              <PrCommentGutter
-                comments={fileComments}
-                modifiedEditor={modifiedEditorRef.current}
-                highlightLine={scrollToLine}
-                onZonesReady={() => setZonesReady(true)}
-              />
-            )}
           {!prReviewWorktreeId && originalContent !== null && modifiedContent !== null && (
             <DiffCommentGutter
               modifiedEditor={modifiedEditorRef.current}

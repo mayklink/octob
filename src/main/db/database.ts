@@ -33,23 +33,6 @@ import type {
   ConnectionMember,
   ConnectionMemberCreate,
   ConnectionWithMembers,
-  KanbanTicket,
-  KanbanTicketCreate,
-  KanbanTicketBatchCreate,
-  KanbanTicketBatchCreateItem,
-  KanbanTicketBatchCreateResult,
-  KanbanTicketUpdate,
-  KanbanTicketColumn,
-  TicketMark,
-  TicketFollowupMessage,
-  TicketFollowupMessageCreate,
-  TicketDependency,
-  DiffComment,
-  DiffCommentCreate,
-  DiffCommentUpdate,
-  AutomaticPullRequestReviewRunRow,
-  AutomaticPullRequestReviewRunCreate,
-  AutomaticPullRequestReviewRunUpdate
 } from './types'
 
 export class DatabaseService {
@@ -120,50 +103,7 @@ export class DatabaseService {
   // NOTE: If future boolean or JSON columns are added to sessions, they must be
   // explicitly mapped here (the spread passes raw SQLite values through).
   private mapSessionRow(row: Record<string, unknown>): Session {
-    return {
-      ...row,
-      pinned_to_board: !!(row.pinned_to_board as number),
-      session_type: (row.session_type as string) ?? 'default'
-    } as Session
-  }
-
-  // Maps SQLite row to KanbanTicket (INTEGER 0/1 → boolean, JSON string → array)
-  private mapKanbanTicketRow(row: Record<string, unknown>): KanbanTicket {
-    let attachments: unknown[] = []
-    try {
-      const raw = row.attachments as string
-      if (raw) {
-        attachments = JSON.parse(raw)
-      }
-    } catch {
-      attachments = []
-    }
-
-    return {
-      id: row.id as string,
-      project_id: row.project_id as string,
-      title: row.title as string,
-      description: (row.description as string) ?? null,
-      attachments,
-      column: row.column as KanbanTicketColumn,
-      sort_order: row.sort_order as number,
-      current_session_id: (row.current_session_id as string) ?? null,
-      worktree_id: (row.worktree_id as string) ?? null,
-      mode: (row.mode as 'build' | 'plan' | 'super-plan') ?? null,
-      plan_ready: !!(row.plan_ready as number),
-      created_at: row.created_at as string,
-      updated_at: row.updated_at as string,
-      archived_at: (row.archived_at as string) ?? null,
-      external_provider: (row.external_provider as string) ?? null,
-      external_id: (row.external_id as string) ?? null,
-      external_url: (row.external_url as string) ?? null,
-      github_pr_number: (row.github_pr_number as number) ?? null,
-      github_pr_url: (row.github_pr_url as string) ?? null,
-      mark: (row.mark as TicketMark) ?? null,
-      total_tokens: (row.total_tokens as number) ?? 0,
-      pending_launch_config: (row.pending_launch_config as string) ?? null,
-      note: (row.note as string) ?? null
-    }
+    return row as unknown as Session
   }
 
   private mapDiffCommentRow(row: Record<string, unknown>): DiffComment {
@@ -181,135 +121,6 @@ export class DatabaseService {
       created_at: row.created_at as string,
       updated_at: row.updated_at as string
     }
-  }
-
-  private normalizeBatchDrafts(
-    drafts: KanbanTicketBatchCreateItem[]
-  ): Array<KanbanTicketBatchCreateItem & { draft_key: string; title: string; project_id: string; depends_on: string[] }> {
-    if (drafts.length === 0) {
-      throw new Error('Batch ticket creation requires at least one draft')
-    }
-
-    const normalized: Array<
-      KanbanTicketBatchCreateItem & {
-        draft_key: string
-        title: string
-        project_id: string
-        depends_on: string[]
-      }
-    > = []
-    const draftKeys = new Set<string>()
-    let projectId: string | null = null
-
-    for (const draft of drafts) {
-      const draftKey = draft.draft_key.trim()
-      const title = draft.title.trim()
-      const nextProjectId = draft.project_id.trim()
-
-      if (!draftKey) {
-        throw new Error('Each batch draft must include a draft_key')
-      }
-      if (!title) {
-        throw new Error(`Draft "${draftKey}" must include a title`)
-      }
-      if (!nextProjectId) {
-        throw new Error(`Draft "${draftKey}" must include a project_id`)
-      }
-      if (draftKeys.has(draftKey)) {
-        throw new Error(`Duplicate draft_key "${draftKey}" in batch`)
-      }
-
-      if (projectId === null) {
-        projectId = nextProjectId
-      } else if (projectId !== nextProjectId) {
-        throw new Error('All drafts in a batch must belong to the same project')
-      }
-
-      const dependsOn = Array.from(
-        new Set(
-          (draft.depends_on ?? [])
-            .filter((dependency): dependency is string => typeof dependency === 'string')
-            .map((dependency) => dependency.trim())
-            .filter(Boolean)
-        )
-      )
-
-      if (dependsOn.includes(draftKey)) {
-        throw new Error(`Draft "${draftKey}" cannot depend on itself`)
-      }
-
-      draftKeys.add(draftKey)
-      normalized.push({
-        ...draft,
-        draft_key: draftKey,
-        title,
-        project_id: nextProjectId,
-        depends_on: dependsOn
-      })
-    }
-
-    const normalizedKeySet = new Set(normalized.map((draft) => draft.draft_key))
-    for (const draft of normalized) {
-      for (const dependency of draft.depends_on) {
-        if (!normalizedKeySet.has(dependency)) {
-          throw new Error(`Draft "${draft.draft_key}" depends on unknown draft "${dependency}"`)
-        }
-      }
-    }
-
-    const visitState = new Map<string, 'visiting' | 'done'>()
-    const visit = (draftKey: string): void => {
-      const state = visitState.get(draftKey)
-      if (state === 'visiting') {
-        throw new Error(`Draft dependencies contain a cycle involving "${draftKey}"`)
-      }
-      if (state === 'done') return
-
-      visitState.set(draftKey, 'visiting')
-      const draft = normalized.find((item) => item.draft_key === draftKey)
-      if (!draft) return
-
-      for (const dependency of draft.depends_on) {
-        visit(dependency)
-      }
-
-      visitState.set(draftKey, 'done')
-    }
-
-    for (const draft of normalized) {
-      visit(draft.draft_key)
-    }
-
-    return normalized
-  }
-
-  private wouldCreateTicketDependencyCycle(
-    db: Database.Database,
-    dependentId: string,
-    blockerId: string
-  ): boolean {
-    const visited = new Set<string>()
-    const queue: string[] = [blockerId]
-    visited.add(blockerId)
-
-    while (queue.length > 0) {
-      const node = queue.shift()!
-      const dependents = db
-        .prepare('SELECT dependent_id FROM ticket_dependencies WHERE blocker_id = ?')
-        .all(node) as { dependent_id: string }[]
-
-      for (const row of dependents) {
-        if (row.dependent_id === dependentId) {
-          return true
-        }
-        if (!visited.has(row.dependent_id)) {
-          visited.add(row.dependent_id)
-          queue.push(row.dependent_id)
-        }
-      }
-    }
-
-    return false
   }
 
   private runMigrations(): void {
@@ -408,14 +219,6 @@ export class DatabaseService {
     this.safeAddColumn('worktrees', 'github_pr_number', 'INTEGER DEFAULT NULL')
     this.safeAddColumn('worktrees', 'github_pr_url', 'TEXT DEFAULT NULL')
     this.safeAddColumn('connections', 'pinned', 'INTEGER NOT NULL DEFAULT 0')
-    this.safeAddColumn('projects', 'kanban_simple_mode', 'INTEGER NOT NULL DEFAULT 0')
-    this.safeAddColumn('kanban_tickets', 'archived_at', 'TEXT DEFAULT NULL')
-    this.safeAddColumn('sessions', 'pinned_to_board', 'INTEGER NOT NULL DEFAULT 0')
-    this.safeAddColumn('kanban_tickets', 'github_pr_number', 'INTEGER DEFAULT NULL')
-    this.safeAddColumn('kanban_tickets', 'github_pr_url', 'TEXT DEFAULT NULL')
-    this.safeAddColumn('kanban_tickets', 'mark', 'TEXT DEFAULT NULL')
-    this.safeAddColumn('kanban_tickets', 'note', 'TEXT DEFAULT NULL')
-    this.safeAddColumn('sessions', 'session_type', "TEXT NOT NULL DEFAULT 'default'")
 
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_sessions_connection ON sessions(connection_id);
@@ -444,71 +247,6 @@ export class DatabaseService {
         ON session_activities(session_id, turn_id, created_at);
     `)
 
-    // Kanban tickets table + indexes (idempotent repair for v11 migration)
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS kanban_tickets (
-        id TEXT PRIMARY KEY,
-        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-        title TEXT NOT NULL,
-        description TEXT,
-        attachments TEXT NOT NULL DEFAULT '[]',
-        "column" TEXT NOT NULL DEFAULT 'todo',
-        sort_order REAL NOT NULL DEFAULT 0,
-        current_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
-        worktree_id TEXT REFERENCES worktrees(id) ON DELETE SET NULL,
-        mode TEXT,
-        plan_ready INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_kanban_tickets_project ON kanban_tickets(project_id);
-      CREATE INDEX IF NOT EXISTS idx_kanban_tickets_session ON kanban_tickets(current_session_id);
-      CREATE INDEX IF NOT EXISTS idx_kanban_tickets_worktree ON kanban_tickets(worktree_id);
-    `)
-
-    // Ticket followup messages table + index (idempotent repair for v13/v14 migrations)
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS ticket_followup_messages (
-        id TEXT PRIMARY KEY,
-        ticket_id TEXT NOT NULL REFERENCES kanban_tickets(id) ON DELETE CASCADE,
-        content TEXT NOT NULL,
-        mode TEXT,
-        session_id TEXT,
-        source TEXT,
-        created_at TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'user'
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_ticket_followup_messages_ticket
-        ON ticket_followup_messages(ticket_id, created_at);
-    `)
-    this.safeAddColumn('ticket_followup_messages', 'role', "TEXT NOT NULL DEFAULT 'user'")
-
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS automatic_pr_review_runs (
-        id TEXT PRIMARY KEY,
-        provider TEXT NOT NULL,
-        repository_id TEXT NOT NULL,
-        pr_number INTEGER NOT NULL,
-        head_sha TEXT NOT NULL,
-        title TEXT NOT NULL,
-        payload_json TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'queued',
-        worktree_id TEXT REFERENCES worktrees(id) ON DELETE SET NULL,
-        session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        error TEXT,
-        discovered_at TEXT NOT NULL,
-        started_at TEXT,
-        completed_at TEXT,
-        updated_at TEXT NOT NULL
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_pr_review_revision
-        ON automatic_pr_review_runs(provider, repository_id, pr_number, head_sha);
-      CREATE INDEX IF NOT EXISTS idx_auto_pr_review_status
-        ON automatic_pr_review_runs(status, discovered_at);
-    `)
   }
 
   // Settings operations
@@ -535,72 +273,6 @@ export class DatabaseService {
     return db.prepare('SELECT key, value FROM settings').all() as Setting[]
   }
 
-  createAutomaticPullRequestReviewRun(data: AutomaticPullRequestReviewRunCreate): boolean {
-    const db = this.getDb()
-    const now = new Date().toISOString()
-    const result = db.prepare(
-      `INSERT OR IGNORE INTO automatic_pr_review_runs
-       (id, provider, repository_id, pr_number, head_sha, title, payload_json, status,
-        discovered_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`
-    ).run(
-      data.id,
-      data.provider,
-      data.repository_id,
-      data.pr_number,
-      data.head_sha,
-      data.title,
-      data.payload_json,
-      now,
-      now
-    )
-    return result.changes > 0
-  }
-
-  getAutomaticPullRequestReviewRun(id: string): AutomaticPullRequestReviewRunRow | null {
-    const row = this.getDb()
-      .prepare('SELECT * FROM automatic_pr_review_runs WHERE id = ?')
-      .get(id) as AutomaticPullRequestReviewRunRow | undefined
-    return row ?? null
-  }
-
-  listAutomaticPullRequestReviewRuns(limit = 100): AutomaticPullRequestReviewRunRow[] {
-    return this.getDb()
-      .prepare(
-        `SELECT * FROM automatic_pr_review_runs
-         ORDER BY discovered_at DESC
-         LIMIT ?`
-      )
-      .all(Math.max(1, Math.min(500, limit))) as AutomaticPullRequestReviewRunRow[]
-  }
-
-  listPendingAutomaticPullRequestReviewRuns(): AutomaticPullRequestReviewRunRow[] {
-    return this.getDb()
-      .prepare(
-        `SELECT * FROM automatic_pr_review_runs
-         WHERE status IN ('queued', 'preparing', 'running')
-         ORDER BY discovered_at ASC`
-      )
-      .all() as AutomaticPullRequestReviewRunRow[]
-  }
-
-  updateAutomaticPullRequestReviewRun(
-    id: string,
-    data: AutomaticPullRequestReviewRunUpdate
-  ): AutomaticPullRequestReviewRunRow | null {
-    const allowed: Array<keyof AutomaticPullRequestReviewRunUpdate> = [
-      'status', 'worktree_id', 'session_id', 'attempt_count', 'error', 'started_at', 'completed_at'
-    ]
-    const entries = allowed
-      .filter((key) => Object.prototype.hasOwnProperty.call(data, key))
-      .map((key) => [key, data[key]] as const)
-    if (entries.length === 0) return this.getAutomaticPullRequestReviewRun(id)
-    const assignments = entries.map(([key]) => `${key} = ?`).join(', ')
-    this.getDb()
-      .prepare(`UPDATE automatic_pr_review_runs SET ${assignments}, updated_at = ? WHERE id = ?`)
-      .run(...entries.map(([, value]) => value), new Date().toISOString(), id)
-    return this.getAutomaticPullRequestReviewRun(id)
-  }
 
   // Project operations
   createProject(data: ProjectCreate): Project {
@@ -1123,19 +795,17 @@ export class DatabaseService {
       opencode_session_id: data.opencode_session_id ?? null,
       agent_sdk: data.agent_sdk ?? 'opencode',
       mode: data.mode ?? 'build',
-      session_type: data.session_type ?? 'default',
       model_provider_id: data.model_provider_id ?? null,
       model_id: data.model_id ?? null,
       model_variant: data.model_variant ?? null,
       created_at: now,
       updated_at: now,
-      completed_at: null,
-      pinned_to_board: false
+      completed_at: null
     }
 
     db.prepare(
-      `INSERT INTO sessions (id, worktree_id, project_id, connection_id, name, status, opencode_session_id, agent_sdk, mode, session_type, model_provider_id, model_id, model_variant, created_at, updated_at, completed_at, pinned_to_board)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO sessions (id, worktree_id, project_id, connection_id, name, status, opencode_session_id, agent_sdk, mode, model_provider_id, model_id, model_variant, created_at, updated_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       session.id,
       session.worktree_id,
@@ -1146,14 +816,12 @@ export class DatabaseService {
       session.opencode_session_id,
       session.agent_sdk,
       session.mode,
-      session.session_type,
       session.model_provider_id,
       session.model_id,
       session.model_variant,
       session.created_at,
       session.updated_at,
-      session.completed_at,
-      0
+      session.completed_at
     )
 
     return session
@@ -1220,16 +888,6 @@ export class DatabaseService {
     return rows.map((row) => this.mapSessionRow(row))
   }
 
-  getActiveBoardAssistantByProject(projectId: string): Session | null {
-    const db = this.getDb()
-    const row = db
-      .prepare(
-        "SELECT * FROM sessions WHERE project_id = ? AND session_type = 'board-assistant' AND status = 'active' ORDER BY updated_at DESC LIMIT 1"
-      )
-      .get(projectId) as Record<string, unknown> | undefined
-    return row ? this.mapSessionRow(row) : null
-  }
-
   countActiveSessions(): number {
     const db = this.getDb()
     const row = db.prepare("SELECT COUNT(*) as count FROM sessions WHERE status = 'active'").get() as { count: number } | undefined
@@ -1264,10 +922,6 @@ export class DatabaseService {
       updates.push('mode = ?')
       values.push(data.mode)
     }
-    if (data.session_type !== undefined) {
-      updates.push('session_type = ?')
-      values.push(data.session_type)
-    }
     if (data.model_provider_id !== undefined) {
       updates.push('model_provider_id = ?')
       values.push(data.model_provider_id)
@@ -1284,11 +938,6 @@ export class DatabaseService {
       updates.push('completed_at = ?')
       values.push(data.completed_at)
     }
-    if (data.pinned_to_board !== undefined) {
-      updates.push('pinned_to_board = ?')
-      values.push(data.pinned_to_board ? 1 : 0)
-    }
-
     values.push(id)
     db.prepare(`UPDATE sessions SET ${updates.join(', ')} WHERE id = ?`).run(...values)
 
@@ -1299,16 +948,6 @@ export class DatabaseService {
     const db = this.getDb()
     const result = db.prepare('DELETE FROM sessions WHERE id = ?').run(id)
     return result.changes > 0
-  }
-
-  getPinnedSessions(worktreeId: string): Session[] {
-    const db = this.getDb()
-    const rows = db
-      .prepare(
-        'SELECT * FROM sessions WHERE pinned_to_board = 1 AND worktree_id = ? ORDER BY updated_at DESC'
-      )
-      .all(worktreeId) as Record<string, unknown>[]
-    return rows.map((row) => this.mapSessionRow(row))
   }
 
   searchSessions(options: SessionSearchOptions): SessionWithWorktree[] {
@@ -1682,6 +1321,13 @@ export class DatabaseService {
     return { ...row, members }
   }
 
+  getConnectionByPath(path: string): ConnectionWithMembers | null {
+    const row = this.getDb().prepare('SELECT id FROM connections WHERE path = ?').get(path) as
+      | { id: string }
+      | undefined
+    return row ? this.getConnection(row.id) : null
+  }
+
   getAllConnections(): ConnectionWithMembers[] {
     const db = this.getDb()
     const rows = db
@@ -1942,527 +1588,6 @@ export class DatabaseService {
   getSchemaVersion(): number {
     const version = this.getSetting('schema_version')
     return version ? parseInt(version, 10) : 0
-  }
-
-  // Kanban ticket operations
-
-  createKanbanTicket(data: KanbanTicketCreate): KanbanTicket {
-    const db = this.getDb()
-    const now = new Date().toISOString()
-
-    const id = data.id ?? randomUUID()
-    const column = data.column ?? 'todo'
-    let sortOrder: number
-    if (data.sort_order != null) {
-      sortOrder = data.sort_order
-    } else {
-      const maxRow = db.prepare(
-        'SELECT MAX(sort_order) as max_sort FROM kanban_tickets WHERE project_id = ? AND "column" = ? AND archived_at IS NULL'
-      ).get(data.project_id, column) as { max_sort: number | null } | undefined
-      sortOrder = (maxRow?.max_sort ?? -1) + 1
-    }
-    const description = data.description ?? null
-    const attachmentsJson = data.attachments ? JSON.stringify(data.attachments) : '[]'
-    const currentSessionId = data.current_session_id ?? null
-    const worktreeId = data.worktree_id ?? null
-    const mode = data.mode ?? null
-    const planReady = data.plan_ready ? 1 : 0
-    const externalProvider = data.external_provider ?? null
-    const externalId = data.external_id ?? null
-    const externalUrl = data.external_url ?? null
-    const githubPrNumber = data.github_pr_number ?? null
-    const githubPrUrl = data.github_pr_url ?? null
-    const mark = data.mark ?? null
-
-    db.prepare(
-      `INSERT INTO kanban_tickets (id, project_id, title, description, attachments, "column", sort_order, current_session_id, worktree_id, mode, plan_ready, external_provider, external_id, external_url, github_pr_number, github_pr_url, mark, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      id,
-      data.project_id,
-      data.title,
-      description,
-      attachmentsJson,
-      column,
-      sortOrder,
-      currentSessionId,
-      worktreeId,
-      mode,
-      planReady,
-      externalProvider,
-      externalId,
-      externalUrl,
-      githubPrNumber,
-      githubPrUrl,
-      mark,
-      now,
-      now
-    )
-
-    return this.mapKanbanTicketRow({
-      id,
-      project_id: data.project_id,
-      title: data.title,
-      description,
-      attachments: attachmentsJson,
-      column,
-      sort_order: sortOrder,
-      current_session_id: currentSessionId,
-      worktree_id: worktreeId,
-      mode,
-      plan_ready: planReady,
-      external_provider: externalProvider,
-      external_id: externalId,
-      external_url: externalUrl,
-      github_pr_number: githubPrNumber,
-      github_pr_url: githubPrUrl,
-      mark,
-      total_tokens: 0,
-      created_at: now,
-      updated_at: now
-    })
-  }
-
-  createKanbanTicketBatch(data: KanbanTicketBatchCreate): KanbanTicketBatchCreateResult {
-    return this.transaction(() => {
-      const db = this.getDb()
-      const drafts = this.normalizeBatchDrafts(data.drafts)
-      const createdTickets: KanbanTicket[] = []
-      const createdByDraftKey = new Map<string, KanbanTicket>()
-
-      for (const draft of drafts) {
-        const ticket = this.createKanbanTicket({
-          project_id: draft.project_id,
-          title: draft.title,
-          description: draft.description ?? null,
-          attachments: draft.attachments ?? [],
-          column: draft.column,
-          sort_order: draft.sort_order,
-          current_session_id: draft.current_session_id,
-          worktree_id: draft.worktree_id,
-          mode: draft.mode,
-          plan_ready: draft.plan_ready,
-          external_provider: draft.external_provider,
-          external_id: draft.external_id,
-          external_url: draft.external_url,
-          github_pr_number: draft.github_pr_number,
-          github_pr_url: draft.github_pr_url,
-          mark: draft.mark
-        })
-        createdTickets.push(ticket)
-        createdByDraftKey.set(draft.draft_key, ticket)
-      }
-
-      const dependencies: TicketDependency[] = []
-      for (const draft of drafts) {
-        const dependentTicket = createdByDraftKey.get(draft.draft_key)
-        if (!dependentTicket) continue
-
-        for (const blockerDraftKey of draft.depends_on) {
-          const blockerTicket = createdByDraftKey.get(blockerDraftKey)
-          if (!blockerTicket) continue
-
-          const createdAt = new Date().toISOString()
-          db.prepare(
-            'INSERT INTO ticket_dependencies (dependent_id, blocker_id, created_at) VALUES (?, ?, ?)'
-          ).run(dependentTicket.id, blockerTicket.id, createdAt)
-          dependencies.push({
-            dependent_id: dependentTicket.id,
-            blocker_id: blockerTicket.id,
-            created_at: createdAt
-          })
-        }
-      }
-
-      return {
-        tickets: createdTickets,
-        dependencies
-      }
-    })
-  }
-
-  getKanbanTicket(id: string): KanbanTicket | null {
-    const db = this.getDb()
-    const row = db.prepare('SELECT * FROM kanban_tickets WHERE id = ?').get(id) as
-      | Record<string, unknown>
-      | undefined
-    return row ? this.mapKanbanTicketRow(row) : null
-  }
-
-  getKanbanTicketByExternalId(
-    externalProvider: string,
-    externalId: string,
-    projectId: string
-  ): KanbanTicket | null {
-    const db = this.getDb()
-    const row = db
-      .prepare(
-        'SELECT * FROM kanban_tickets WHERE external_provider = ? AND external_id = ? AND project_id = ?'
-      )
-      .get(externalProvider, externalId, projectId) as Record<string, unknown> | undefined
-    return row ? this.mapKanbanTicketRow(row) : null
-  }
-
-  getKanbanTicketsByProject(projectId: string, includeArchived: boolean = false): KanbanTicket[] {
-    const db = this.getDb()
-    const query = includeArchived
-      ? 'SELECT * FROM kanban_tickets WHERE project_id = ? ORDER BY "column" ASC, sort_order ASC'
-      : 'SELECT * FROM kanban_tickets WHERE project_id = ? AND archived_at IS NULL ORDER BY "column" ASC, sort_order ASC'
-    const rows = db.prepare(query).all(projectId) as Record<string, unknown>[]
-    return rows.map((row) => this.mapKanbanTicketRow(row))
-  }
-
-  updateKanbanTicket(id: string, data: KanbanTicketUpdate): KanbanTicket | null {
-    const db = this.getDb()
-    const existing = this.getKanbanTicket(id)
-    if (!existing) return null
-
-    const updates: string[] = ['updated_at = ?']
-    const values: (string | number | null)[] = [new Date().toISOString()]
-
-    if (data.title !== undefined) {
-      if (typeof data.title !== 'string' || data.title.trim().length === 0) {
-        throw new Error('Kanban ticket title must be a non-empty string')
-      }
-      updates.push('title = ?')
-      values.push(data.title.trim())
-    }
-    if (data.description !== undefined) {
-      updates.push('description = ?')
-      values.push(data.description)
-    }
-    if (data.attachments !== undefined) {
-      updates.push('attachments = ?')
-      values.push(JSON.stringify(data.attachments))
-    }
-    if (data.column !== undefined) {
-      updates.push('"column" = ?')
-      values.push(data.column)
-    }
-    if (data.sort_order !== undefined) {
-      updates.push('sort_order = ?')
-      values.push(data.sort_order)
-    }
-    if (data.current_session_id !== undefined) {
-      updates.push('current_session_id = ?')
-      values.push(data.current_session_id)
-    }
-    if (data.worktree_id !== undefined) {
-      updates.push('worktree_id = ?')
-      values.push(data.worktree_id)
-    }
-    if (data.mode !== undefined) {
-      updates.push('mode = ?')
-      values.push(data.mode)
-    }
-    if (data.plan_ready !== undefined) {
-      updates.push('plan_ready = ?')
-      values.push(data.plan_ready ? 1 : 0)
-    }
-    if (data.github_pr_number !== undefined) {
-      updates.push('github_pr_number = ?')
-      values.push(data.github_pr_number)
-    }
-    if (data.github_pr_url !== undefined) {
-      updates.push('github_pr_url = ?')
-      values.push(data.github_pr_url)
-    }
-    if (data.mark !== undefined) {
-      updates.push('mark = ?')
-      values.push(data.mark)
-    }
-    if (data.pending_launch_config !== undefined) {
-      updates.push('pending_launch_config = ?')
-      values.push(data.pending_launch_config)
-    }
-    if (data.note !== undefined) {
-      updates.push('note = ?')
-      values.push(data.note)
-    }
-
-    if (updates.length === 1) return existing // Only updated_at, nothing meaningful changed
-
-    values.push(id)
-    db.prepare(`UPDATE kanban_tickets SET ${updates.join(', ')} WHERE id = ?`).run(...values)
-
-    return this.getKanbanTicket(id)
-  }
-
-  deleteKanbanTicket(id: string): boolean {
-    const db = this.getDb()
-
-    // Clean up image attachment files from disk
-    const ticket = this.getKanbanTicket(id)
-    if (ticket) {
-      for (const attachment of ticket.attachments) {
-        const a = attachment as { type?: string; url?: string }
-        if (a.type === 'image' && a.url) {
-          deleteAttachment(a.url) // Best-effort, don't fail the delete
-        }
-      }
-    }
-
-    const result = db.prepare('DELETE FROM kanban_tickets WHERE id = ?').run(id)
-    return result.changes > 0
-  }
-
-  archiveKanbanTicket(id: string): KanbanTicket | null {
-    const db = this.getDb()
-    const existing = this.getKanbanTicket(id)
-    if (!existing) return null
-    const now = new Date().toISOString()
-    db.prepare('UPDATE kanban_tickets SET archived_at = ?, updated_at = ? WHERE id = ?')
-      .run(now, now, id)
-    return this.getKanbanTicket(id)
-  }
-
-  archiveAllDoneKanbanTickets(projectId: string): number {
-    const db = this.getDb()
-    const now = new Date().toISOString()
-    const result = db.prepare(
-      'UPDATE kanban_tickets SET archived_at = ?, updated_at = ? WHERE project_id = ? AND "column" = ? AND archived_at IS NULL'
-    ).run(now, now, projectId, 'done')
-    return result.changes
-  }
-
-  unarchiveKanbanTicket(id: string): KanbanTicket | null {
-    const db = this.getDb()
-    const existing = this.getKanbanTicket(id)
-    if (!existing) return null
-    const now = new Date().toISOString()
-    db.prepare('UPDATE kanban_tickets SET archived_at = NULL, updated_at = ? WHERE id = ?')
-      .run(now, id)
-    return this.getKanbanTicket(id)
-  }
-
-  moveKanbanTicket(id: string, column: KanbanTicketColumn, sortOrder: number): KanbanTicket | null {
-    const db = this.getDb()
-    const existing = this.getKanbanTicket(id)
-    if (!existing) return null
-
-    const now = new Date().toISOString()
-    db.prepare(
-      'UPDATE kanban_tickets SET "column" = ?, sort_order = ?, updated_at = ? WHERE id = ?'
-    ).run(column, sortOrder, now, id)
-
-    return this.getKanbanTicket(id)
-  }
-
-  reorderKanbanTicket(id: string, sortOrder: number): void {
-    const db = this.getDb()
-    const now = new Date().toISOString()
-    db.prepare('UPDATE kanban_tickets SET sort_order = ?, updated_at = ? WHERE id = ?').run(
-      sortOrder,
-      now,
-      id
-    )
-  }
-
-  addTicketTokens(ticketId: string, tokens: number): void {
-    const db = this.getDb()
-    const now = new Date().toISOString()
-    db.prepare(
-      'UPDATE kanban_tickets SET total_tokens = total_tokens + ?, updated_at = ? WHERE id = ?'
-    ).run(tokens, now, ticketId)
-  }
-
-  getKanbanTicketsBySession(sessionId: string): KanbanTicket[] {
-    const db = this.getDb()
-    const rows = db
-      .prepare(
-        'SELECT * FROM kanban_tickets WHERE current_session_id = ? ORDER BY sort_order ASC'
-      )
-      .all(sessionId) as Record<string, unknown>[]
-    return rows.map((row) => this.mapKanbanTicketRow(row))
-  }
-
-  syncPRToTickets(worktreeId: string, prNumber: number, prUrl: string): void {
-    const db = this.getDb()
-    const now = new Date().toISOString()
-    db.prepare(
-      'UPDATE kanban_tickets SET github_pr_number = ?, github_pr_url = ?, updated_at = ? WHERE worktree_id = ?'
-    ).run(prNumber, prUrl, now, worktreeId)
-  }
-
-  clearPRFromTickets(worktreeId: string): void {
-    const db = this.getDb()
-    const now = new Date().toISOString()
-    db.prepare(
-      'UPDATE kanban_tickets SET github_pr_number = NULL, github_pr_url = NULL, updated_at = ? WHERE worktree_id = ?'
-    ).run(now, worktreeId)
-  }
-
-  attachPRToTicket(ticketId: string, projectId: string, prNumber: number, prUrl: string): void {
-    const db = this.getDb()
-    const now = new Date().toISOString()
-    db.prepare(
-      'UPDATE kanban_tickets SET github_pr_number = ?, github_pr_url = ?, updated_at = ? WHERE id = ? AND project_id = ?'
-    ).run(prNumber, prUrl, now, ticketId, projectId)
-  }
-
-  detachPRFromTicket(ticketId: string, projectId: string): void {
-    const db = this.getDb()
-    const now = new Date().toISOString()
-    db.prepare(
-      'UPDATE kanban_tickets SET github_pr_number = NULL, github_pr_url = NULL, updated_at = ? WHERE id = ? AND project_id = ?'
-    ).run(now, ticketId, projectId)
-  }
-
-  detachWorktreeFromTickets(worktreeId: string): number {
-    const db = this.getDb()
-    const now = new Date().toISOString()
-    const result = db.prepare(
-      'UPDATE kanban_tickets SET worktree_id = NULL, updated_at = ? WHERE worktree_id = ?'
-    ).run(now, worktreeId)
-    return result.changes
-  }
-
-  addTicketDependency(
-    dependentId: string,
-    blockerId: string
-  ): { success: boolean; error?: string } {
-    // Fix 1: Self-dependency check (CRITICAL)
-    if (dependentId === blockerId) {
-      return { success: false, error: 'A ticket cannot depend on itself' }
-    }
-
-    return this.transaction(() => {
-      const db = this.getDb()
-
-      // Validate same project
-      const dependentTicket = db
-        .prepare('SELECT project_id FROM kanban_tickets WHERE id = ?')
-        .get(dependentId) as { project_id: string } | undefined
-      const blockerTicket = db
-        .prepare('SELECT project_id FROM kanban_tickets WHERE id = ?')
-        .get(blockerId) as { project_id: string } | undefined
-
-      // Fix 3: Separate error messages for non-existent tickets vs same project
-      if (!dependentTicket || !blockerTicket) {
-        return { success: false, error: 'One or both tickets do not exist' }
-      }
-      if (dependentTicket.project_id !== blockerTicket.project_id) {
-        return { success: false, error: 'Tickets must be in the same project' }
-      }
-
-      if (this.wouldCreateTicketDependencyCycle(db, dependentId, blockerId)) {
-        return {
-          success: false,
-          error: 'Adding this dependency would create a circular dependency'
-        }
-      }
-
-      // Fix 2: Check for existing dependency
-      const existing = db.prepare(
-        'SELECT 1 FROM ticket_dependencies WHERE dependent_id = ? AND blocker_id = ?'
-      ).get(dependentId, blockerId)
-      if (existing) {
-        return { success: true } // Idempotent - already exists
-      }
-
-      // Safe to insert
-      const now = new Date().toISOString()
-      db.prepare(
-        'INSERT INTO ticket_dependencies (dependent_id, blocker_id, created_at) VALUES (?, ?, ?)'
-      ).run(dependentId, blockerId, now)
-
-      return { success: true }
-    })
-  }
-
-  removeTicketDependency(dependentId: string, blockerId: string): boolean {
-    const db = this.getDb()
-    const result = db
-      .prepare('DELETE FROM ticket_dependencies WHERE dependent_id = ? AND blocker_id = ?')
-      .run(dependentId, blockerId)
-    return result.changes > 0
-  }
-
-  getBlockersForTicket(ticketId: string): KanbanTicket[] {
-    const db = this.getDb()
-    const rows = db
-      .prepare(
-        `SELECT kt.* FROM kanban_tickets kt
-         JOIN ticket_dependencies td ON td.blocker_id = kt.id
-         WHERE td.dependent_id = ?`
-      )
-      .all(ticketId) as Record<string, unknown>[]
-    return rows.map((row) => this.mapKanbanTicketRow(row))
-  }
-
-  getDependentsOfTicket(ticketId: string): KanbanTicket[] {
-    const db = this.getDb()
-    const rows = db
-      .prepare(
-        `SELECT kt.* FROM kanban_tickets kt
-         JOIN ticket_dependencies td ON td.dependent_id = kt.id
-         WHERE td.blocker_id = ?`
-      )
-      .all(ticketId) as Record<string, unknown>[]
-    return rows.map((row) => this.mapKanbanTicketRow(row))
-  }
-
-  getDependenciesForProject(projectId: string): TicketDependency[] {
-    const db = this.getDb()
-    return db
-      .prepare(
-        `SELECT td.* FROM ticket_dependencies td
-         JOIN kanban_tickets kt1 ON kt1.id = td.dependent_id
-         JOIN kanban_tickets kt2 ON kt2.id = td.blocker_id
-         WHERE kt1.project_id = ? AND kt2.project_id = ?`
-      )
-      .all(projectId, projectId) as TicketDependency[]
-  }
-
-  removeAllDependenciesForTicket(ticketId: string): number {
-    const db = this.getDb()
-    const result = db
-      .prepare('DELETE FROM ticket_dependencies WHERE dependent_id = ? OR blocker_id = ?')
-      .run(ticketId, ticketId)
-    return result.changes
-  }
-
-  updateProjectSimpleMode(projectId: string, enabled: boolean): void {
-    const db = this.getDb()
-    db.prepare('UPDATE projects SET kanban_simple_mode = ? WHERE id = ?').run(
-      enabled ? 1 : 0,
-      projectId
-    )
-  }
-
-  // Ticket followup message operations
-
-  createTicketFollowupMessage(data: TicketFollowupMessageCreate): TicketFollowupMessage {
-    const db = this.getDb()
-    const id = randomUUID()
-    const now = new Date().toISOString()
-    const sessionId = data.session_id ?? null
-    const source = data.source ?? 'direct'
-    const role = data.role ?? 'user'
-
-    db.prepare(
-      `INSERT INTO ticket_followup_messages (id, ticket_id, content, role, mode, session_id, source, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, data.ticket_id, data.content, role, data.mode, sessionId, source, now)
-
-    return {
-      id,
-      ticket_id: data.ticket_id,
-      content: data.content,
-      role: role as 'user' | 'assistant',
-      mode: data.mode as 'build' | 'plan' | 'super-plan',
-      session_id: sessionId,
-      source: source as 'direct' | 'supercharge' | 'error_retry',
-      created_at: now
-    }
-  }
-
-  getTicketFollowupMessages(ticketId: string): TicketFollowupMessage[] {
-    const db = this.getDb()
-    const rows = db.prepare(
-      'SELECT * FROM ticket_followup_messages WHERE ticket_id = ? ORDER BY created_at ASC'
-    ).all(ticketId) as TicketFollowupMessage[]
-    return rows
   }
 
   // Diff comment operations

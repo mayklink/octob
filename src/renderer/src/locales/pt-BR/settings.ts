@@ -32,6 +32,12 @@ export const settings = {
     languageHint: 'Idioma da interface',
     langEnglish: 'English',
     langPortuguese: 'Português (Brasil)',
+    display: 'Exibição',
+    displayHint: 'Escolha como projetos, connections e worktrees são apresentados.',
+    displayOverview: 'Visão geral',
+    displayOverviewHint: 'Cards visuais e visão rápida',
+    displayCompact: 'Compacta',
+    displayCompactHint: 'Navegação direta pela barra lateral',
     resetAllToast: 'Todas as configurações foram restauradas para o padrão',
     autoStartSession: 'Iniciar sessão automaticamente',
     autoStartSessionHint:
@@ -404,6 +410,9 @@ export const settings = {
       'Somente servidores ativados são enviados para novas sessões/tarefas de agentes compatíveis, incluindo Codex, Claude Code, Cursor CLI e Mistral Vibe. MCPs remotos como Notion e Supabase usam OAuth quando o agente solicita autenticação.'
   },
   mcp: {
+    sessionTools: 'Ferramentas da sessão (MCP)',
+    sessionToolsHint: 'Escolha os MCPs usados por este repositório. Alterações valem para novas sessões.',
+    addAndManage: 'Adicionar e gerenciar MCPs',
     eyebrow: 'Plugins e ferramentas',
     heading: 'Servidores MCP',
     description:

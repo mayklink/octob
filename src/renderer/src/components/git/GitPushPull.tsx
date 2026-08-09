@@ -13,7 +13,6 @@ import { Button } from '@/components/ui/button'
 import { useGitStore } from '@/stores/useGitStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useProjectStore } from '@/stores/useProjectStore'
-import { useKanbanStore } from '@/stores/useKanbanStore'
 import { cn } from '@/lib/utils'
 import { ArchiveConfirmDialog } from '@/components/worktrees/ArchiveConfirmDialog'
 import { MergeConfirmDialog } from '@/components/worktrees/MergeConfirmDialog'
@@ -23,25 +22,6 @@ interface BranchInfo {
   isRemote: boolean
   isCheckedOut: boolean
   worktreePath?: string
-}
-
-/** Ticket in Review linked to this worktree path — for post-merge Done prompt */
-function findReviewTicketForWorktreePath(worktreePath: string): {
-  ticketId: string
-  projectId: string
-} | null {
-  const ws = useWorktreeStore.getState()
-  const kb = useKanbanStore.getState()
-  for (const [projectId, list] of ws.worktreesByProject) {
-    const w = list.find((x) => x.path === worktreePath)
-    if (!w) continue
-    const tickets = kb.tickets.get(projectId) ?? []
-    const ticket = tickets.find(
-      (t) => t.worktree_id === w.id && t.column === 'review' && !t.archived_at
-    )
-    if (ticket) return { ticketId: ticket.id, projectId }
-  }
-  return null
 }
 
 interface GitPushPullProps {
@@ -313,24 +293,7 @@ export function GitPushPull({
     try {
       const result = await window.gitOps.merge(worktreePath, mergeBranch.trim())
       if (result.success) {
-        const linked = findReviewTicketForWorktreePath(worktreePath)
-        if (linked) {
-          toast.success(`Merged ${mergeBranch} successfully`, {
-            duration: 10_000,
-            action: {
-              label: 'Move ticket to Done',
-              onClick: () => {
-                const kanban = useKanbanStore.getState()
-                const doneTickets = kanban.getTicketsByColumn(linked.projectId, 'done')
-                const sortOrder = kanban.computeSortOrder(doneTickets, doneTickets.length)
-                void kanban.moveTicket(linked.ticketId, linked.projectId, 'done', sortOrder)
-                toast.success('Ticket moved to Done')
-              }
-            }
-          })
-        } else {
-          toast.success(`Merged ${mergeBranch} successfully`)
-        }
+        toast.success(`Merged ${mergeBranch} successfully`)
         // Refresh file statuses and branch info after merge
         await refreshStatuses(worktreePath)
         // Refresh branch list so Archive/Delete decision has current isCheckedOut data

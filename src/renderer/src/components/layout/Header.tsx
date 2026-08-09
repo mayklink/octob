@@ -29,7 +29,6 @@ import {
   GitBranch,
   MoreHorizontal
 } from 'lucide-react'
-import { KanbanIcon } from '@/components/kanban/KanbanIcon'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -65,7 +64,6 @@ import { useSessionStore } from '@/stores/useSessionStore'
 import { useGitStore } from '@/stores/useGitStore'
 import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
 import { useVimModeStore } from '@/stores/useVimModeStore'
-import { useKanbanStore } from '@/stores/useKanbanStore'
 import { useTipStore } from '@/stores/useTipStore'
 import { Tip } from '@/components/ui/Tip'
 import { useFileViewerStore } from '@/stores/useFileViewerStore'
@@ -112,8 +110,8 @@ export function Header(): React.JSX.Element {
     setRightSidebarCollapsed,
     setRightSidebarTab,
     setWorkspaceMode,
-    visualizationMode,
-    setVisualizationMode
+    displayLayout,
+    setDisplayLayout
   } =
     useLayoutStore()
   const { openPanel: openSessionHistory } = useSessionHistoryStore()
@@ -141,7 +139,6 @@ export function Header(): React.JSX.Element {
   const vimMode = useVimModeStore((s) => s.mode)
   const vimModeEnabled = useSettingsStore((s) => s.vimModeEnabled)
   const mergeConflictMode = useSettingsStore((s) => s.mergeConflictMode)
-  const boardMode = useSettingsStore((s) => s.boardMode)
   const reviewPromptPresetId = useSettingsStore((s) => s.reviewPromptPresetId)
   const codeReviewPromptTemplates = useSettingsStore((s) => s.codeReviewPromptTemplates ?? [])
   const updateSetting = useSettingsStore((s) => s.updateSetting)
@@ -152,22 +149,7 @@ export function Header(): React.JSX.Element {
     ).length
   )
   const showVimHints = vimModeEnabled && vimMode === 'normal'
-  const isBoardViewActive = useKanbanStore((s) => s.isBoardViewActive)
-  const toggleBoardView = useKanbanStore((s) => s.toggleBoardView)
-  const kanbanIconSeen = useTipStore((s) => s.isTipSeen('kanban-icon'))
   const [conflictFixFlow, setConflictFixFlow] = useState<ConflictFixFlow | null>(null)
-
-  // Track first-time kanban exit for the kanban-reenter tip
-  const [justExitedKanban, setJustExitedKanban] = useState(false)
-  const prevBoardActive = useRef(isBoardViewActive)
-  useEffect(() => {
-    if (prevBoardActive.current && !isBoardViewActive) {
-      setJustExitedKanban(true)
-    }
-    prevBoardActive.current = isBoardViewActive
-  }, [isBoardViewActive])
-
-  const hasProjects = projects.length > 0
 
   const selectedProject = projects.find((p) => p.id === selectedProjectId)
   const selectedWorktree = (() => {
@@ -186,10 +168,13 @@ export function Header(): React.JSX.Element {
   )
   const isConnectionMode = !!selectedConnectionId && !selectedWorktreeId
 
-  const handleVisualizationModeChange = useCallback(
-    (mode: 'basic' | 'advanced') => {
-      setVisualizationMode(mode)
-      if (mode === 'advanced') return
+  const handleDisplayLayoutChange = useCallback(
+    (mode: 'overview' | 'compact') => {
+      setDisplayLayout(mode)
+      if (mode === 'compact') {
+        useLayoutStore.getState().setLeftSidebarCollapsed(false)
+        return
+      }
 
       if (selectedConnectionId) {
         setWorkspaceView('connection')
@@ -206,7 +191,7 @@ export function Header(): React.JSX.Element {
       selectedConnectionId,
       selectedProjectId,
       selectedWorktreeId,
-      setVisualizationMode,
+      setDisplayLayout,
       setWorkspaceContentView,
       setWorkspaceView
     ]
@@ -386,16 +371,15 @@ export function Header(): React.JSX.Element {
 
   const showFixConflictsButton = hasConflicts || isFixConflictsLoading
 
-  const activeWorkspaceMode = isBoardViewActive ? 'board' : workspaceMode
+  const activeWorkspaceMode = workspaceMode
 
   // A connection is a valid workspace too. It can browse the combined directory,
-  // chat in connection-scoped sessions, and show its board. Git stays worktree-only
+  // chat in connection-scoped sessions. Git stays worktree-only
   // because a connection can contain multiple repositories.
   const workspaceModes = [
     ['chat', MessageSquare, 'Chat'],
     ['code', Code2, 'Code'],
-    ['git', GitBranch, 'Git'],
-    ['board', KanbanIcon, 'Board']
+    ['git', GitBranch, 'Git']
   ] as const
 
   useEffect(() => {
@@ -404,18 +388,10 @@ export function Header(): React.JSX.Element {
     }
   }, [isConnectionMode, workspaceMode, setWorkspaceMode])
 
-  const selectWorkspaceMode = (mode: 'chat' | 'code' | 'git' | 'board'): void => {
+  const selectWorkspaceMode = (mode: 'chat' | 'code' | 'git'): void => {
     setWorkspaceView(selectedConnectionId ? 'connection' : selectedProjectId ? 'project' : 'projects')
     setWorkspaceContentView(mode === 'chat' ? 'session' : 'overview')
     setWorkspaceMode(mode)
-    if (mode === 'board') {
-      useFileViewerStore.getState().clearActiveViews()
-      if (!isBoardViewActive) toggleBoardView()
-      setRightSidebarCollapsed(true)
-      return
-    }
-
-    if (isBoardViewActive) toggleBoardView()
     if (mode === 'chat') {
       useFileViewerStore.getState().clearActiveViews()
       setRightSidebarCollapsed(true)
@@ -438,7 +414,7 @@ export function Header(): React.JSX.Element {
       {/* Spacer for macOS traffic lights */}
       {isMac() && <div className="w-16 flex-shrink-0" />}
       <div className="flex items-stretch gap-1 flex-1 min-w-0 self-stretch">
-        {visualizationMode === 'advanced' ? (
+        {displayLayout === 'compact' ? (
           <>
             <Button
               variant="ghost"
@@ -485,7 +461,6 @@ export function Header(): React.JSX.Element {
             setWorkspaceView('projects')
             setWorkspaceContentView('overview')
             useFileViewerStore.getState().clearActiveViews()
-            useKanbanStore.setState({ isBoardViewActive: false, isPinnedBoardActive: false })
           }}
           className={cn(
             'h-full rounded-none border-b-2 gap-2 px-3 text-sm font-semibold',
@@ -521,7 +496,6 @@ export function Header(): React.JSX.Element {
                 useProjectStore.getState().selectProject(selectedProject.id)
                 useWorktreeStore.getState().selectWorktree(null)
                 useFileViewerStore.getState().clearActiveViews()
-                useKanbanStore.setState({ isBoardViewActive: false, isPinnedBoardActive: false })
               }}
               className="flex h-full min-w-0 items-center gap-2 px-3"
             >
@@ -539,7 +513,6 @@ export function Header(): React.JSX.Element {
                 useProjectStore.getState().selectProject(null)
                 useWorktreeStore.getState().selectWorktree(null)
                 useFileViewerStore.getState().clearActiveViews()
-                useKanbanStore.setState({ isBoardViewActive: false, isPinnedBoardActive: false })
                 if (workspaceView === 'project') setWorkspaceView('projects')
                 setWorkspaceContentView('overview')
               }}
@@ -570,7 +543,6 @@ export function Header(): React.JSX.Element {
                 setWorkspaceContentView('overview')
                 useConnectionStore.getState().selectConnection(selectedConnection.id)
                 useFileViewerStore.getState().clearActiveViews()
-                useKanbanStore.setState({ isBoardViewActive: true, isPinnedBoardActive: false })
               }}
               className="flex h-full min-w-0 items-center gap-2 px-3"
             >
@@ -587,7 +559,6 @@ export function Header(): React.JSX.Element {
                 event.stopPropagation()
                 useConnectionStore.getState().selectConnection(null)
                 useFileViewerStore.getState().clearActiveViews()
-                useKanbanStore.setState({ isBoardViewActive: false, isPinnedBoardActive: false })
                 if (workspaceView === 'connection') setWorkspaceView('projects')
                 setWorkspaceContentView('overview')
               }}
@@ -682,7 +653,7 @@ export function Header(): React.JSX.Element {
         </div>
       )}
       <div className="flex-1" />
-      {visualizationMode === 'advanced' && (selectedWorktree || selectedConnection) && (
+      {displayLayout === 'compact' && (selectedWorktree || selectedConnection) && (
         <nav
           className="mr-2 flex items-center gap-0.5 rounded-lg border bg-muted/35 p-0.5"
           aria-label="Workspace mode"
@@ -719,61 +690,43 @@ export function Header(): React.JSX.Element {
         className="flex items-center gap-2"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
-        <Button
-          variant={workspaceView === 'pull-requests' ? 'secondary' : 'ghost'}
-          size="sm"
-          className="h-7 gap-1.5 text-xs"
-          onClick={() => {
-            if (workspaceView === 'pull-requests') {
-              selectWorkspaceMode(workspaceMode)
-              return
-            }
-            setWorkspaceView('pull-requests')
-            useFileViewerStore.getState().clearActiveViews()
-            useKanbanStore.setState({ isBoardViewActive: false, isPinnedBoardActive: false })
-            setRightSidebarCollapsed(true)
-          }}
-          title="Pull request inbox"
-          data-testid="pull-request-inbox-toggle"
-        >
-          <GitPullRequest className="h-3.5 w-3.5" />
-          <span className="hidden xl:inline">Pull requests</span>
-        </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
               variant="outline"
               size="sm"
               className="h-7 gap-1.5 text-xs"
-              title="Choose visualization mode"
-              data-testid="visualization-mode-trigger"
+              title={t('settings.general.display')}
+              data-testid="display-layout-trigger"
             >
-              {visualizationMode === 'basic' ? (
+              {displayLayout === 'overview' ? (
                 <LayoutGrid className="h-3.5 w-3.5" />
               ) : (
                 <PanelLeftOpen className="h-3.5 w-3.5" />
               )}
-              {visualizationMode === 'basic' ? 'Basic' : 'Advanced'}
+              {displayLayout === 'overview'
+                ? t('settings.general.displayOverview')
+                : t('settings.general.displayCompact')}
               <ChevronDown className="h-3 w-3" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-64">
-            <DropdownMenuLabel>Visualization mode</DropdownMenuLabel>
-            <DropdownMenuItem onClick={() => handleVisualizationModeChange('basic')}>
+            <DropdownMenuLabel>{t('settings.general.display')}</DropdownMenuLabel>
+            <DropdownMenuItem onClick={() => handleDisplayLayoutChange('overview')}>
               <LayoutGrid className="mr-2 h-4 w-4" />
               <div className="flex flex-1 flex-col">
-                <span>Basic</span>
-                <span className="text-xs text-muted-foreground">Project cards and quick overview</span>
+                <span>{t('settings.general.displayOverview')}</span>
+                <span className="text-xs text-muted-foreground">{t('settings.general.displayOverviewHint')}</span>
               </div>
-              {visualizationMode === 'basic' && <Check className="ml-2 h-4 w-4" />}
+              {displayLayout === 'overview' && <Check className="ml-2 h-4 w-4" />}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => handleVisualizationModeChange('advanced')}>
+            <DropdownMenuItem onClick={() => handleDisplayLayoutChange('compact')}>
               <PanelLeftOpen className="mr-2 h-4 w-4" />
               <div className="flex flex-1 flex-col">
-                <span>Advanced</span>
-                <span className="text-xs text-muted-foreground">Classic sidebar and session workflow</span>
+                <span>{t('settings.general.displayCompact')}</span>
+                <span className="text-xs text-muted-foreground">{t('settings.general.displayCompactHint')}</span>
               </div>
-              {visualizationMode === 'advanced' && <Check className="ml-2 h-4 w-4" />}
+              {displayLayout === 'compact' && <Check className="ml-2 h-4 w-4" />}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -1263,35 +1216,6 @@ export function Header(): React.JSX.Element {
               </PopoverContent>
             </Popover>
           </Popover>
-        )}
-        {boardMode === 'toggle' && visualizationMode !== 'advanced' && (
-          <Tip
-            tipId={kanbanIconSeen ? 'kanban-reenter' : 'kanban-icon'}
-            enabled={kanbanIconSeen ? justExitedKanban : hasProjects}
-          >
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => {
-                const fileStore = useFileViewerStore.getState()
-                if (!isBoardViewActive) {
-                  fileStore.clearActiveViews()
-                  toggleBoardView()
-                } else if (fileStore.hasActiveOverlay()) {
-                  fileStore.clearActiveViews()
-                } else {
-                  toggleBoardView()
-                }
-              }}
-              title={isBoardViewActive ? 'Close Board' : 'Open Board'}
-              data-testid="kanban-board-toggle"
-              className={cn(
-                isBoardViewActive && 'bg-accent text-accent-foreground'
-              )}
-            >
-              <KanbanIcon className="h-4 w-4" />
-            </Button>
-          </Tip>
         )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

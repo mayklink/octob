@@ -121,7 +121,7 @@ interface AppLayoutProps {
 }
 
 export function AppLayout({ children }: AppLayoutProps): React.JSX.Element {
-  const visualizationMode = useLayoutStore((state) => state.visualizationMode)
+  const displayLayout = useLayoutStore((state) => state.displayLayout)
   const { t } = useTranslation()
   // Register all keyboard shortcuts centrally
   useKeyboardShortcuts()
@@ -256,7 +256,7 @@ export function AppLayout({ children }: AppLayoutProps): React.JSX.Element {
           <Header />
         </ErrorBoundary>
         <div className="flex-1 flex min-h-0" data-testid="layout-content">
-          {visualizationMode === 'advanced' && (
+          {displayLayout === 'compact' && (
             <ErrorBoundary
               componentName="LeftSidebar"
               fallback={

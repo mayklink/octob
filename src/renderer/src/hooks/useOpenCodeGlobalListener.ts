@@ -17,7 +17,6 @@ import { messageSendTimes } from '@/lib/message-send-times'
 import { checkAutoApprove } from '@/lib/permissionUtils'
 import { isPlanLike } from '@/lib/constants'
 import { handleSessionIdleFollowUp } from '@/lib/session-follow-up-dispatch'
-import { useKanbanStore } from '@/stores/useKanbanStore'
 import { maybeExtractJsonTitle } from '@shared/title-utils'
 
 interface PromptDispatchContext {
@@ -182,31 +181,15 @@ export function useOpenCodeGlobalListener(): void {
     return unsubscribe
   }, [])
 
-  // Sessions created by the background PR reviewer bypass the renderer's
-  // createSession action. Merge them into the stores so tabs and live status
-  // appear immediately without changing the user's current workspace.
-  useEffect(() => {
-    if (!window.automaticPRReview?.onEvent) return () => {}
-    return window.automaticPRReview.onEvent((event) => {
-      if (event.type !== 'session-created') return
-      void useWorktreeStore.getState().loadWorktrees(event.projectId)
-      void useSessionStore.getState().loadSessions(event.worktreeId, event.projectId)
-    })
-  }, [])
-
   useEffect(() => {
     const unsubscribe = window.opencodeOps?.onStream
       ? window.opencodeOps.onStream((event) => {
           const sessionId = event.sessionId
-          // When the kanban board is showing, SessionView isn't mounted —
-          // treat the "active" session as a background session so the global
-          // listener handles its status badges, completion, permissions, etc.
-          const rawActiveId = useSessionStore.getState().activeSessionId
-          const activeId = useKanbanStore.getState().isBoardViewActive ? null : rawActiveId
+          const activeId = useSessionStore.getState().activeSessionId
 
           // Handle session materialization globally so the Zustand store
           // is always up-to-date with the real SDK session ID.  Without this,
-          // sessions created via the kanban board (where SessionView / useSessionStream
+          // sessions created before their view and stream are mounted
           // are never mounted) keep their placeholder `pending::UUID` ID forever,
           // and reconnect / getMessages fail because the backend uses the real ID.
           if (event.type === 'session.materialized') {
@@ -528,14 +511,6 @@ export function useOpenCodeGlobalListener(): void {
                 const found = sessions.find((s) => s.id === sessionId)
                 if (found) {
                   idleSession = found
-                  break
-                }
-              }
-            }
-            if (!idleSession) {
-              for (const session of sessionState.boardAssistantByProject.values()) {
-                if (session.id === sessionId) {
-                  idleSession = session
                   break
                 }
               }

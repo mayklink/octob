@@ -1,6 +1,5 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import { useKanbanStore } from './useKanbanStore'
 import { LANGUAGE_MAP } from '@/components/projects/LanguageIcon'
 
 // Project type matching the database schema
@@ -283,11 +282,6 @@ export const useProjectStore = create<ProjectState>()(
       selectProject: (id: string | null, options?: ProjectSelectionOptions) => {
         set({ selectedProjectId: id })
         if (id) {
-          // Close pinned board when navigating to a specific project
-          const kanbanState = useKanbanStore.getState()
-          if (!options?.preservePinnedBoard && kanbanState.isPinnedBoardActive) {
-            kanbanState.togglePinnedBoard()
-          }
           // Touch project to update last_accessed_at
           get().touchProject(id)
         }

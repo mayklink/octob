@@ -6,23 +6,17 @@ import { FileViewer } from '@/components/file-viewer'
 import { ImageDiffView } from '@/components/diff'
 import { isImageFile } from '@shared/types/file-utils'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
-import { useSessionStore, BOARD_TAB_ID } from '@/stores/useSessionStore'
+import { useSessionStore } from '@/stores/useSessionStore'
 import { useConnectionStore } from '@/stores/useConnectionStore'
 import { useFileViewerStore } from '@/stores/useFileViewerStore'
 import { useLayoutStore } from '@/stores/useLayoutStore'
-import { useKanbanStore } from '@/stores/useKanbanStore'
 import { useProjectStore } from '@/stores/useProjectStore'
-import { usePinnedStore } from '@/stores/usePinnedStore'
 import { useSettingsStore } from '@/stores/useSettingsStore'
-import { KanbanBoard } from '@/components/kanban/KanbanBoard'
-import { KanbanIcon } from '@/components/kanban/KanbanIcon'
-import { BoardAssistantView } from '@/components/kanban/BoardAssistantView'
 import { PRNotificationStack } from '@/components/pr/PRNotificationStack'
 import { MainPaneTerminalPanel } from './MainPaneTerminalPanel'
 import { SettingsView } from '@/components/settings'
 import { ProjectDashboard } from '@/components/projects/ProjectDashboard'
 import { WorkspaceFocusView } from './WorkspaceFocusView'
-import { PullRequestInbox } from '@/components/pr-inbox/PullRequestInbox'
 
 const SESSION_TERMINAL_VIEW_IDLE_UNMOUNT_MS = 60_000
 const MAX_MOUNTED_SESSION_TERMINAL_VIEWS = 2
@@ -55,20 +49,11 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
   const ghosttyOverlaySuppressed = useLayoutStore((state) => state.ghosttyOverlaySuppressed)
   const workspaceView = useLayoutStore((state) => state.workspaceView)
   const workspaceContentView = useLayoutStore((state) => state.workspaceContentView)
-  const visualizationMode = useLayoutStore((state) => state.visualizationMode)
+  const displayLayout = useLayoutStore((state) => state.displayLayout)
   const workspaceMode = useLayoutStore((state) => state.workspaceMode)
-  const activePinnedSessionId = useSessionStore((state) => state.activePinnedSessionId)
-  const activeBoardAssistantProjectId = useSessionStore((state) => state.activeBoardAssistantProjectId)
-  const isBoardViewActive = useKanbanStore((state) => state.isBoardViewActive)
-  const isPinnedBoardActive = useKanbanStore((state) => state.isPinnedBoardActive)
-  const pinnedStoreLoaded = usePinnedStore((state) => state.loaded)
-  const boardMode = useSettingsStore((s) => s.boardMode)
   const terminalPosition = useSettingsStore((s) => s.terminalPosition)
   const settingsOpen = useSettingsStore((s) => s.isOpen)
   const selectedProjectId = useProjectStore((state) => state.selectedProjectId)
-  const selectedProjectPath = useProjectStore((state) =>
-    state.projects.find((p) => p.id === state.selectedProjectId)?.path ?? ''
-  )
   const selectedWorktreePath = useMemo(() => {
     if (!selectedWorktreeId) return null
     for (const worktrees of useWorktreeStore.getState().worktreesByProject.values()) {
@@ -142,7 +127,7 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
   // Determine which terminal session is currently visible (if any).
   // A terminal is visible when it's the active session AND no diff/file/loading overlay is on top.
   const visibleTerminalId = useMemo(() => {
-    if (visualizationMode === 'basic' && workspaceContentView !== 'session') {
+    if (displayLayout === 'overview' && workspaceContentView !== 'session') {
       return null
     }
 
@@ -171,7 +156,7 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
     activeSessionId,
     inlineConnectionSessionId,
     workspaceContentView,
-    visualizationMode,
+    displayLayout,
     activeDiff,
     activeFilePath,
     getAgentSdk,
@@ -244,17 +229,8 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
       return <SettingsView />
     }
 
-    if (workspaceView === 'pull-requests' && !activeFilePath && !activeDiff && !contextEditorWorktreeId) {
-      return <PullRequestInbox />
-    }
-
-    // Board assistant tab is active — render BoardAssistantView in main pane
-    if (activeBoardAssistantProjectId && !activeFilePath && !activeDiff && !contextEditorWorktreeId) {
-      return <BoardAssistantView key={activeBoardAssistantProjectId} projectId={activeBoardAssistantProjectId} />
-    }
-
     if (
-      visualizationMode === 'basic' &&
+      displayLayout === 'overview' &&
       workspaceView === 'projects' &&
       !activeFilePath &&
       !activeDiff &&
@@ -264,7 +240,7 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
     }
 
     if (
-      visualizationMode === 'basic' &&
+      displayLayout === 'overview' &&
       workspaceContentView === 'overview' &&
       (workspaceView === 'project' || workspaceView === 'connection') &&
       !activeFilePath &&
@@ -277,7 +253,7 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
     // Code and Git explicitly own the main canvas. Keep this before every board
     // branch so a sticky/persisted Board tab cannot cover the selected workspace mode.
     if (
-      visualizationMode === 'advanced' &&
+      displayLayout === 'compact' &&
       ((selectedWorktreeId &&
         selectedWorktreePath &&
         (workspaceMode === 'code' || workspaceMode === 'git')) ||
@@ -295,67 +271,9 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
       )
     }
 
-    // Sticky-tab board mode: render board when BOARD_TAB_ID is the active session
-    if (boardMode === 'sticky-tab' && activeSessionId === BOARD_TAB_ID && !inlineConnectionSessionId && !activeFilePath && !activeDiff && !contextEditorWorktreeId) {
-      // Pinned board takes priority when active
-      if (isPinnedBoardActive && pinnedStoreLoaded) {
-        return <KanbanBoard isPinnedMode={true} />
-      }
-      // Worktree mode: show project board
-      if (selectedProjectId && !selectedConnectionId) {
-        return <KanbanBoard projectId={selectedProjectId} projectPath={selectedProjectPath} />
-      }
-      // Connection mode: show connection board
-      if (selectedConnectionId) {
-        return <KanbanBoard connectionId={selectedConnectionId} />
-      }
-      // No project selected: empty state
-      return (
-        <div className="flex-1 flex items-center justify-center text-muted-foreground">
-          <div className="text-center">
-            <KanbanIcon className="h-8 w-8 mx-auto mb-3 opacity-50" />
-            <p className="text-sm">Select a project to view its board</p>
-          </div>
-        </div>
-      )
-    }
-
-    // Pinned session takes priority over board when active
-    if (isBoardViewActive && activePinnedSessionId && !activeFilePath && !activeDiff && !contextEditorWorktreeId) {
-      return <SessionView key={activePinnedSessionId} sessionId={activePinnedSessionId} />
-    }
-
-    // Pinned projects board view (independent of project/connection selection)
-    // Wait for pinned store to load so we don't flash an empty state on startup.
-    if (isPinnedBoardActive && pinnedStoreLoaded && !activeFilePath && !activeDiff && !contextEditorWorktreeId) {
-      return <KanbanBoard isPinnedMode={true} />
-    }
-
-    // Board view — project-level (works with or without worktree selected)
-    if (isBoardViewActive && selectedProjectId && !selectedConnectionId && !activeFilePath && !activeDiff && !contextEditorWorktreeId) {
-      return <KanbanBoard projectId={selectedProjectId} projectPath={selectedProjectPath} />
-    }
-
-    // Board view — connection-level
-    if (isBoardViewActive && selectedConnectionId && !activeFilePath && !activeDiff && !contextEditorWorktreeId) {
-      return <KanbanBoard connectionId={selectedConnectionId} />
-    }
-
-    // Board view — no project selected yet (empty state)
-    if (isBoardViewActive && !activeFilePath && !activeDiff && !contextEditorWorktreeId) {
-      return (
-        <div className="flex-1 flex items-center justify-center text-muted-foreground">
-          <div className="text-center">
-            <KanbanIcon className="h-8 w-8 mx-auto mb-3 opacity-50" />
-            <p className="text-sm">Select a project to view its board</p>
-          </div>
-        </div>
-      )
-    }
-
     // Project dashboard - primary project/worktree surface
     if (!selectedWorktreeId && !selectedConnectionId && !activeFilePath && !activeDiff && !contextEditorWorktreeId) {
-      if (visualizationMode === 'basic') return <ProjectDashboard />
+      if (displayLayout === 'overview') return <ProjectDashboard />
       return (
         <div className="flex-1 flex items-center justify-center text-muted-foreground">
           <div className="text-center">
@@ -479,7 +397,7 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
       data-testid="main-pane"
     >
       <PRNotificationStack />
-      {!settingsOpen && workspaceView !== 'pull-requests' && (selectedWorktreeId || selectedConnectionId) && <SessionTabs />}
+      {!settingsOpen && (selectedWorktreeId || selectedConnectionId) && <SessionTabs />}
       <div className="flex-1 flex flex-col min-h-0">
         {renderContent()}
         {renderedTerminalSessionIds.map((sessionId) => {

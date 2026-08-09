@@ -56,8 +56,6 @@ export {
 export { useAccountStore } from './useAccountStore'
 export { useHintStore } from './useHintStore'
 export { useVimModeStore } from './useVimModeStore'
-export { usePRReviewStore } from './usePRReviewStore'
 export { useDropAttachmentStore } from './useDropAttachmentStore'
 export { useFilterStore, COLON_COMMANDS, type ColonCommand } from './useFilterStore'
-export { useKanbanStore } from './useKanbanStore'
 export { useTipStore } from './useTipStore'

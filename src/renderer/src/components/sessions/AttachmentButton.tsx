@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import { Paperclip, FileUp, KanbanSquare } from 'lucide-react'
+import { Paperclip, FileUp } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -13,17 +13,11 @@ import type { Attachment } from './AttachmentPreview'
 interface AttachmentButtonProps {
   onAttach: (file: Omit<Attachment, 'id'>) => void
   disabled?: boolean
-  /** Current project ID — when non-null the "Board ticket" option is shown */
-  projectId?: string | null
-  /** Called when the user picks "Board ticket" from the dropdown */
-  onPickTicket?: () => void
 }
 
 export function AttachmentButton({
   onAttach,
-  disabled,
-  projectId,
-  onPickTicket
+  disabled
 }: AttachmentButtonProps) {
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -83,8 +77,8 @@ export function AttachmentButton({
             size="sm"
             className="h-7 w-7 p-0"
             disabled={disabled}
-            title="Attach file or ticket"
-            aria-label="Attach file or ticket"
+            title="Attach file"
+            aria-label="Attach file"
             data-testid="attachment-button"
           >
             <Paperclip className="h-3.5 w-3.5" />
@@ -98,15 +92,6 @@ export function AttachmentButton({
             <FileUp className="h-4 w-4 mr-2" />
             File
           </DropdownMenuItem>
-          {projectId && (
-            <DropdownMenuItem
-              onSelect={() => onPickTicket?.()}
-              data-testid="attach-board-ticket"
-            >
-              <KanbanSquare className="h-4 w-4 mr-2" />
-              Board ticket
-            </DropdownMenuItem>
-          )}
         </DropdownMenuContent>
       </DropdownMenu>
     </>

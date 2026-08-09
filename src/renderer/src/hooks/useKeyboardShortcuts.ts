@@ -7,7 +7,6 @@ import {
   useCommandPaletteStore,
   useFileSearchStore,
   useSettingsStore,
-  useKanbanStore,
   useVimModeStore
 } from '@/stores'
 import { useGitStore } from '@/stores/useGitStore'
@@ -149,12 +148,6 @@ function tryCloseOpenModal(): boolean {
   // Session history panel
   if (useSessionHistoryStore.getState().isOpen) {
     useSessionHistoryStore.getState().closePanel()
-    return true
-  }
-
-  // Kanban ticket detail modal
-  if (useKanbanStore.getState().selectedTicketId !== null) {
-    useKanbanStore.getState().setSelectedTicketId(null)
     return true
   }
 

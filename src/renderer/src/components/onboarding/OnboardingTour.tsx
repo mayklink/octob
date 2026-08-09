@@ -53,17 +53,6 @@ export function OnboardingTour(): React.JSX.Element | null {
         selector: '[data-testid="dashboard-add-project"], [data-testid="add-project-button"]'
       },
       {
-        title: t('app.tour.boardTitle'),
-        description: t('app.tour.boardDescription'),
-        selector:
-          '[data-testid="sticky-board-tab"], [data-testid="workspace-mode-board"], [data-testid="kanban-board-toggle"]'
-      },
-      {
-        title: t('app.tour.taskTitle'),
-        description: t('app.tour.taskDescription'),
-        selector: '[data-testid="kanban-add-ticket-card"], [data-testid="kanban-add-ticket-btn"]'
-      },
-      {
         title: t('app.tour.sessionsTitle'),
         description: t('app.tour.sessionsDescription'),
         selector: '[data-testid="create-session"], [data-testid="session-tabs"]'

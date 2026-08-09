@@ -14,7 +14,7 @@ import { ToolActivityGroup } from './AssistantCanvas'
 import { QueuedMessageBubble } from './QueuedMessageBubble'
 import type { OpenCodeMessage } from './SessionView'
 import { formatCompletionDuration } from '@/lib/format-utils'
-import octobMascotIcon from '@/pet/registry/octob/assets/octob.png'
+import octobMascotIcon from '@/assets/octob.png'
 
 // ---------------------------------------------------------------------------
 // Types

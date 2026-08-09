@@ -31,7 +31,7 @@ export function RightSidebar(): React.JSX.Element {
 
   const { registerTarget } = useTerminalPortal()
   const terminalPosition = useSettingsStore((s) => s.terminalPosition)
-  const visualizationMode = useLayoutStore((s) => s.visualizationMode)
+  const displayLayout = useLayoutStore((s) => s.displayLayout)
 
   const sidebarTargetRef = useCallback(
     (el: HTMLDivElement | null) => registerTarget('sidebar', el),
@@ -115,7 +115,7 @@ export function RightSidebar(): React.JSX.Element {
         role="complementary"
         aria-label="File sidebar"
       >
-        {visualizationMode === 'advanced' && !isConnectionMode && selectedWorktreePath && (
+        {displayLayout === 'compact' && !isConnectionMode && selectedWorktreePath && (
           <EnvironmentPanel worktreePath={selectedWorktreePath} />
         )}
 

@@ -89,7 +89,6 @@ export interface WorktreeUpdate {
 }
 
 export type SessionMode = 'build' | 'plan' | 'super-plan'
-export type SessionType = 'default' | 'board-assistant'
 
 export interface Session {
   id: string
@@ -101,14 +100,12 @@ export interface Session {
   opencode_session_id: string | null
   agent_sdk: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
   mode: SessionMode
-  session_type: SessionType
   model_provider_id: string | null
   model_id: string | null
   model_variant: string | null
   created_at: string
   updated_at: string
   completed_at: string | null
-  pinned_to_board: boolean
 }
 
 export interface SessionCreate {
@@ -119,11 +116,9 @@ export interface SessionCreate {
   opencode_session_id?: string | null
   agent_sdk?: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
   mode?: SessionMode
-  session_type?: SessionType
   model_provider_id?: string | null
   model_id?: string | null
   model_variant?: string | null
-  pinned_to_board?: boolean
 }
 
 export interface SessionUpdate {
@@ -132,13 +127,11 @@ export interface SessionUpdate {
   opencode_session_id?: string | null
   agent_sdk?: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
   mode?: SessionMode
-  session_type?: SessionType
   model_provider_id?: string | null
   model_id?: string | null
   model_variant?: string | null
   updated_at?: string
   completed_at?: string | null
-  pinned_to_board?: boolean
 }
 
 export interface SessionMessage {
@@ -180,54 +173,6 @@ export interface SessionMessageUpsertByOpenCode {
   opencode_parts_json?: string | null
   opencode_timeline_json?: string | null
   created_at?: string
-}
-
-export type AutomaticPullRequestReviewRunStatus =
-  | 'queued'
-  | 'preparing'
-  | 'running'
-  | 'reviewed'
-  | 'blocked'
-  | 'failed'
-  | 'cancelled'
-
-export interface AutomaticPullRequestReviewRunRow {
-  id: string
-  provider: 'github' | 'azure-devops'
-  repository_id: string
-  pr_number: number
-  head_sha: string
-  title: string
-  payload_json: string
-  status: AutomaticPullRequestReviewRunStatus
-  worktree_id: string | null
-  session_id: string | null
-  attempt_count: number
-  error: string | null
-  discovered_at: string
-  started_at: string | null
-  completed_at: string | null
-  updated_at: string
-}
-
-export interface AutomaticPullRequestReviewRunCreate {
-  id: string
-  provider: 'github' | 'azure-devops'
-  repository_id: string
-  pr_number: number
-  head_sha: string
-  title: string
-  payload_json: string
-}
-
-export interface AutomaticPullRequestReviewRunUpdate {
-  status?: AutomaticPullRequestReviewRunStatus
-  worktree_id?: string | null
-  session_id?: string | null
-  attempt_count?: number
-  error?: string | null
-  started_at?: string | null
-  completed_at?: string | null
 }
 
 export type SessionActivityKind =
@@ -386,186 +331,6 @@ export interface SessionSearchOptions {
   dateFrom?: string
   dateTo?: string
   includeArchived?: boolean
-}
-
-// Kanban ticket types
-export type KanbanTicketColumn = 'todo' | 'in_progress' | 'review' | 'done'
-export type TicketMark = 'common' | 'rare' | 'epic' | 'legendary'
-
-export interface KanbanTicket {
-  id: string
-  project_id: string
-  title: string
-  description: string | null
-  attachments: unknown[] // Parsed JSON array (stored as TEXT in DB)
-  column: KanbanTicketColumn
-  sort_order: number
-  current_session_id: string | null
-  worktree_id: string | null
-  mode: 'build' | 'plan' | 'super-plan' | null
-  plan_ready: boolean // Mapped from INTEGER 0/1 in DB
-  created_at: string
-  updated_at: string
-  archived_at: string | null
-  external_provider: string | null
-  external_id: string | null
-  external_url: string | null
-  github_pr_number: number | null
-  github_pr_url: string | null
-  mark: TicketMark | null
-  total_tokens: number
-  pending_launch_config: string | null
-  /** Personal annotation. MUST NOT be included in any LLM prompt. */
-  note: string | null
-}
-
-export interface KanbanTicketCreate {
-  id?: string
-  project_id: string
-  title: string
-  description?: string | null
-  attachments?: unknown[]
-  column?: KanbanTicketColumn
-  sort_order?: number
-  current_session_id?: string | null
-  worktree_id?: string | null
-  mode?: 'build' | 'plan' | 'super-plan' | null
-  plan_ready?: boolean
-  external_provider?: string | null
-  external_id?: string | null
-  external_url?: string | null
-  github_pr_number?: number | null
-  github_pr_url?: string | null
-  mark?: TicketMark | null
-}
-
-export interface KanbanTicketUpdate {
-  title?: string
-  description?: string | null
-  attachments?: unknown[]
-  column?: KanbanTicketColumn
-  sort_order?: number
-  current_session_id?: string | null
-  worktree_id?: string | null
-  mode?: 'build' | 'plan' | 'super-plan' | null
-  plan_ready?: boolean
-  github_pr_number?: number | null
-  github_pr_url?: string | null
-  mark?: TicketMark | null
-  pending_launch_config?: string | null
-  note?: string | null
-}
-
-export interface BoardAssistantDraft {
-  draftKey: string
-  title: string
-  description: string | null
-  projectId: string
-  dependsOn: string[]
-  warnings: string[]
-}
-
-export interface KanbanTicketBatchCreateItem {
-  draft_key: string
-  project_id: string
-  title: string
-  description?: string | null
-  attachments?: unknown[]
-  column?: KanbanTicketColumn
-  sort_order?: number
-  current_session_id?: string | null
-  worktree_id?: string | null
-  mode?: 'build' | 'plan' | 'super-plan' | null
-  plan_ready?: boolean
-  external_provider?: string | null
-  external_id?: string | null
-  external_url?: string | null
-  github_pr_number?: number | null
-  github_pr_url?: string | null
-  mark?: TicketMark | null
-  depends_on?: string[]
-}
-
-export interface KanbanTicketBatchCreate {
-  drafts: KanbanTicketBatchCreateItem[]
-}
-
-export interface TicketDependency {
-  dependent_id: string
-  blocker_id: string
-  created_at: string
-}
-
-export interface TicketDependencyEdgePayload {
-  dependentId: string
-  blockerId: string
-}
-
-export interface AssistantTicketDraft {
-  draftKey: string
-  title: string
-  description?: string | null
-  projectId: string
-  dependsOn?: string[]
-  warnings?: string[]
-}
-
-export interface AssistantTicketDraftPayload {
-  drafts: AssistantTicketDraft[]
-}
-
-export interface ExistingAssistantDraftTicket {
-  draftKey: string
-  ticketId: string
-}
-
-export interface KanbanTicketBatchCreateRequest {
-  drafts: AssistantTicketDraft[]
-  existingDraftTickets?: ExistingAssistantDraftTicket[]
-  column?: KanbanTicketColumn
-}
-
-export interface KanbanTicketBatchCreateResponse {
-  tickets: KanbanTicket[]
-  dependencies: TicketDependencyEdgePayload[]
-  dependencyCount: number
-}
-
-export interface KanbanTicketBatchCreateResult {
-  tickets: KanbanTicket[]
-  dependencies: TicketDependency[]
-}
-
-export interface PendingLaunchConfig {
-  worktree:
-    | { type: 'new'; sourceBranch: string }
-    | { type: 'existing'; worktreeId: string }
-  prompt: string
-  mode: 'build' | 'plan' | 'super-plan'
-  model: { providerID: string; modelID: string; variant?: string } | null
-  sdk: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity'
-  codexFastMode: boolean
-}
-
-// Ticket followup message types
-export interface TicketFollowupMessage {
-  id: string
-  ticket_id: string
-  content: string
-  role: 'user' | 'assistant'
-  mode: 'build' | 'plan' | 'super-plan'
-  session_id: string | null
-  source: 'direct' | 'supercharge' | 'error_retry'
-  created_at: string
-}
-
-export interface TicketFollowupMessageCreate {
-  ticket_id: string
-  content: string
-  role?: 'user' | 'assistant'
-  mode: 'build' | 'plan' | 'super-plan'
-  session_id?: string | null
-  source?: 'direct' | 'supercharge' | 'error_retry'
 }
 
 // Diff comment types

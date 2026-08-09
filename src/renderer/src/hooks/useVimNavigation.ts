@@ -69,8 +69,7 @@ export function useVimNavigation(): void {
         a: 'plan-ready-handoff-fab',
         A: 'plan-ready-handoff-chevron',
         u: 'plan-ready-supercharge-fab',
-        o: 'plan-ready-supercharge-local-fab',
-        s: 'plan-ready-save-ticket-fab'
+        o: 'plan-ready-supercharge-local-fab'
       }
       const testId = keyToTestId[key]
       if (!testId) return false

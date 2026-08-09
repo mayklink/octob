@@ -1,18 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils, webFrame } from 'electron'
-import type {
-  PetManifest,
-  PetPosition,
-  PetSettings,
-  PetStatusPayload
-} from '../shared/types/pet'
 import type { McpServerConfig } from '../shared/types/mcp'
-import type {
-  AutomaticPullRequestReviewEvent,
-  AutomaticPullRequestReviewSettings,
-  AutomaticPullRequestReviewSnapshot,
-  PullRequestInboxRequest,
-  PullRequestInboxResponse
-} from '../shared/types/pull-request-inbox'
 
 // Force 100% zoom — Ghostty's native NSView overlay requires 1:1 CSS-to-AppKit
 // point mapping. Any zoom level breaks coordinate sync and causes misaligned
@@ -112,7 +99,6 @@ const db = {
       opencode_session_id?: string | null
       agent_sdk?: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
       mode?: 'build' | 'plan'
-      session_type?: 'default' | 'board-assistant'
       model_provider_id?: string | null
       model_id?: string | null
       model_variant?: string | null
@@ -153,13 +139,7 @@ const db = {
     getByConnection: (connectionId: string) =>
       ipcRenderer.invoke('db:session:getByConnection', connectionId),
     getActiveByConnection: (connectionId: string) =>
-      ipcRenderer.invoke('db:session:getActiveByConnection', connectionId),
-    setPinnedToBoard: (sessionId: string, pinned: boolean) =>
-      ipcRenderer.invoke('db:session:setPinnedToBoard', sessionId, pinned),
-    getPinnedSessions: (worktreeId: string) =>
-      ipcRenderer.invoke('db:session:getPinnedSessions', worktreeId),
-    getActiveBoardAssistant: (projectId: string) =>
-      ipcRenderer.invoke('db:session:getActiveBoardAssistant', projectId)
+      ipcRenderer.invoke('db:session:getActiveByConnection', connectionId)
   },
 
   sessionMessage: {
@@ -621,64 +601,6 @@ const systemOps = {
     ipcRenderer.invoke('notification:setSessionQueuedState', sessionId, hasQueued)
 }
 
-const petOps = {
-  show: (): Promise<void> => ipcRenderer.invoke('pet:show'),
-  hide: (): Promise<void> => ipcRenderer.invoke('pet:hide'),
-  publishStatus: (payload: PetStatusPayload): void => {
-    ipcRenderer.send('pet:publish-status', payload)
-  },
-  setIgnoreMouse: (ignore: boolean): void => {
-    ipcRenderer.send('pet:set-ignore-mouse', { ignore })
-  },
-  move: (position: PetPosition): void => {
-    ipcRenderer.send('pet:move', position)
-  },
-  focusMain: (payload: { worktreeId: string | null }): Promise<void> =>
-    ipcRenderer.invoke('pet:focus-main', payload),
-  getConfig: (): Promise<{
-    settings: PetSettings
-    position: PetPosition
-    manifest: PetManifest
-  }> => ipcRenderer.invoke('pet:get-config'),
-  getCurrentStatus: (): Promise<PetStatusPayload> => ipcRenderer.invoke('pet:get-current-status'),
-  updateSettings: (partial: Partial<PetSettings>): void => {
-    ipcRenderer.send('pet:update-settings', partial)
-  },
-  markHatched: (): void => {
-    ipcRenderer.send('pet:mark-hatched')
-  },
-  onStatus: (callback: (payload: PetStatusPayload) => void): (() => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, payload: PetStatusPayload): void => {
-      callback(payload)
-    }
-    ipcRenderer.on('pet:status', handler)
-    return () => {
-      ipcRenderer.removeListener('pet:status', handler)
-    }
-  },
-  onSettingsUpdated: (callback: (settings: PetSettings) => void): (() => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, settings: PetSettings): void => {
-      callback(settings)
-    }
-    ipcRenderer.on('pet:settings-updated', handler)
-    return () => {
-      ipcRenderer.removeListener('pet:settings-updated', handler)
-    }
-  },
-  onJumpToWorktree: (callback: (payload: { worktreeId: string }) => void): (() => void) => {
-    const handler = (
-      _event: Electron.IpcRendererEvent,
-      payload: { worktreeId: string }
-    ): void => {
-      callback(payload)
-    }
-    ipcRenderer.on('pet:jump-to-worktree', handler)
-    return () => {
-      ipcRenderer.removeListener('pet:jump-to-worktree', handler)
-    }
-  }
-}
-
 // Response logging operations API (only functional when --log is active)
 const loggingOps = {
   // Create a new response log file for a session
@@ -820,10 +742,6 @@ const fileTreeOps = {
 
 // Git file operations API
 const gitOps = {
-  listPullRequestInbox: (
-    request: PullRequestInboxRequest
-  ): Promise<PullRequestInboxResponse> => ipcRenderer.invoke('git:listPullRequestInbox', request),
-
   // Get file statuses for a worktree
   getFileStatuses: (
     worktreePath: string
@@ -1333,24 +1251,6 @@ const gitOps = {
     body?: string
     error?: string
   }> => ipcRenderer.invoke('git:generatePRContent', worktreePath, baseBranch, provider)
-}
-
-const automaticPRReview = {
-  getSnapshot: (): Promise<AutomaticPullRequestReviewSnapshot> =>
-    ipcRenderer.invoke('automaticPRReview:getSnapshot'),
-  updateSettings: (
-    settings: AutomaticPullRequestReviewSettings
-  ): Promise<AutomaticPullRequestReviewSettings> =>
-    ipcRenderer.invoke('automaticPRReview:updateSettings', settings),
-  pollNow: (): Promise<AutomaticPullRequestReviewSnapshot> =>
-    ipcRenderer.invoke('automaticPRReview:pollNow'),
-  onEvent: (callback: (event: AutomaticPullRequestReviewEvent) => void): (() => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, payload: AutomaticPullRequestReviewEvent): void => {
-      callback(payload)
-    }
-    ipcRenderer.on('automaticPRReview:event', handler)
-    return () => ipcRenderer.removeListener('automaticPRReview:event', handler)
-  }
 }
 
 const opencodeOps = {
@@ -1982,208 +1882,6 @@ const analyticsOps = {
   isEnabled: () => ipcRenderer.invoke('telemetry:isEnabled') as Promise<boolean>
 }
 
-const kanban = {
-  ticket: {
-    create: (data: {
-      project_id: string
-      title: string
-      description?: string | null
-      attachments?: unknown[]
-      column?: 'todo' | 'in_progress' | 'review' | 'done'
-      sort_order?: number
-      current_session_id?: string | null
-      worktree_id?: string | null
-      mode?: 'build' | 'plan' | null
-      plan_ready?: boolean
-    }) => ipcRenderer.invoke('kanban:ticket:create', data),
-    createBatch: (data: {
-      drafts: Array<{
-        draft_key: string
-        project_id: string
-        title: string
-        description?: string | null
-        attachments?: unknown[]
-        column?: 'todo' | 'in_progress' | 'review' | 'done'
-        sort_order?: number
-        current_session_id?: string | null
-        worktree_id?: string | null
-        mode?: 'build' | 'plan' | 'super-plan' | null
-        plan_ready?: boolean
-        external_provider?: string | null
-        external_id?: string | null
-        external_url?: string | null
-        github_pr_number?: number | null
-        github_pr_url?: string | null
-        mark?: string | null
-        depends_on?: string[]
-      }>
-    }) => ipcRenderer.invoke('kanban:ticket:createBatch', data),
-    get: (id: string) => ipcRenderer.invoke('kanban:ticket:get', id),
-    getByProject: (projectId: string, includeArchived?: boolean) =>
-      ipcRenderer.invoke('kanban:ticket:getByProject', projectId, includeArchived),
-    update: (
-      id: string,
-      data: {
-        title?: string
-        description?: string | null
-        attachments?: unknown[]
-        column?: 'todo' | 'in_progress' | 'review' | 'done'
-        sort_order?: number
-        current_session_id?: string | null
-        worktree_id?: string | null
-        mode?: 'build' | 'plan' | null
-        plan_ready?: boolean
-        mark?: string | null
-        note?: string | null
-      }
-    ) => ipcRenderer.invoke('kanban:ticket:update', id, data),
-    delete: (id: string) => ipcRenderer.invoke('kanban:ticket:delete', id),
-    archive: (id: string) => ipcRenderer.invoke('kanban:ticket:archive', id),
-    archiveAllDone: (projectId: string) => ipcRenderer.invoke('kanban:ticket:archiveAllDone', projectId),
-    unarchive: (id: string) => ipcRenderer.invoke('kanban:ticket:unarchive', id),
-    move: (id: string, column: 'todo' | 'in_progress' | 'review' | 'done', sortOrder: number) =>
-      ipcRenderer.invoke('kanban:ticket:move', id, column, sortOrder),
-    reorder: (id: string, sortOrder: number) =>
-      ipcRenderer.invoke('kanban:ticket:reorder', id, sortOrder),
-    getBySession: (sessionId: string) =>
-      ipcRenderer.invoke('kanban:ticket:getBySession', sessionId),
-    addTokens: (id: string, tokens: number) =>
-      ipcRenderer.invoke('kanban:ticket:addTokens', id, tokens),
-    syncPR: (worktreeId: string, prNumber: number, prUrl: string) =>
-      ipcRenderer.invoke('kanban:ticket:syncPR', worktreeId, prNumber, prUrl),
-    clearPR: (worktreeId: string) =>
-      ipcRenderer.invoke('kanban:ticket:clearPR', worktreeId),
-    attachPR: (ticketId: string, projectId: string, prNumber: number, prUrl: string) =>
-      ipcRenderer.invoke('kanban:ticket:attachPR', ticketId, projectId, prNumber, prUrl),
-    detachPR: (ticketId: string, projectId: string) =>
-      ipcRenderer.invoke('kanban:ticket:detachPR', ticketId, projectId),
-    detachWorktree: (worktreeId: string) =>
-      ipcRenderer.invoke('kanban:ticket:detachWorktree', worktreeId),
-  },
-  simpleMode: {
-    toggle: (projectId: string, enabled: boolean) =>
-      ipcRenderer.invoke('kanban:simpleMode:toggle', projectId, enabled)
-  },
-  dependency: {
-    add: (dependentId: string, blockerId: string): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke('kanban:dependency:add', dependentId, blockerId),
-    remove: (dependentId: string, blockerId: string): Promise<boolean> =>
-      ipcRenderer.invoke('kanban:dependency:remove', dependentId, blockerId),
-    getBlockers: (ticketId: string) =>
-      ipcRenderer.invoke('kanban:dependency:getBlockers', ticketId),
-    getDependents: (ticketId: string) =>
-      ipcRenderer.invoke('kanban:dependency:getDependents', ticketId),
-    getForProject: (projectId: string) =>
-      ipcRenderer.invoke('kanban:dependency:getForProject', projectId),
-    removeAll: (ticketId: string): Promise<number> =>
-      ipcRenderer.invoke('kanban:dependency:removeAll', ticketId),
-  },
-  board: {
-    export: (projectId: string, projectName: string): Promise<{ success: boolean; ticketCount: number; path?: string }> =>
-      ipcRenderer.invoke('kanban:board:export', projectId, projectName),
-    openImportFile: (): Promise<{
-      tickets: Array<{
-        id: string
-        title: string
-        description?: string | null
-        attachments?: unknown[]
-        column?: string
-      }>
-      dependencies?: Array<{
-        dependentId: string
-        blockerId: string
-      }>
-      projectName?: string
-    } | null> => ipcRenderer.invoke('kanban:board:openImportFile'),
-    importTickets: (
-      projectId: string,
-      tickets: Array<{
-        id: string
-        title: string
-        description?: string | null
-        attachments?: unknown[]
-        column?: string
-      }>,
-      dependencies?: Array<{
-        dependentId: string
-        blockerId: string
-      }>
-    ): Promise<{ created: number; updated: number; dependencyCount: number; ignoredDependencyCount: number }> =>
-      ipcRenderer.invoke('kanban:board:importTickets', projectId, tickets, dependencies)
-  }
-}
-
-const ticketImport = {
-  listProviders: (): Promise<Array<{ id: string; name: string; icon: string }>> =>
-    ipcRenderer.invoke('ticketImport:listProviders'),
-  getSettingsSchema: (
-    providerId: string
-  ): Promise<Array<{ key: string; label: string; type: string; required: boolean; placeholder?: string }>> =>
-    ipcRenderer.invoke('ticketImport:getSettingsSchema', providerId),
-  authenticate: (
-    providerId: string,
-    settings: Record<string, string>
-  ): Promise<{ success: boolean; error: string | null }> =>
-    ipcRenderer.invoke('ticketImport:authenticate', providerId, settings),
-  detectRepo: (
-    providerId: string,
-    projectPath: string
-  ): Promise<{ repo: string | null }> =>
-    ipcRenderer.invoke('ticketImport:detectRepo', providerId, projectPath),
-  listIssues: (
-    providerId: string,
-    repo: string,
-    options: { page: number; perPage: number; state: 'open' | 'closed' | 'all'; search?: string; nextPageToken?: string },
-    settings: Record<string, string>
-  ): Promise<{
-    issues: Array<{
-      externalId: string
-      title: string
-      body: string | null
-      state: 'open' | 'closed' | 'in_progress'
-      url: string
-      createdAt: string
-      updatedAt: string
-    }>
-    hasNextPage: boolean
-    totalCount: number
-    nextPageToken?: string
-  }> => ipcRenderer.invoke('ticketImport:listIssues', providerId, repo, options, settings),
-  importIssues: (
-    providerId: string,
-    projectId: string,
-    repo: string,
-    issues: Array<{ externalId: string; title: string; body: string | null; state: string; url: string }>
-  ): Promise<{ imported: string[]; skipped: string[] }> =>
-    ipcRenderer.invoke('ticketImport:importIssues', providerId, projectId, repo, issues),
-  getAvailableStatuses: (
-    providerId: string,
-    repo: string,
-    externalId: string,
-    settings: Record<string, string>
-  ): Promise<Array<{ id: string; label: string }>> =>
-    ipcRenderer.invoke('ticketImport:getAvailableStatuses', providerId, repo, externalId, settings),
-  updateRemoteStatus: (
-    providerId: string,
-    repo: string,
-    externalId: string,
-    statusId: string,
-    settings: Record<string, string>
-  ): Promise<{ success: boolean; error?: string }> =>
-    ipcRenderer.invoke('ticketImport:updateRemoteStatus', providerId, repo, externalId, statusId, settings),
-  azureDevOpsListProjects: (settings: Record<string, string>): Promise<string[]> =>
-    ipcRenderer.invoke('ticketImport:azureDevOpsListProjects', settings),
-  azureDevOpsListStates: (settings: Record<string, string>): Promise<string[]> =>
-    ipcRenderer.invoke('ticketImport:azureDevOpsListStates', settings),
-  azureDevOpsListWorkItemTypes: (settings: Record<string, string>): Promise<string[]> =>
-    ipcRenderer.invoke('ticketImport:azureDevOpsListWorkItemTypes', settings),
-  azureDevOpsSearchUsers: (
-    settings: Record<string, string>,
-    query: string
-  ): Promise<Array<{ displayName: string; uniqueName: string }>> =>
-    ipcRenderer.invoke('ticketImport:azureDevOpsSearchUsers', settings, query)
-}
-
 const bash = {
   run: (sessionId: string, command: string, cwd: string): Promise<{ success: boolean; runId?: string; error?: string }> =>
     ipcRenderer.invoke('bash:run', { sessionId, command, cwd }),
@@ -2295,11 +1993,9 @@ if (process.contextIsolated) {
     contextBridge.exposeInMainWorld('projectOps', projectOps)
     contextBridge.exposeInMainWorld('worktreeOps', worktreeOps)
     contextBridge.exposeInMainWorld('systemOps', systemOps)
-    contextBridge.exposeInMainWorld('petOps', petOps)
     contextBridge.exposeInMainWorld('opencodeOps', opencodeOps)
     contextBridge.exposeInMainWorld('fileTreeOps', fileTreeOps)
     contextBridge.exposeInMainWorld('gitOps', gitOps)
-    contextBridge.exposeInMainWorld('automaticPRReview', automaticPRReview)
     contextBridge.exposeInMainWorld('settingsOps', settingsOps)
     contextBridge.exposeInMainWorld('fileOps', fileOps)
     contextBridge.exposeInMainWorld('attachmentOps', attachmentOps)
@@ -2312,8 +2008,6 @@ if (process.contextIsolated) {
     contextBridge.exposeInMainWorld('analyticsOps', analyticsOps)
     contextBridge.exposeInMainWorld('perfDiagnosticsOps', perfDiagnosticsOps)
     contextBridge.exposeInMainWorld('codexDebugLoggerOps', codexDebugLoggerOps)
-    contextBridge.exposeInMainWorld('kanban', kanban)
-    contextBridge.exposeInMainWorld('ticketImport', ticketImport)
     contextBridge.exposeInMainWorld('bash', bash)
     contextBridge.exposeInMainWorld('updates', updates)
   } catch (error) {
@@ -2329,7 +2023,6 @@ if (process.contextIsolated) {
   // @ts-expect-error (define in dts)
   window.systemOps = systemOps
   // @ts-expect-error (define in dts)
-  window.petOps = petOps
   // @ts-expect-error (define in dts)
   window.opencodeOps = opencodeOps
   // @ts-expect-error (define in dts)
@@ -2337,7 +2030,6 @@ if (process.contextIsolated) {
   // @ts-expect-error (define in dts)
   window.gitOps = gitOps
   // @ts-expect-error (define in dts)
-  window.automaticPRReview = automaticPRReview
   // @ts-expect-error (define in dts)
   window.settingsOps = settingsOps
   // @ts-expect-error (define in dts)
@@ -2360,10 +2052,6 @@ if (process.contextIsolated) {
   window.perfDiagnosticsOps = perfDiagnosticsOps
   // @ts-expect-error (define in dts)
   window.codexDebugLoggerOps = codexDebugLoggerOps
-  // @ts-expect-error (define in dts)
-  window.kanban = kanban
-  // @ts-expect-error (define in dts)
-  window.ticketImport = ticketImport
   // @ts-expect-error (define in dts)
   window.bash = bash
   // @ts-expect-error (define in dts)

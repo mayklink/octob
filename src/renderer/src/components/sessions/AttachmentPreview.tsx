@@ -4,15 +4,6 @@ import { Button } from '@/components/ui/button'
 export type Attachment =
   | { kind: 'data'; id: string; name: string; mime: string; dataUrl: string }
   | { kind: 'path'; id: string; name: string; mime: string; filePath: string }
-  | {
-      kind: 'ticket'
-      id: string
-      name: string
-      ticketId: string
-      title: string
-      description: string
-      attachments: string
-    }
 
 interface AttachmentPreviewProps {
   attachments: Attachment[]
@@ -20,13 +11,11 @@ interface AttachmentPreviewProps {
 }
 
 export function AttachmentPreview({ attachments, onRemove }: AttachmentPreviewProps) {
-  // Ticket attachments are rendered separately above the input (TicketAttachments component)
-  const fileAttachments = attachments.filter((a) => a.kind !== 'ticket')
-  if (fileAttachments.length === 0) return null
+  if (attachments.length === 0) return null
 
   return (
     <div className="flex gap-2 px-3 py-2 overflow-x-auto" data-testid="attachment-preview">
-      {fileAttachments.map((attachment) => (
+      {attachments.map((attachment) => (
         <div
           key={attachment.id}
           className="relative flex-shrink-0 group"

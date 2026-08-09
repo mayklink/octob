@@ -13,18 +13,18 @@ interface UserBubbleProps {
 }
 
 export const UserBubble = memo(function UserBubble({ content, isPlanMode, isSuperPlanMode, isAskMode, isSteered }: UserBubbleProps): React.JSX.Element {
-  const { tickets, prComments, files, dataAttachments, diffComments, cleanText } = useMemo(
+  const { files, dataAttachments, diffComments, cleanText } = useMemo(
     () => parseUserMessageAttachments(content),
     [content]
   )
 
-  const hasAttachments = tickets.length > 0 || prComments.length > 0 || files.length > 0 || dataAttachments.length > 0 || diffComments.length > 0
+  const hasAttachments = files.length > 0 || dataAttachments.length > 0 || diffComments.length > 0
 
   return (
     <div className="flex flex-col items-end px-6 py-4" data-testid="message-user">
       {hasAttachments && (
         <div className="max-w-[80%]">
-          <UserMessageAttachmentCards tickets={tickets} prComments={prComments} files={files} dataAttachments={dataAttachments} diffComments={diffComments} />
+          <UserMessageAttachmentCards files={files} dataAttachments={dataAttachments} diffComments={diffComments} />
         </div>
       )}
       <div

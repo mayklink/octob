@@ -1,30 +1,7 @@
 import { useCallback, useState } from 'react'
-import { useKanbanStore } from '@/stores/useKanbanStore'
-import { useSettingsStore } from '@/stores/useSettingsStore'
-import { useFileViewerStore } from '@/stores/useFileViewerStore'
-import { BOARD_TAB_ID, useSessionStore } from '@/stores/useSessionStore'
+import { useSessionStore } from '@/stores/useSessionStore'
 
-function isBoardVisible(): boolean {
-  const sessionState = useSessionStore.getState()
-  const boardMode = useSettingsStore.getState().boardMode
-  const hasActiveOverlay = useFileViewerStore.getState().hasActiveOverlay()
-
-  if (boardMode === 'sticky-tab') {
-    return (
-      sessionState.activeSessionId === BOARD_TAB_ID &&
-      !sessionState.inlineConnectionSessionId &&
-      !hasActiveOverlay
-    )
-  }
-
-  return (
-    useKanbanStore.getState().isBoardViewActive &&
-    !sessionState.activePinnedSessionId &&
-    !hasActiveOverlay
-  )
-}
-
-/** Creates a session, pins it to the board, activates it, and optionally runs a callback (e.g. close modal). */
+/** Creates and activates a session, then optionally runs a callback. */
 export function usePinAndActivateSession(onClose?: () => void) {
   const [loading, setLoading] = useState(false)
 
@@ -34,11 +11,7 @@ export function usePinAndActivateSession(onClose?: () => void) {
       try {
         const sessionId = await createFn()
         if (sessionId) {
-          const sessionStore = useSessionStore.getState()
-          await sessionStore.pinSessionToBoard(sessionId)
-          if (!isBoardVisible()) {
-            sessionStore.setActiveSession(sessionId)
-          }
+          useSessionStore.getState().setActiveSession(sessionId)
           onClose?.()
         }
       } catch {

@@ -1,7 +1,7 @@
 import { useThemeStore } from '@/stores/useThemeStore'
 import { DEFAULT_THEME_ID } from '@/lib/themes'
 import { useSettingsStore, type UiLocale } from '@/stores/useSettingsStore'
-import { RotateCcw, Sparkles } from 'lucide-react'
+import { LayoutGrid, PanelLeftOpen, RotateCcw, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useShortcutStore } from '@/stores/useShortcutStore'
@@ -16,6 +16,7 @@ import {
   RESTART_ONBOARDING_TOUR_EVENT
 } from '@/components/onboarding'
 import { useTranslation } from 'react-i18next'
+import { useLayoutStore, type DisplayLayout } from '@/stores/useLayoutStore'
 
 export function SettingsGeneral(): React.JSX.Element {
   const { t } = useTranslation()
@@ -24,8 +25,6 @@ export function SettingsGeneral(): React.JSX.Element {
     uiLocale,
     autoStartSession,
     autoPullBeforeWorktree,
-    boardMode,
-    followUpTriggerColumn,
     autoCodeReviewEnabled,
     vimModeEnabled,
     keepAwakeEnabled,
@@ -43,6 +42,17 @@ export function SettingsGeneral(): React.JSX.Element {
     resetToDefaults
   } = useSettingsStore()
   const { resetToDefaults: resetShortcuts } = useShortcutStore()
+  const displayLayout = useLayoutStore((state) => state.displayLayout)
+  const setDisplayLayout = useLayoutStore((state) => state.setDisplayLayout)
+
+  const chooseDisplayLayout = (layout: DisplayLayout): void => {
+    setDisplayLayout(layout)
+    if (layout === 'overview') {
+      useLayoutStore.getState().setWorkspaceContentView('overview')
+    } else {
+      useLayoutStore.getState().setLeftSidebarCollapsed(false)
+    }
+  }
 
   const handleResetAll = (): void => {
     resetToDefaults()
@@ -110,6 +120,47 @@ export function SettingsGeneral(): React.JSX.Element {
         </div>
       </div>
 
+      <div className="space-y-2 pb-4 border-b">
+        <label className="text-sm font-medium">{t('settings.general.display')}</label>
+        <p className="text-xs text-muted-foreground">
+          {t('settings.general.displayHint')}
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => chooseDisplayLayout('overview')}
+            className={cn(
+              'flex items-start gap-3 rounded-md border p-3 text-left transition-colors',
+              displayLayout === 'overview'
+                ? 'border-primary bg-primary/10'
+                : 'border-border bg-muted/30 hover:bg-accent/50'
+            )}
+          >
+            <LayoutGrid className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              <span className="block text-sm font-medium">{t('settings.general.displayOverview')}</span>
+              <span className="block text-xs text-muted-foreground">{t('settings.general.displayOverviewHint')}</span>
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => chooseDisplayLayout('compact')}
+            className={cn(
+              'flex items-start gap-3 rounded-md border p-3 text-left transition-colors',
+              displayLayout === 'compact'
+                ? 'border-primary bg-primary/10'
+                : 'border-border bg-muted/30 hover:bg-accent/50'
+            )}
+          >
+            <PanelLeftOpen className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              <span className="block text-sm font-medium">{t('settings.general.displayCompact')}</span>
+              <span className="block text-xs text-muted-foreground">{t('settings.general.displayCompactHint')}</span>
+            </span>
+          </button>
+        </div>
+      </div>
+
       {/* Auto-start session */}
       <div className="flex items-center justify-between">
         <div>
@@ -160,38 +211,6 @@ export function SettingsGeneral(): React.JSX.Element {
         </button>
       </div>
 
-      {/* Board Mode */}
-      <div className="space-y-2">
-        <label className="text-sm font-medium">{t('settings.general.boardMode')}</label>
-        <p className="text-xs text-muted-foreground">{t('settings.general.boardModeHint')}</p>
-        <div className="flex gap-2">
-          <button
-            onClick={() => updateSetting('boardMode', 'toggle')}
-            className={cn(
-              'px-3 py-1.5 rounded-md text-sm border transition-colors',
-              boardMode === 'toggle'
-                ? 'bg-primary text-primary-foreground border-primary'
-                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
-            )}
-            data-testid="board-mode-toggle"
-          >
-            {t('settings.general.boardToggle')}
-          </button>
-          <button
-            onClick={() => updateSetting('boardMode', 'sticky-tab')}
-            className={cn(
-              'px-3 py-1.5 rounded-md text-sm border transition-colors',
-              boardMode === 'sticky-tab'
-                ? 'bg-primary text-primary-foreground border-primary'
-                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
-            )}
-            data-testid="board-mode-sticky-tab"
-          >
-            {t('settings.general.boardStickyTab')}
-          </button>
-        </div>
-      </div>
-
       {/* Automatic code review */}
       <div className="flex items-center justify-between">
         <div>
@@ -215,38 +234,6 @@ export function SettingsGeneral(): React.JSX.Element {
             )}
           />
         </button>
-      </div>
-
-      {/* Follow-up ticket trigger */}
-      <div className="space-y-2">
-        <label className="text-sm font-medium">{t('settings.general.followUpTrigger')}</label>
-        <p className="text-xs text-muted-foreground">{t('settings.general.followUpTriggerHint')}</p>
-        <div className="flex gap-2">
-          <button
-            onClick={() => updateSetting('followUpTriggerColumn', 'review')}
-            className={cn(
-              'px-3 py-1.5 rounded-md text-sm border transition-colors',
-              followUpTriggerColumn === 'review'
-                ? 'bg-primary text-primary-foreground border-primary'
-                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
-            )}
-            data-testid="follow-up-trigger-review"
-          >
-            {t('settings.general.review')}
-          </button>
-          <button
-            onClick={() => updateSetting('followUpTriggerColumn', 'done')}
-            className={cn(
-              'px-3 py-1.5 rounded-md text-sm border transition-colors',
-              followUpTriggerColumn === 'done'
-                ? 'bg-primary text-primary-foreground border-primary'
-                : 'bg-muted/50 text-muted-foreground border-border hover:bg-accent/50'
-            )}
-            data-testid="follow-up-trigger-done"
-          >
-            {t('settings.general.done')}
-          </button>
-        </div>
       </div>
 
       {/* Vim mode */}

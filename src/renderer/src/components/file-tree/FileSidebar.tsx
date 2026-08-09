@@ -7,7 +7,6 @@ import { useGitStore } from '@/stores/useGitStore'
 import { FileTree } from './FileTree'
 import { ChangesView } from './ChangesView'
 import { BranchDiffView } from './BranchDiffView'
-import { PrReviewViewer } from '@/components/pr-review/PrReviewViewer'
 import { useLayoutStore, type RightSidebarTab } from '@/stores/useLayoutStore'
 
 interface ConnectionMemberInfo {
@@ -173,9 +172,7 @@ export function FileSidebar({
 
       {!isCollapsed && (
         <div className="flex-1 overflow-hidden flex flex-col min-h-0">
-          {activeTab === 'comments' && selectedWorktreeId ? (
-            <PrReviewViewer worktreeId={selectedWorktreeId} />
-          ) : activeTab === 'changes' ? (
+          {activeTab === 'changes' ? (
             <ChangesView
               worktreePath={worktreePath}
               isConnectionMode={isConnectionMode}

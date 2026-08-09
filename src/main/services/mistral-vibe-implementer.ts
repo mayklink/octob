@@ -195,7 +195,7 @@ export class MistralVibeImplementer implements AgentSdkImplementer {
       }
     })
 
-    const mcpServers = getConfiguredMcpServers(this.dbService)
+    const mcpServers = getConfiguredMcpServers(this.dbService, params.worktreePath)
     let acpSessionId: string
 
     if (params.resumeAcpSessionId) {

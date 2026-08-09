@@ -1,5 +1,4 @@
 import {
-  Fragment,
   memo,
   useEffect,
   useRef,
@@ -21,18 +20,11 @@ import {
   AlertCircle,
   Check,
   TerminalSquare,
-  Download,
-  Github,
-  ClipboardList,
-  Upload,
   FileJson,
-  FileSearch,
-  GitPullRequest
+  Server,
+  Settings2
 } from 'lucide-react'
-import { KanbanIcon } from '@/components/kanban/KanbanIcon'
-import { useSessionStore, BOARD_TAB_ID } from '@/stores/useSessionStore'
-import { useLayoutStore } from '@/stores/useLayoutStore'
-import { useShallow } from 'zustand/react/shallow'
+import { useSessionStore } from '@/stores/useSessionStore'
 import {
   useFileViewerStore,
   type FileViewerTab,
@@ -40,16 +32,9 @@ import {
   type ContextTab
 } from '@/stores/useFileViewerStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
-import { useProjectStore } from '@/stores/useProjectStore'
 import { useConnectionStore } from '@/stores/useConnectionStore'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
-import { useKanbanStore } from '@/stores/useKanbanStore'
-import { TicketCreateModal } from '@/components/kanban/TicketCreateModal'
-import { ImportTicketsModal } from '@/components/kanban/ImportTicketsModal'
-import { JiraImportModal } from '@/components/kanban/JiraImportModal'
-import { AzureDevOpsImportModal } from '@/components/kanban/AzureDevOpsImportModal'
-import { OctobImportModal } from '@/components/kanban/OctobImportModal'
 import { useVimModeStore } from '@/stores/useVimModeStore'
 import { useHintStore } from '@/stores/useHintStore'
 import { cn, parseColorQuad } from '@/lib/utils'
@@ -65,15 +50,19 @@ import {
   ContextMenuShortcut,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator
-} from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/Tip'
 import { useTipStore } from '@/stores/useTipStore'
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
+import type { AgentSdk } from '@/stores/useSettingsStore'
+import { useTranslation } from 'react-i18next'
 
 interface SessionTabProps {
   sessionId: string
@@ -526,315 +515,92 @@ const ConnectionSessionTab = memo(function ConnectionSessionTab({
 })
 
 export function SessionTabs(): React.JSX.Element | null {
-  const tabsContainerRef = useRef<HTMLDivElement>(null)
-  const [showLeftArrow, setShowLeftArrow] = useState(false)
-  const [showRightArrow, setShowRightArrow] = useState(false)
-  const [draggedTabId, setDraggedTabId] = useState<string | null>(null)
-  const [dragOverTabId, setDragOverTabId] = useState<string | null>(null)
-  const [isTicketCreateOpen, setIsTicketCreateOpen] = useState(false)
-  const [showImport, setShowImport] = useState(false)
-  const [showJiraImport, setShowJiraImport] = useState(false)
-  const [showAzureDevOpsImport, setShowAzureDevOpsImport] = useState(false)
-  const [showOctobImport, setShowOctobImport] = useState(false)
-  const [octobImportTickets, setOctobImportTickets] = useState<Array<{ id: string; title: string; description?: string | null; attachments?: unknown[]; column?: string }>>([])
-  const [octobImportDependencies, setOctobImportDependencies] = useState<Array<{ dependentId: string; blockerId: string }>>([])
-
-  // Individual selectors for state values
-  const activeWorktreeId = useSessionStore((s) => s.activeWorktreeId)
-  const activeSessionId = useSessionStore((s) => s.activeSessionId)
-  const inlineConnectionSessionId = useSessionStore((s) => s.inlineConnectionSessionId)
-
-  // useShallow: subscribes to these 5 fields only, re-renders when any field reference changes
-  const { sessionsByWorktree, tabOrderByWorktree, sessionsByConnection, tabOrderByConnection, orphanedSessions } = useSessionStore(
-    useShallow((s) => ({
-      sessionsByWorktree: s.sessionsByWorktree,
-      tabOrderByWorktree: s.tabOrderByWorktree,
-      sessionsByConnection: s.sessionsByConnection,
-      tabOrderByConnection: s.tabOrderByConnection,
-      orphanedSessions: s.orphanedSessions
-    }))
-  )
-
-  // Individual selectors for functions (stable by default in zustand, but still avoids full-store subscription)
-  const loadSessions = useSessionStore((s) => s.loadSessions)
-  const createSession = useSessionStore((s) => s.createSession)
-  const closeSession = useSessionStore((s) => s.closeSession)
-  const setActiveSession = useSessionStore((s) => s.setActiveSession)
-  const reorderTabs = useSessionStore((s) => s.reorderTabs)
-  const updateSessionName = useSessionStore((s) => s.updateSessionName)
-  const closeOtherSessions = useSessionStore((s) => s.closeOtherSessions)
-  const closeSessionsToRight = useSessionStore((s) => s.closeSessionsToRight)
-  const loadConnectionSessions = useSessionStore((s) => s.loadConnectionSessions)
-  const createConnectionSession = useSessionStore((s) => s.createConnectionSession)
-  const setActiveConnectionSession = useSessionStore((s) => s.setActiveConnectionSession)
-  const reorderConnectionTabs = useSessionStore((s) => s.reorderConnectionTabs)
-  const closeOtherConnectionSessions = useSessionStore((s) => s.closeOtherConnectionSessions)
-  const closeConnectionSessionsToRight = useSessionStore((s) => s.closeConnectionSessionsToRight)
-  const setInlineConnectionSession = useSessionStore((s) => s.setInlineConnectionSession)
-  const clearInlineConnectionSession = useSessionStore((s) => s.clearInlineConnectionSession)
-  const loadConnectionSessionsBackground = useSessionStore((s) => s.loadConnectionSessionsBackground)
-  const closeOrphanedSessions = useSessionStore((s) => s.closeOrphanedSessions)
-
-  const {
-    openFiles,
-    activeFilePath,
-    setActiveFile,
-    closeOtherFiles,
-    closeFilesToRight,
-    requestCloseFile
-  } = useFileViewerStore()
-
-  const { selectedWorktreeId } = useWorktreeStore()
-  const { projects } = useProjectStore()
+  const { t } = useTranslation()
+  const selectedWorktreeId = useWorktreeStore((state) => state.selectedWorktreeId)
   const selectedConnectionId = useConnectionStore((state) => state.selectedConnectionId)
   const connections = useConnectionStore((state) => state.connections)
-  const isBoardViewActive = useKanbanStore((state) => state.isBoardViewActive)
-  const pinnedSessionIds = useSessionStore((state) => state.pinnedSessionIds)
-  const activePinnedSessionId = useSessionStore((state) => state.activePinnedSessionId)
-  const boardMode = useSettingsStore((s) => s.boardMode)
-  const workspaceContentView = useLayoutStore((s) => s.workspaceContentView)
+  const sessionsByWorktree = useSessionStore((state) => state.sessionsByWorktree)
+  const sessionsByConnection = useSessionStore((state) => state.sessionsByConnection)
+  const tabOrderByWorktree = useSessionStore((state) => state.tabOrderByWorktree)
+  const tabOrderByConnection = useSessionStore((state) => state.tabOrderByConnection)
+  const activeSessionId = useSessionStore((state) => state.activeSessionId)
+  const createSession = useSessionStore((state) => state.createSession)
+  const createConnectionSession = useSessionStore((state) => state.createConnectionSession)
+  const availableAgentSdks = useSettingsStore((state) => state.availableAgentSdks)
+  const defaultAgentSdk = useSettingsStore((state) => state.defaultAgentSdk)
+  const mcpServers = useSettingsStore((state) => state.mcpServers)
+  const projectMcpServerIds = useSettingsStore((state) => state.projectMcpServerIds)
+  const updateSetting = useSettingsStore((state) => state.updateSetting)
+  const openSettings = useSettingsStore((state) => state.openSettings)
+  const closeSession = useSessionStore((state) => state.closeSession)
+  const setActiveSession = useSessionStore((state) => state.setActiveSession)
+  const updateSessionName = useSessionStore((state) => state.updateSessionName)
+  const closeOtherSessions = useSessionStore((state) => state.closeOtherSessions)
+  const closeSessionsToRight = useSessionStore((state) => state.closeSessionsToRight)
+  const closeOtherConnectionSessions = useSessionStore(
+    (state) => state.closeOtherConnectionSessions
+  )
+  const closeConnectionSessionsToRight = useSessionStore(
+    (state) => state.closeConnectionSessionsToRight
+  )
 
-  // Board assistant state
-  const boardAssistantByProject = useSessionStore((state) => state.boardAssistantByProject)
-  const activeBoardAssistantProjectId = useSessionStore((state) => state.activeBoardAssistantProjectId)
-  const createBoardAssistantSession = useSessionStore((s) => s.createBoardAssistantSession)
-  const closeBoardAssistantSession = useSessionStore((s) => s.closeBoardAssistantSession)
-  const focusBoardAssistantSession = useSessionStore((s) => s.focusBoardAssistantSession)
+  const openFiles = useFileViewerStore((state) => state.openFiles)
+  const activeFilePath = useFileViewerStore((state) => state.activeFilePath)
+  const activeDiff = useFileViewerStore((state) => state.activeDiff)
+  const setActiveFile = useFileViewerStore((state) => state.setActiveFile)
+  const requestCloseFile = useFileViewerStore((state) => state.requestCloseFile)
+  const closeDiffTab = useFileViewerStore((state) => state.closeDiffTab)
+  const activateDiffTab = useFileViewerStore((state) => state.activateDiffTab)
+  const closeOtherFiles = useFileViewerStore((state) => state.closeOtherFiles)
+  const closeFilesToRight = useFileViewerStore((state) => state.closeFilesToRight)
+  const clearActiveViews = useFileViewerStore((state) => state.clearActiveViews)
 
-  // Determine whether we are in connection mode or worktree mode
-  const isConnectionMode = !!selectedConnectionId && !selectedWorktreeId
-
-  // When in connection mode with board view, the board's own in-column buttons
-  // handle ticket creation and import, so we hide the session tab bar buttons.
-  const isConnectionBoardActive = isBoardViewActive && isConnectionMode
-
-  // Get the worktree and project info for the selected worktree
   const selectedWorktree = useWorktreeStore((state) => {
     if (!selectedWorktreeId) return null
     for (const worktrees of state.worktreesByProject.values()) {
-      const found = worktrees.find((w) => w.id === selectedWorktreeId)
-      if (found) return found
+      const worktree = worktrees.find((item) => item.id === selectedWorktreeId)
+      if (worktree) return worktree
     }
     return null
   })
 
-  const project = selectedWorktree
-    ? projects.find((p) => p.id === selectedWorktree.project_id)
-    : null
+  const isConnectionMode = Boolean(selectedConnectionId && !selectedWorktreeId)
+  const sessions = isConnectionMode
+    ? sessionsByConnection.get(selectedConnectionId!) ?? []
+    : selectedWorktreeId
+      ? sessionsByWorktree.get(selectedWorktreeId) ?? []
+      : []
+  const order = isConnectionMode
+    ? tabOrderByConnection.get(selectedConnectionId!) ?? []
+    : selectedWorktreeId
+      ? tabOrderByWorktree.get(selectedWorktreeId) ?? []
+      : []
+  const sessionsById = new Map(sessions.map((session) => [session.id, session]))
+  const orderedSessions = [
+    ...order.map((id) => sessionsById.get(id)).filter((session) => session !== undefined),
+    ...sessions.filter((session) => !order.includes(session.id))
+  ]
+  const connection = connections.find((item) => item.id === selectedConnectionId)
+  const mcpProjectIds = selectedWorktree
+    ? [selectedWorktree.project_id]
+    : [...new Set((connection?.members ?? []).map((member) => member.project_id))]
+  const hasOverlay = activeFilePath !== null || activeDiff !== null
 
-  // Sync active worktree with selected worktree (worktree mode only)
-  useEffect(() => {
-    if (isConnectionMode) return
-    // Don't sync if we're currently viewing an orphaned session
-    if (activeSessionId && orphanedSessions.has(activeSessionId)) return
-    if (selectedWorktreeId !== activeWorktreeId) {
-      useSessionStore.getState().setActiveWorktree(selectedWorktreeId)
-    }
-  }, [selectedWorktreeId, activeWorktreeId, isConnectionMode, activeSessionId, orphanedSessions])
-
-  // Sync active connection with selected connection (connection mode only)
-  useEffect(() => {
-    if (!isConnectionMode || !selectedConnectionId) return
-    // Don't sync if we're currently viewing an orphaned session
-    if (activeSessionId && orphanedSessions.has(activeSessionId)) return
-    useSessionStore.getState().setActiveConnection(selectedConnectionId)
-  }, [selectedConnectionId, isConnectionMode, activeSessionId, orphanedSessions])
-
-  // Load sessions when worktree changes, then auto-start if the worktree has 0 sessions.
-  // Auto-start runs as a direct follow-up to loadSessions (not a separate effect) to
-  // eliminate race conditions between the two async operations.
-  const autoStartSession = useSettingsStore((state) => state.autoStartSession)
-  const availableAgentSdks = useSettingsStore((state) => state.availableAgentSdks)
-  const defaultAgentSdk = useSettingsStore((state) => state.defaultAgentSdk)
-  const multipleProvidersAvailable = [
-    availableAgentSdks?.opencode,
-    availableAgentSdks?.claude,
-    availableAgentSdks?.codex,
-    availableAgentSdks?.mistralVibe,
-    availableAgentSdks?.cursorCli,
-    availableAgentSdks?.antigravity
-  ].filter(Boolean).length >= 2
-  const autoStartedRef = useRef<string | null>(null)
-
-  useEffect(() => {
-    if (isConnectionMode) return
-    if (!selectedWorktreeId || !project) return
-
-    let cancelled = false
-
-    void (async () => {
-      await loadSessions(selectedWorktreeId, project.id)
-      if (cancelled) return
-
-      // After sessions are loaded, check if auto-start is needed
-      if (!autoStartSession) return
-      if (autoStartedRef.current === selectedWorktreeId) return
-
-      const sessions = useSessionStore.getState().sessionsByWorktree.get(selectedWorktreeId) || []
-      if (sessions.length > 0) return
-
-      autoStartedRef.current = selectedWorktreeId
-      await createSession(selectedWorktreeId, project.id, undefined, undefined, { autoFocus: false })
-
-      // In toggle mode with no prior session, the auto-created session is the only
-      // thing to show — focus it. In sticky-tab mode, the board tab is already active.
-      const currentActive = useSessionStore.getState().activeSessionId
-      if (!currentActive) {
-        const sessions = useSessionStore.getState().sessionsByWorktree.get(selectedWorktreeId) || []
-        if (sessions.length > 0) {
-          useSessionStore.getState().setActiveSession(sessions[0].id)
-        }
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [selectedWorktreeId, project, loadSessions, autoStartSession, createSession, isConnectionMode])
-
-  // Load sessions when connection changes (connection mode)
-  useEffect(() => {
-    if (!isConnectionMode || !selectedConnectionId) return
-
-    let cancelled = false
-
-    void (async () => {
-      await loadConnectionSessions(selectedConnectionId)
-      if (cancelled) return
-
-      // Auto-start a session if auto-start is enabled and no sessions exist
-      if (!autoStartSession) return
-      if (autoStartedRef.current === selectedConnectionId) return
-
-      const sessions =
-        useSessionStore.getState().sessionsByConnection.get(selectedConnectionId) || []
-      if (sessions.length > 0) return
-
-      autoStartedRef.current = selectedConnectionId
-      await createConnectionSession(selectedConnectionId)
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [
-    selectedConnectionId,
-    isConnectionMode,
-    loadConnectionSessions,
-    autoStartSession,
-    createConnectionSession
-  ])
-
-  // Connections that include the currently selected worktree (for sticky tabs)
-  const connectionsForWorktree = useMemo(() => {
-    if (!selectedWorktreeId || isConnectionMode) return []
-    return connections.filter((c) => c.members.some((m) => m.worktree_id === selectedWorktreeId))
-  }, [connections, selectedWorktreeId, isConnectionMode])
-
-  // Track which connection IDs have already been background-loaded for the current worktree.
-  const loadedConnectionsRef = useRef<Set<string>>(new Set())
-
-  // Reset loaded set when the selected worktree changes
-  useEffect(() => {
-    loadedConnectionsRef.current.clear()
-  }, [selectedWorktreeId])
-
-  // Close orphaned sessions when navigating away (worktree or project change)
-  useEffect(() => {
-    closeOrphanedSessions()
-  }, [selectedWorktreeId, selectedConnectionId, closeOrphanedSessions])
-
-  // Background-load sessions for all connections the selected worktree belongs to.
-  // This is non-blocking and does not enter connection mode.
-  useEffect(() => {
-    if (isConnectionMode || !selectedWorktreeId || connectionsForWorktree.length === 0) return
-    for (const connection of connectionsForWorktree) {
-      if (!loadedConnectionsRef.current.has(connection.id)) {
-        loadedConnectionsRef.current.add(connection.id)
-        loadConnectionSessionsBackground(connection.id)
-      }
-    }
-  }, [
-    selectedWorktreeId,
-    connectionsForWorktree,
-    isConnectionMode,
-    loadConnectionSessionsBackground
-  ])
-
-  // Check for tab overflow and update arrow visibility
-  const checkOverflow = useCallback(() => {
-    const container = tabsContainerRef.current
-    if (!container) return
-
-    setShowLeftArrow(container.scrollLeft > 0)
-    setShowRightArrow(container.scrollLeft < container.scrollWidth - container.clientWidth - 1)
-  }, [])
-
-  useEffect(() => {
-    checkOverflow()
-    const container = tabsContainerRef.current
-    if (!container) return
-
-    container.addEventListener('scroll', checkOverflow)
-    window.addEventListener('resize', checkOverflow)
-    return () => {
-      container.removeEventListener('scroll', checkOverflow)
-      window.removeEventListener('resize', checkOverflow)
-    }
-  }, [
-    checkOverflow,
-    sessionsByWorktree,
-    tabOrderByWorktree,
-    sessionsByConnection,
-    tabOrderByConnection,
-    openFiles
-  ])
-
-  // Scroll functions
-  const scrollLeft = () => {
-    const container = tabsContainerRef.current
-    if (container) {
-      container.scrollBy({ left: -150, behavior: 'smooth' })
-    }
+  const activateSession = (sessionId: string): void => {
+    clearActiveViews()
+    setActiveSession(sessionId)
   }
 
-  const scrollRight = () => {
-    const container = tabsContainerRef.current
-    if (container) {
-      container.scrollBy({ left: 150, behavior: 'smooth' })
-    }
-  }
-
-  // Handle creating a new session with the agent SDK selected from the create menu.
-  const handleCreateSessionWithSdk = async (
-    sdk: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
-  ) => {
+  const handleCreateSession = async (sdk: AgentSdk): Promise<void> => {
     if (isConnectionMode && selectedConnectionId) {
       const result = await createConnectionSession(selectedConnectionId, sdk)
-      if (!result.success) {
-        toast.error(result.error || 'Failed to create session')
-      } else {
-        useLayoutStore.getState().setWorkspaceContentView('session')
-      }
-      // Tip logic for AI providers (not terminal)
-      if (sdk !== 'terminal') {
-        useTipStore.getState().markTipAsSeen('provider-right-click')
-        if (sdk !== defaultAgentSdk) {
-          useTipStore.getState().setNonDefaultProviderChosen(true)
-        }
-      }
-      return
-    }
-
-    if (!selectedWorktreeId || !project) return
-
-    const result = await createSession(selectedWorktreeId, project.id, sdk)
-    if (!result.success) {
-      toast.error(result.error || 'Failed to create session')
+      if (!result.success) toast.error(result.error || 'Failed to create session')
     } else {
-      useLayoutStore.getState().setWorkspaceContentView('session')
+      if (!selectedWorktreeId || !selectedWorktree) return
+      const result = await createSession(selectedWorktreeId, selectedWorktree.project_id, sdk)
+      if (!result.success) toast.error(result.error || 'Failed to create session')
     }
-    // Tip logic for AI providers (not terminal)
+
     if (sdk !== 'terminal') {
       useTipStore.getState().markTipAsSeen('provider-right-click')
       if (sdk !== defaultAgentSdk) {
@@ -843,783 +609,223 @@ export function SessionTabs(): React.JSX.Element | null {
     }
   }
 
-  // Handle creating or focusing the board assistant tab
-  const handleCreateBoardAssistant = async () => {
-    if (!project) return
-    const existing = boardAssistantByProject.get(project.id)
-    if (existing) {
-      focusBoardAssistantSession(project.id)
-    } else {
-      const result = await createBoardAssistantSession(project.id)
-      if (!result.success) {
-        toast.error(result.error || 'Failed to create board assistant')
-      }
-    }
-  }
+  const availableProviders: Array<{ sdk: AgentSdk; label: string }> = [
+    ...(availableAgentSdks?.opencode ? [{ sdk: 'opencode' as const, label: 'OpenCode' }] : []),
+    ...(availableAgentSdks?.claude ? [{ sdk: 'claude-code' as const, label: 'Claude Code' }] : []),
+    ...(availableAgentSdks?.codex ? [{ sdk: 'codex' as const, label: 'Codex' }] : []),
+    ...(availableAgentSdks?.mistralVibe ? [{ sdk: 'mistral-vibe' as const, label: 'Mistral Vibe' }] : []),
+    ...(availableAgentSdks?.cursorCli ? [{ sdk: 'cursor-cli' as const, label: 'Cursor CLI' }] : []),
+    ...(availableAgentSdks?.antigravity ? [{ sdk: 'antigravity' as const, label: 'Antigravity' }] : [])
+  ]
+  const availableMcpServers = mcpServers.filter((server) => server.enabled)
+  const isMcpSelected = (serverId: string): boolean =>
+    mcpProjectIds.length > 0 &&
+    mcpProjectIds.every((projectId) => {
+      const selected = projectMcpServerIds[projectId]
+      return selected === undefined || selected.includes(serverId)
+    })
+  const enabledMcpCount = availableMcpServers.filter((server) => isMcpSelected(server.id)).length
 
-  // Handle closing the board assistant tab
-  const handleCloseBoardAssistant = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!project) return
-    const result = await closeBoardAssistantSession(project.id)
-    if (!result.success) {
-      toast.error(result.error || 'Failed to close board assistant')
-    }
-  }
+  const setMcpSelected = (serverId: string, selected: boolean): void => {
+    const next = { ...projectMcpServerIds }
+    const inheritedIds = availableMcpServers.map((server) => server.id)
 
-  // Handle closing a session
-  const handleCloseSession = async (e: React.MouseEvent, sessionId: string) => {
-    e.stopPropagation()
-    const result = await closeSession(sessionId)
-    if (!result.success) {
-      toast.error(result.error || 'Failed to close session')
-    }
-  }
-
-  // Handle renaming a session tab
-  const handleRenameSession = async (sessionId: string, newName: string) => {
-    const success = await updateSessionName(sessionId, newName)
-    if (!success) {
-      toast.error('Failed to rename session')
-    }
-  }
-
-  const activateChatWorkspace = () => {
-    const layoutStore = useLayoutStore.getState()
-    layoutStore.setWorkspaceMode('chat')
-    layoutStore.setWorkspaceContentView('session')
-    layoutStore.setRightSidebarCollapsed(true)
-    useKanbanStore.setState({ isBoardViewActive: false, isPinnedBoardActive: false })
-  }
-
-  // Handle clicking a session tab - always return to chat, deactivate file tab,
-  // and clear unread status.
-  const handleSessionTabClick = (sessionId: string) => {
-    activateChatWorkspace()
-
-    const isAlreadyPresentedSession =
-      activeSessionId === sessionId && activeFilePath === null && !inlineConnectionSessionId
-
-    if (isAlreadyPresentedSession) {
-      return
+    for (const projectId of mcpProjectIds) {
+      const current = new Set(next[projectId] ?? inheritedIds)
+      if (selected) current.add(serverId)
+      else current.delete(serverId)
+      next[projectId] = [...current]
     }
 
-    setActiveFile(null)
-    clearInlineConnectionSession()
-    if (isConnectionMode) {
-      setActiveConnectionSession(sessionId)
-    } else {
-      setActiveSession(sessionId)
-    }
-    useWorktreeStatusStore.getState().clearSessionStatus(sessionId)
+    updateSetting('projectMcpServerIds', next)
   }
 
-  // Handle clicking a sticky connection session tab (inline viewing in worktree mode)
-  const handleConnectionSessionTabClick = (sessionId: string) => {
-    activateChatWorkspace()
-
-    const isAlreadyPresentedConnectionSession =
-      inlineConnectionSessionId === sessionId && activeFilePath === null
-
-    if (isAlreadyPresentedConnectionSession) {
-      return
-    }
-
-    setActiveFile(null)
-    setInlineConnectionSession(sessionId)
-    useWorktreeStatusStore.getState().clearSessionStatus(sessionId)
-  }
-
-  const handleBoardTabClick = () => {
-    useFileViewerStore.getState().clearActiveViews()
-    clearInlineConnectionSession()
-    useSessionStore.getState().setActiveSession(null)
-    useSessionStore.getState().setActivePinnedSession(null)
-    useLayoutStore.getState().setWorkspaceContentView('overview')
-
-    if (isConnectionMode && selectedConnectionId) {
-      useLayoutStore.getState().setWorkspaceView('connection')
-    } else if (project) {
-      useLayoutStore.getState().setWorkspaceView('project')
-    }
-  }
-
-  // Handle clicking a file tab - keep session but activate file view
-  const handleFileTabClick = (filePath: string) => {
-    setActiveFile(filePath)
-  }
-
-  // Handle closing a file tab
-  const handleCloseFileTab = (e: React.MouseEvent, filePath: string) => {
-    e.stopPropagation()
-    requestCloseFile(filePath)
-  }
-
-  // Handle clicking a diff tab - restore activeDiff for the viewer
-  const handleDiffTabClick = (tabKey: string) => {
-    useFileViewerStore.getState().activateDiffTab(tabKey)
-  }
-
-  // Handle closing a diff tab
-  const handleCloseDiffTab = (e: React.MouseEvent, tabKey: string) => {
-    e.stopPropagation()
-    useFileViewerStore.getState().closeDiffTab(tabKey)
-  }
-
-  // Drag and drop handlers
-  const handleDragStart = (e: React.DragEvent, sessionId: string) => {
-    setDraggedTabId(sessionId)
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', sessionId)
-  }
-
-  const handleDragOver = (e: React.DragEvent, sessionId: string) => {
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-    if (draggedTabId && draggedTabId !== sessionId) {
-      setDragOverTabId(sessionId)
-    }
-  }
-
-  const handleDrop = (e: React.DragEvent, targetSessionId: string) => {
-    e.preventDefault()
-    if (!draggedTabId || draggedTabId === targetSessionId) {
-      return
-    }
-
-    if (isConnectionMode && selectedConnectionId) {
-      const tabOrder = tabOrderByConnection.get(selectedConnectionId) || []
-      const fromIndex = tabOrder.indexOf(draggedTabId)
-      const toIndex = tabOrder.indexOf(targetSessionId)
-
-      if (fromIndex !== -1 && toIndex !== -1) {
-        reorderConnectionTabs(selectedConnectionId, fromIndex, toIndex)
-      }
-    } else if (selectedWorktreeId) {
-      const tabOrder = tabOrderByWorktree.get(selectedWorktreeId) || []
-      const fromIndex = tabOrder.indexOf(draggedTabId)
-      const toIndex = tabOrder.indexOf(targetSessionId)
-
-      if (fromIndex !== -1 && toIndex !== -1) {
-        reorderTabs(selectedWorktreeId, fromIndex, toIndex)
-      }
-    }
-
-    setDraggedTabId(null)
-    setDragOverTabId(null)
-  }
-
-  const handleDragEnd = () => {
-    setDraggedTabId(null)
-    setDragOverTabId(null)
-  }
-
-  // Resolve scope ID for the active context (may be undefined)
-  const scopeId = isConnectionMode ? selectedConnectionId : selectedWorktreeId
-
-  // Get sessions in tab order (memoized for stable reference)
-  const orderedSessions = useMemo(() => {
-    const sessions = scopeId
-      ? isConnectionMode
-        ? sessionsByConnection.get(scopeId) || []
-        : sessionsByWorktree.get(scopeId) || []
-      : []
-    const tabOrder = scopeId
-      ? isConnectionMode
-        ? tabOrderByConnection.get(scopeId) || []
-        : tabOrderByWorktree.get(scopeId) || []
-      : []
-    return tabOrder
-      .map((id) => sessions.find((s) => s.id === id))
-      .filter((s): s is NonNullable<typeof s> => s !== undefined)
-  }, [
-    scopeId,
-    isConnectionMode,
-    sessionsByConnection,
-    sessionsByWorktree,
-    tabOrderByConnection,
-    tabOrderByWorktree
-  ])
-
-  // Vim/hint state for session tab hints
-  const vimMode = useVimModeStore((s) => s.mode)
-  const vimModeEnabled = useSettingsStore((s) => s.vimModeEnabled)
-  const setSessionHints = useHintStore((s) => s.setSessionHints)
-  const clearSessionHints = useHintStore((s) => s.clearSessionHints)
-
-  const sessionHints = useMemo(
-    () => assignSessionHints(orderedSessions.map((s) => s.id)),
-    [orderedSessions]
-  )
-
-  useEffect(() => {
-    if (vimModeEnabled && vimMode === 'normal') {
-      setSessionHints(sessionHints.sessionHintMap, sessionHints.sessionHintTargetMap)
-    } else {
-      clearSessionHints()
-    }
-    return () => {
-      clearSessionHints()
-    }
-  }, [vimModeEnabled, vimMode, sessionHints, setSessionHints, clearSessionHints])
-
-  // Don't render if nothing is selected AND no orphaned sessions
-  if (!selectedWorktreeId && !selectedConnectionId && orphanedSessions.size === 0) {
-    return null
-  }
-
-  // Resolve scopeId (may be undefined if only orphaned sessions exist)
-  const resolvedScopeId = scopeId || null
-
-  // Add orphaned sessions to the list (they appear as additional tabs)
-  const orphanedSessionsList = Array.from(orphanedSessions.values())
-  const allSessions = [...orderedSessions, ...orphanedSessionsList]
-
-  // Get file tabs for the current worktree (only regular file tabs, not diff tabs)
-  const fileTabs = Array.from(openFiles.values()).filter(
-    (f): f is FileViewerTab => f.type === 'file' && f.worktreeId === selectedWorktreeId
-  )
-
-  // Get diff tabs from openFiles
-  const diffTabs = Array.from(openFiles.entries()).filter(
-    (entry): entry is [string, DiffTab] => entry[1].type === 'diff'
-  )
-
-  // Get context tabs from openFiles
-  const contextTabs = Array.from(openFiles.entries()).filter(
-    (entry): entry is [string, ContextTab] => entry[1].type === 'context'
-  )
-
-  // Determine if a file/diff tab is the active one
-  const isFileTabActive = activeFilePath !== null
-
-  // Sticky-tab mode: board is visible when its tab is selected and no file is foregrounded
-  const isStickyBoardActive = boardMode === 'sticky-tab' && activeSessionId === BOARD_TAB_ID && !isFileTabActive
-  const isOverviewBoardTabActive =
-    workspaceContentView === 'overview' &&
-    !isFileTabActive &&
-    !inlineConnectionSessionId &&
-    !activePinnedSessionId
-
-  /** Renders connection tabs + session tabs — shared between sticky-tab and normal mode */
-  const renderSessionTabs = () => (
-    <>
-      {/* Sticky connection session tabs (worktree mode only) */}
-      {!isConnectionMode &&
-        connectionsForWorktree.map((connection) => {
-          const connectionSessions = sessionsByConnection.get(connection.id) || []
-          const connectionTabOrder = tabOrderByConnection.get(connection.id) || []
-          const orderedConnectionSessions = connectionTabOrder
-            .map((id) => connectionSessions.find((s) => s.id === id))
-            .filter((s): s is NonNullable<typeof s> => s !== undefined)
-
-          if (orderedConnectionSessions.length === 0) return null
-
-          return (
-            <Fragment key={connection.id}>
-              {/* Thin visual separator before each connection group */}
-              <div className="w-px bg-border/60 self-stretch my-1" aria-hidden="true" />
-              {orderedConnectionSessions.map((session) => (
-                <ConnectionSessionTab
-                  key={session.id}
-                  sessionId={session.id}
-                  name={session.name || 'Untitled'}
-                  isActive={session.id === inlineConnectionSessionId && !isFileTabActive}
-                  onClick={() => handleConnectionSessionTabClick(session.id)}
-                  connectionColor={connection.color}
-                  connectionName={connection.name}
-                />
-              ))}
-            </Fragment>
-          )
-        })}
-
-      {/* Session tabs */}
-      {allSessions.map((session) => {
-        const isOrphaned = orphanedSessions.has(session.id)
-        return (
-          <SessionTab
-            key={session.id}
-            sessionId={session.id}
-            name={session.name || 'Untitled'}
-            agentSdk={session.agent_sdk}
-            isActive={
-              session.id === activeSessionId && !isFileTabActive && !inlineConnectionSessionId
-            }
-            onClick={() => handleSessionTabClick(session.id)}
-            onClose={(e) => handleCloseSession(e, session.id)}
-            onMiddleClick={(e) => handleCloseSession(e, session.id)}
-            onRename={(newName) => handleRenameSession(session.id, newName)}
-            onDragStart={(e) => handleDragStart(e, session.id)}
-            onDragOver={(e) => handleDragOver(e, session.id)}
-            onDrop={(e) => handleDrop(e, session.id)}
-            onDragEnd={handleDragEnd}
-            isDragging={draggedTabId === session.id}
-            isDragOver={dragOverTabId === session.id}
-            worktreeId={resolvedScopeId}
-            onCloseOthers={
-              isOrphaned || !resolvedScopeId
-                ? undefined
-                : () =>
-                    isConnectionMode
-                      ? closeOtherConnectionSessions(resolvedScopeId, session.id)
-                      : closeOtherSessions(resolvedScopeId, session.id)
-            }
-            onCloseToRight={
-              isOrphaned || !resolvedScopeId
-                ? undefined
-                : () =>
-                    isConnectionMode
-                      ? closeConnectionSessionsToRight(resolvedScopeId, session.id)
-                      : closeSessionsToRight(resolvedScopeId, session.id)
-            }
-            hintCode={sessionHints.sessionHintMap.get(session.id)}
-          />
-        )
-      })}
-
-      {/* Board assistant tab */}
-      {project && boardAssistantByProject.has(project.id) && (
-        <button
-          className={cn(
-            'group relative flex items-center gap-1.5 px-3 py-1.5 text-sm cursor-pointer select-none whitespace-nowrap border-r border-border min-w-[100px] max-w-[200px] transition-colors',
-            activeBoardAssistantProjectId === project.id && !isFileTabActive
-              ? 'bg-background text-foreground'
-              : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
-          )}
-          onClick={() => {
-            setActiveFile(null)
-            clearInlineConnectionSession()
-            focusBoardAssistantSession(project.id)
-          }}
-          title="Board Assistant"
-          data-testid="board-assistant-tab"
-        >
-          <KanbanIcon className="h-3.5 w-3.5 shrink-0 text-blue-500" />
-          <span className="truncate flex-1">Board Assistant</span>
-          {/* Active bottom accent */}
-          {activeBoardAssistantProjectId === project.id && !isFileTabActive && (
-            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
-          )}
-          {/* Close button */}
-          <span
-            className="ml-1 shrink-0 rounded-sm p-0.5 opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity"
-            onClick={handleCloseBoardAssistant}
-            role="button"
-            tabIndex={-1}
-          >
-            <X className="h-3 w-3" />
-          </span>
-        </button>
-      )}
-    </>
-  )
+  if (!selectedWorktreeId && !selectedConnectionId && openFiles.size === 0) return null
 
   return (
-    <div
-      className="flex items-center border-b border-border bg-muted/30"
-      data-testid="session-tabs"
-    >
-      {/* New session / new ticket button - on the left */}
-      {boardMode === 'sticky-tab' || !isBoardViewActive ? (
-        /* Session create button with provider selection menu */
-        <Tip tipId="provider-right-click" enabled={multipleProvidersAvailable}>
-          <div className="shrink-0">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  className="p-1.5 hover:bg-accent transition-colors border-r border-border"
-                  data-testid="create-session"
-                  title="Create new session"
-                  aria-label="Create new session"
-                >
-                  <Plus className="h-4 w-4" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                {availableAgentSdks?.opencode && (
-                  <DropdownMenuItem onSelect={() => handleCreateSessionWithSdk('opencode')}>
-                    New OpenCode Session
-                  </DropdownMenuItem>
-                )}
-                {availableAgentSdks?.claude && (
-                  <DropdownMenuItem onSelect={() => handleCreateSessionWithSdk('claude-code')}>
-                    New Claude Code Session
-                  </DropdownMenuItem>
-                )}
-                {availableAgentSdks?.codex && (
-                  <DropdownMenuItem onSelect={() => handleCreateSessionWithSdk('codex')}>
-                    New Codex Session
-                  </DropdownMenuItem>
-                )}
-                {availableAgentSdks?.mistralVibe && (
-                  <DropdownMenuItem onSelect={() => handleCreateSessionWithSdk('mistral-vibe')}>
-                    New Mistral Vibe Session
-                  </DropdownMenuItem>
-                )}
-                {availableAgentSdks?.cursorCli && (
-                  <DropdownMenuItem onSelect={() => handleCreateSessionWithSdk('cursor-cli')}>
-                    New Cursor CLI Session
-                  </DropdownMenuItem>
-                )}
-                {availableAgentSdks?.antigravity && (
-                  <DropdownMenuItem onSelect={() => handleCreateSessionWithSdk('antigravity')}>
-                    New Antigravity Session
-                  </DropdownMenuItem>
-                )}
-                {(availableAgentSdks?.opencode ||
-                  availableAgentSdks?.claude ||
-                  availableAgentSdks?.codex ||
-                  availableAgentSdks?.mistralVibe ||
-                  availableAgentSdks?.cursorCli ||
-                  availableAgentSdks?.antigravity) && <DropdownMenuSeparator />}
-                <DropdownMenuItem onSelect={() => handleCreateSessionWithSdk('terminal')}>
-                  <TerminalSquare className="h-4 w-4 mr-2 text-emerald-500" />
-                  New Terminal
+    <div className="flex h-9 shrink-0 items-stretch border-b bg-muted/30" role="tablist">
+      <Tip tipId="provider-right-click" enabled={availableProviders.length > 1}>
+        <div className="shrink-0">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="flex h-9 w-9 items-center justify-center border-r text-muted-foreground hover:bg-accent hover:text-foreground"
+                title="Create new session"
+                aria-label="Create new session"
+                data-testid="create-session"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {availableProviders.map(({ sdk, label }) => (
+                <DropdownMenuItem key={sdk} onSelect={() => void handleCreateSession(sdk)}>
+                  New {label} Session
                 </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={handleCreateBoardAssistant}>
-                  <KanbanIcon className="h-4 w-4 mr-2 text-blue-500" />
-                  New Board Assistant
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        </Tip>
-      ) : isBoardViewActive && !isConnectionBoardActive ? (
-        /* Toggle mode kanban: plus button opens the ticket creation modal (hidden in connection board — board has its own) */
-        <button
-          onClick={() => setIsTicketCreateOpen(true)}
-          className="p-1.5 hover:bg-accent transition-colors shrink-0 border-r border-border"
-          data-testid="kanban-add-ticket-btn"
-          title="Create new ticket"
-        >
-          <Plus className="h-4 w-4" />
-        </button>
-      ) : null}
+              ))}
+              {availableProviders.length > 0 && <DropdownMenuSeparator />}
+              <DropdownMenuItem onSelect={() => void handleCreateSession('terminal')}>
+                <TerminalSquare className="mr-2 h-4 w-4 text-emerald-500" />
+                New Terminal
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </Tip>
 
-      {/* Left scroll arrow */}
-      {showLeftArrow && (
-        <button
-          onClick={scrollLeft}
-          className="p-1 hover:bg-accent transition-colors shrink-0"
-          data-testid="scroll-left"
-        >
-          <ChevronLeft className="h-4 w-4" />
-        </button>
-      )}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="relative flex h-9 w-9 shrink-0 items-center justify-center border-r text-muted-foreground hover:bg-accent hover:text-foreground"
+            title={t('settings.mcp.sessionTools')}
+            aria-label={t('settings.mcp.sessionTools')}
+            data-testid="session-mcp-menu"
+          >
+            <Server className="h-4 w-4" />
+            {enabledMcpCount > 0 && (
+              <span className="absolute right-0.5 top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-semibold text-primary-foreground">
+                {enabledMcpCount}
+              </span>
+            )}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-72">
+          <DropdownMenuLabel>{t('settings.mcp.sessionTools')}</DropdownMenuLabel>
+          <p className="px-2 pb-2 text-xs text-muted-foreground">
+            {t('settings.mcp.sessionToolsHint')}
+          </p>
+          {availableMcpServers.length === 0 ? (
+            <p className="px-2 py-3 text-sm text-muted-foreground">
+              {t('settings.mcp.noMcpServers')}
+            </p>
+          ) : (
+            availableMcpServers.map((server) => (
+              <DropdownMenuCheckboxItem
+                key={server.id}
+                checked={isMcpSelected(server.id)}
+                disabled={mcpProjectIds.length === 0}
+                onSelect={(event) => event.preventDefault()}
+                onCheckedChange={(checked) => setMcpSelected(server.id, checked === true)}
+              >
+                <span className="truncate">{server.name.trim() || t('settings.mcp.unnamedServer')}</span>
+              </DropdownMenuCheckboxItem>
+            ))
+          )}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => openSettings('mcp')}>
+            <Settings2 className="mr-2 h-4 w-4" />
+            {t('settings.mcp.addAndManage')}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
 
-      {/* Tabs container */}
-      <div
-        ref={tabsContainerRef}
-        className="flex-1 flex overflow-x-auto scrollbar-hide"
-        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-        data-testid="session-tabs-scroll-container"
-      >
-        {boardMode === 'sticky-tab' ? (
-          <>
-            {/* Sticky board tab — permanent, no close button, not draggable */}
-            <div
-              data-testid="sticky-board-tab"
-              role="tab"
-              tabIndex={0}
-              onClick={handleBoardTabClick}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  handleBoardTabClick()
+      <div className="flex min-w-0 flex-1 overflow-x-auto">
+        {orderedSessions.map((session, index) =>
+          isConnectionMode && connection ? (
+            <ConnectionSessionTab
+              key={session.id}
+              sessionId={session.id}
+              name={session.name || `Session ${index + 1}`}
+              isActive={!hasOverlay && activeSessionId === session.id}
+              onClick={() => activateSession(session.id)}
+              connectionColor={connection.color}
+              connectionName={connection.custom_name || connection.name}
+            />
+          ) : (
+            <SessionTab
+              key={session.id}
+              sessionId={session.id}
+              name={session.name || `Session ${index + 1}`}
+              agentSdk={session.agent_sdk || 'opencode'}
+              isActive={!hasOverlay && activeSessionId === session.id}
+              onClick={() => activateSession(session.id)}
+              onClose={(event) => {
+                event.stopPropagation()
+                void closeSession(session.id)
+              }}
+              onMiddleClick={() => void closeSession(session.id)}
+              onRename={(name) => void updateSessionName(session.id, name)}
+              onDragStart={() => undefined}
+              onDragOver={() => undefined}
+              onDrop={() => undefined}
+              onDragEnd={() => undefined}
+              isDragging={false}
+              isDragOver={false}
+              worktreeId={selectedWorktreeId}
+              onCloseOthers={() => {
+                if (selectedWorktreeId) void closeOtherSessions(selectedWorktreeId, session.id)
+                else if (selectedConnectionId) {
+                  void closeOtherConnectionSessions(selectedConnectionId, session.id)
                 }
               }}
-              className={cn(
-                'group relative flex items-center gap-1.5 px-3 py-1.5 text-sm cursor-pointer select-none',
-                'border-r border-border transition-colors min-w-[100px] max-w-[200px]',
-                isOverviewBoardTabActive
-                  ? 'bg-background text-foreground'
-                  : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              <KanbanIcon className="h-3.5 w-3.5 flex-shrink-0 text-blue-400" />
-              <span className="truncate flex-1">Board</span>
-              {isOverviewBoardTabActive && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />}
-            </div>
-            {/* Normal session tabs alongside the sticky board tab */}
-            {renderSessionTabs()}
-          </>
-        ) : isBoardViewActive ? (
-          <>
-            {/* Toggle mode: Kanban board tab */}
-            <div
-              data-testid="kanban-board-tab"
-              onClick={handleBoardTabClick}
-              className={cn(
-                'group relative flex items-center gap-1.5 px-3 py-1.5 text-sm cursor-pointer select-none',
-                'border-r border-border transition-colors min-w-[100px] max-w-[200px]',
-                isOverviewBoardTabActive
-                  ? 'bg-background text-foreground'
-                  : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              <KanbanIcon className="h-3.5 w-3.5 flex-shrink-0 text-blue-400" />
-              <span className="truncate flex-1">Board</span>
-              {isOverviewBoardTabActive && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />}
-            </div>
-            {/* Pinned session tabs */}
-            {Array.from(pinnedSessionIds).map((sessionId) => {
-              let session: { id: string; name: string | null; mode?: string } | null = null
-              for (const sessions of sessionsByWorktree.values()) {
-                const found = sessions.find((s) => s.id === sessionId)
-                if (found) { session = found; break }
-              }
-              if (!session) return null
-
-              const isActive = activePinnedSessionId === sessionId && !isFileTabActive
-              const isReview = session.name?.toLowerCase().includes('review')
-              const Icon = isReview ? FileSearch : GitPullRequest
-
-              return (
-                <div
-                  key={sessionId}
-                  data-testid={`pinned-session-tab-${sessionId}`}
-                  onClick={() => {
-                    useFileViewerStore.getState().clearActiveViews()
-                    useSessionStore.getState().setActivePinnedSession(sessionId)
-                  }}
-                  className={cn(
-                    'group relative flex items-center gap-1.5 px-3 py-1.5 text-sm cursor-pointer select-none',
-                    'border-r border-border transition-colors min-w-[100px] max-w-[200px]',
-                    isActive
-                      ? 'bg-background text-foreground'
-                      : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
-                  )}
-                >
-                  <Icon className="h-3.5 w-3.5 flex-shrink-0 text-blue-400" />
-                  <span className="truncate flex-1">{session.name || 'Session'}</span>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      useSessionStore.getState().unpinSessionFromBoard(sessionId)
-                    }}
-                    className="opacity-0 group-hover:opacity-100 hover:text-foreground transition-opacity ml-1"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                  {isActive && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />}
-                </div>
-              )
-            })}
-          </>
-        ) : (
-          /* Normal mode (toggle, board not active): empty state OR session tabs */
-          orderedSessions.length === 0 &&
-          !(
-            !isConnectionMode &&
-            connectionsForWorktree.some((c) => (sessionsByConnection.get(c.id) || []).length > 0)
-          ) ? (
-            <div
-              className="flex items-center px-3 py-1.5 text-sm text-muted-foreground"
-              data-testid="no-sessions"
-            >
-              No sessions yet. Click + to create one.
-            </div>
-          ) : (
-            renderSessionTabs()
+              onCloseToRight={() => {
+                if (selectedWorktreeId) void closeSessionsToRight(selectedWorktreeId, session.id)
+                else if (selectedConnectionId) {
+                  void closeConnectionSessionsToRight(selectedConnectionId, session.id)
+                }
+              }}
+            />
           )
         )}
 
-        {/* File viewer tabs — always rendered, shared across both modes */}
-        {fileTabs.map((file) => {
-          const workspacePath =
-            selectedWorktree?.path ||
-            connections.find((connection) => connection.id === selectedConnectionId)?.path ||
-            ''
-          const relativePath =
-            workspacePath && file.path.startsWith(workspacePath)
-              ? file.path.slice(workspacePath.length + 1)
-              : file.name
+        {Array.from(openFiles.entries()).map(([key, tab], index, allTabs) => {
+          if (tab.type === 'file') {
+            const relativePath = selectedWorktree?.path && tab.path.startsWith(selectedWorktree.path)
+              ? tab.path.slice(selectedWorktree.path.length + 1)
+              : tab.path
+            return (
+              <FileTab
+                key={key}
+                filePath={tab.path}
+                name={tab.name}
+                relativePath={relativePath}
+                isActive={activeFilePath === key}
+                onClick={() => setActiveFile(key)}
+                onClose={(event) => {
+                  event.stopPropagation()
+                  requestCloseFile(key)
+                }}
+                onCloseOthers={() => closeOtherFiles(key)}
+                onCloseToRight={() => closeFilesToRight(key)}
+              />
+            )
+          }
+          if (tab.type === 'diff') {
+            return (
+              <DiffTabItem
+                key={key}
+                tabKey={key}
+                tab={tab}
+                isActive={activeFilePath === key}
+                onActivate={() => activateDiffTab(key)}
+                onClose={(event) => {
+                  event.stopPropagation()
+                  closeDiffTab(key)
+                }}
+                onCloseOthers={() => closeOtherFiles(key)}
+                onCloseToRight={() => closeFilesToRight(key)}
+              />
+            )
+          }
           return (
-            <FileTab
-              key={file.path}
-              filePath={file.path}
-              name={file.name}
-              isActive={isFileTabActive && activeFilePath === file.path}
-              onClick={() => handleFileTabClick(file.path)}
-              onClose={(e) => handleCloseFileTab(e, file.path)}
-              onCloseOthers={() => closeOtherFiles(file.path)}
-              onCloseToRight={() => closeFilesToRight(file.path)}
-              relativePath={relativePath}
-            />
-          )
-        })}
-        {/* Diff viewer tabs */}
-        {diffTabs.map(([key, tab]) => (
-          <DiffTabItem
-            key={key}
-            tabKey={key}
-            tab={tab}
-            isActive={isFileTabActive && activeFilePath === key}
-            onActivate={() => handleDiffTabClick(key)}
-            onClose={(e) => handleCloseDiffTab(e, key)}
-            onCloseOthers={() => closeOtherFiles(key)}
-            onCloseToRight={() => closeFilesToRight(key)}
-          />
-        ))}
-        {/* Context editor tabs */}
-        {contextTabs.map(([key, tab]) => (
-          <div
-            key={key}
-            data-testid={`context-tab-${tab.worktreeId}`}
-            onClick={() => {
-              useFileViewerStore.getState().activateContextEditor(tab.worktreeId)
-            }}
-            onMouseDown={(e) => {
-              if (e.button === 1) {
-                e.preventDefault()
-                useFileViewerStore.getState().closeContextEditor()
-              }
-            }}
-            className={cn(
-              'group relative flex items-center gap-1.5 px-3 py-1.5 text-sm cursor-pointer select-none',
-              'border-r border-border transition-colors min-w-[100px] max-w-[200px]',
-              isFileTabActive && activeFilePath === key
-                ? 'bg-background text-foreground'
-                : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
-            )}
-            title="Worktree Context"
-          >
-            <FileText className="h-3.5 w-3.5 flex-shrink-0 text-emerald-400" />
-            <span className="truncate flex-1">Context</span>
             <button
-              onClick={(e) => {
-                e.stopPropagation()
-                useFileViewerStore.getState().closeContextEditor()
-              }}
+              key={key}
+              type="button"
+              onClick={() => useFileViewerStore.getState().activateContextEditor(tab.worktreeId)}
               className={cn(
-                'p-0.5 rounded hover:bg-accent transition-opacity',
-                isFileTabActive && activeFilePath === key
-                  ? 'opacity-100'
-                  : 'opacity-0 group-hover:opacity-100'
+                'flex min-w-[120px] max-w-[200px] items-center gap-1.5 border-r px-3 text-sm',
+                activeFilePath === key ? 'bg-background' : 'text-muted-foreground hover:bg-muted'
               )}
             >
-              <X className="h-3 w-3" />
+              <FileJson className="h-3.5 w-3.5" />
+              <span className="truncate">Context</span>
+              <span className="sr-only">{index + 1} of {allTabs.length}</span>
             </button>
-            {isFileTabActive && activeFilePath === key && (
-              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
-            )}
-          </div>
-        ))}
+          )
+        })}
       </div>
-
-      {/* Right scroll arrow */}
-      {showRightArrow && (
-        <button
-          onClick={scrollRight}
-          className="p-1 hover:bg-accent transition-colors shrink-0"
-          data-testid="scroll-right"
-        >
-          <ChevronRight className="h-4 w-4" />
-        </button>
-      )}
-
-      {/* Import dropdown — kanban mode, sits on the tab bar line (hidden in connection board — board has its own) */}
-      {(isBoardViewActive || isStickyBoardActive) && !isConnectionMode && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors shrink-0 border-l border-border cursor-pointer select-none"
-              data-testid="kanban-import-btn"
-              title="Import tickets"
-            >
-              <Download className="h-3.5 w-3.5" />
-              Import
-              <ChevronDown className="h-3 w-3 opacity-50" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => setShowImport(true)}>
-              <Github className="h-4 w-4 mr-2" />
-              Import from GitHub
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setShowJiraImport(true)}>
-              <ClipboardList className="h-4 w-4 mr-2" />
-              Import from Jira
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setShowAzureDevOpsImport(true)}>
-              <span className="mr-2 inline-flex items-center">
-                <ProviderIcon provider="azure_devops" />
-              </span>
-              Import from Azure DevOps
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={async () => {
-                const result = await window.kanban.board.openImportFile()
-                if (result) {
-                  setOctobImportTickets(result.tickets)
-                  setOctobImportDependencies(result.dependencies ?? [])
-                  setShowOctobImport(true)
-                }
-              }}
-            >
-              <FileJson className="h-4 w-4 mr-2" />
-              Import from Octob JSON
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onClick={async () => {
-                if (!project) return
-                const result = await window.kanban.board.export(project.id, project.name)
-                if (result.success) {
-                  toast.success(`Exported ${result.ticketCount} tickets`)
-                }
-              }}
-            >
-              <Upload className="h-4 w-4 mr-2" />
-              Export Board
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      )}
-
-      {/* Ticket creation modal — kanban mode */}
-      {(isBoardViewActive || isStickyBoardActive) && project && (
-        <>
-          <TicketCreateModal
-            open={isTicketCreateOpen}
-            onOpenChange={setIsTicketCreateOpen}
-            projectId={project.id}
-            connectionId={isConnectionMode ? selectedConnectionId ?? undefined : undefined}
-          />
-          <ImportTicketsModal
-            open={showImport}
-            onOpenChange={setShowImport}
-            projectId={project.id}
-            projectPath={project.path}
-            connectionId={isConnectionMode ? selectedConnectionId ?? undefined : undefined}
-          />
-          <JiraImportModal
-            open={showJiraImport}
-            onOpenChange={setShowJiraImport}
-            projectId={project.id}
-          />
-          <AzureDevOpsImportModal
-            open={showAzureDevOpsImport}
-            onOpenChange={setShowAzureDevOpsImport}
-            projectId={project.id}
-          />
-          <OctobImportModal
-            open={showOctobImport}
-            onOpenChange={(open) => {
-              setShowOctobImport(open)
-              if (!open) {
-                setOctobImportTickets([])
-                setOctobImportDependencies([])
-              }
-            }}
-            projectId={project.id}
-            tickets={octobImportTickets}
-            dependencies={octobImportDependencies}
-          />
-        </>
-      )}
     </div>
   )
 }

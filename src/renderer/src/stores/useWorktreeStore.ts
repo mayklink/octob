@@ -1,6 +1,5 @@
 import { create } from 'zustand'
 import { useProjectStore } from './useProjectStore'
-import { useKanbanStore } from './useKanbanStore'
 import { useScriptStore, killRunScript } from './useScriptStore'
 import { useSessionStore } from './useSessionStore'
 import { useWorktreeStatusStore } from './useWorktreeStatusStore'
@@ -230,12 +229,6 @@ function applyWorktreeSelectionEffects(
     clearConnectionSelection()
   }
 
-  if (options.closePinnedBoard) {
-    const kanbanState = useKanbanStore.getState()
-    if (kanbanState.isPinnedBoardActive) {
-      kanbanState.togglePinnedBoard()
-    }
-  }
 
   if (options.preserveProjectId) {
     useProjectStore.setState((state) =>
@@ -435,10 +428,7 @@ export const useWorktreeStore = create<WorktreeState>((set, get) => ({
     }))
 
     try {
-      // 1. Immediately detach tickets from this worktree before slow archive work starts.
-      await useKanbanStore.getState().detachWorktreeTickets(worktreeId)
-
-      // 2. Kill running script process (dev server, build, etc.)
+      // Kill running script process (dev server, build, etc.)
       const scriptState = useScriptStore.getState().scriptStates[worktreeId]
       if (scriptState?.runRunning) {
         try {

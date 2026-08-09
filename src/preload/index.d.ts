@@ -1,17 +1,3 @@
-import type {
-  PetManifest,
-  PetPosition,
-  PetSettings,
-  PetStatusPayload
-} from '../shared/types/pet'
-import type {
-  AutomaticPullRequestReviewEvent,
-  AutomaticPullRequestReviewSettings,
-  AutomaticPullRequestReviewSnapshot,
-  PullRequestInboxRequest,
-  PullRequestInboxResponse
-} from '../shared/types/pull-request-inbox'
-
 // Database types for renderer
 interface Connection {
   id: string
@@ -100,7 +86,6 @@ interface Session {
   created_at: string
   updated_at: string
   completed_at: string | null
-  pinned_to_board: boolean
 }
 
 interface Setting {
@@ -194,84 +179,6 @@ interface SessionSearchOptions {
   includeArchived?: boolean
 }
 
-type KanbanTicketColumn = 'todo' | 'in_progress' | 'review' | 'done'
-
-interface KanbanTicket {
-  id: string
-  project_id: string
-  title: string
-  description: string | null
-  attachments: unknown[]
-  column: KanbanTicketColumn
-  sort_order: number
-  current_session_id: string | null
-  worktree_id: string | null
-  mode: 'build' | 'plan' | null
-  plan_ready: boolean
-  created_at: string
-  updated_at: string
-  archived_at: string | null
-  github_pr_number: number | null
-  github_pr_url: string | null
-  mark: string | null
-}
-
-interface KanbanTicketCreate {
-  project_id: string
-  title: string
-  description?: string | null
-  attachments?: unknown[]
-  column?: KanbanTicketColumn
-  sort_order?: number
-  current_session_id?: string | null
-  worktree_id?: string | null
-  mode?: 'build' | 'plan' | null
-  plan_ready?: boolean
-  github_pr_number?: number | null
-  github_pr_url?: string | null
-}
-
-interface KanbanTicketUpdate {
-  title?: string
-  description?: string | null
-  attachments?: unknown[]
-  column?: KanbanTicketColumn
-  sort_order?: number
-  current_session_id?: string | null
-  worktree_id?: string | null
-  mode?: 'build' | 'plan' | null
-  plan_ready?: boolean
-  github_pr_number?: number | null
-  github_pr_url?: string | null
-  mark?: string | null
-}
-
-interface KanbanTicketBatchCreateItem {
-  draft_key: string
-  project_id: string
-  title: string
-  description?: string | null
-  attachments?: unknown[]
-  column?: KanbanTicketColumn
-  sort_order?: number
-  current_session_id?: string | null
-  worktree_id?: string | null
-  mode?: 'build' | 'plan' | 'super-plan' | null
-  plan_ready?: boolean
-  external_provider?: string | null
-  external_id?: string | null
-  external_url?: string | null
-  github_pr_number?: number | null
-  github_pr_url?: string | null
-  mark?: string | null
-  depends_on?: string[]
-}
-
-interface KanbanTicketBatchCreateResult {
-  tickets: KanbanTicket[]
-  dependencies: Array<{ dependent_id: string; blocker_id: string; created_at: string }>
-}
-
 declare global {
   interface GhosttyTerminalConfig {
     fontFamily?: string
@@ -337,14 +244,6 @@ declare global {
 
 
   interface Window {
-    automaticPRReview: {
-      getSnapshot: () => Promise<AutomaticPullRequestReviewSnapshot>
-      updateSettings: (
-        settings: AutomaticPullRequestReviewSettings
-      ) => Promise<AutomaticPullRequestReviewSettings>
-      pollNow: () => Promise<AutomaticPullRequestReviewSnapshot>
-      onEvent: (callback: (event: AutomaticPullRequestReviewEvent) => void) => () => void
-    }
     db: {
       setting: {
         get: (key: string) => Promise<string | null>
@@ -445,7 +344,6 @@ declare global {
           name?: string | null
           opencode_session_id?: string | null
           agent_sdk?: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity' | 'terminal'
-          session_type?: 'default' | 'board-assistant'
           model_provider_id?: string | null
           model_id?: string | null
           model_variant?: string | null
@@ -475,9 +373,6 @@ declare global {
         updateDraft: (sessionId: string, draft: string | null) => Promise<void>
         getByConnection: (connectionId: string) => Promise<Session[]>
         getActiveByConnection: (connectionId: string) => Promise<Session[]>
-        setPinnedToBoard: (sessionId: string, pinned: boolean) => Promise<Session | null>
-        getPinnedSessions: (worktreeId: string) => Promise<Session[]>
-        getActiveBoardAssistant: (projectId: string) => Promise<Session | null>
       }
       sessionMessage: {
         list: (sessionId: string) => Promise<SessionMessage[]>
@@ -701,25 +596,6 @@ declare global {
       getPlatform: () => Promise<string>
       setKeepAwake: (active: boolean) => Promise<void>
       setSessionQueuedState: (sessionId: string, hasQueued: boolean) => Promise<void>
-    }
-    petOps: {
-      show: () => Promise<void>
-      hide: () => Promise<void>
-      publishStatus: (payload: PetStatusPayload) => void
-      setIgnoreMouse: (ignore: boolean) => void
-      move: (position: PetPosition) => void
-      focusMain: (payload: { worktreeId: string | null }) => Promise<void>
-      getConfig: () => Promise<{
-        settings: PetSettings
-        position: PetPosition
-        manifest: PetManifest
-      }>
-      getCurrentStatus: () => Promise<PetStatusPayload>
-      updateSettings: (partial: Partial<PetSettings>) => void
-      markHatched: () => void
-      onStatus: (callback: (payload: PetStatusPayload) => void) => () => void
-      onSettingsUpdated: (callback: (settings: PetSettings) => void) => () => void
-      onJumpToWorktree: (callback: (payload: { worktreeId: string }) => void) => () => void
     }
     loggingOps: {
       createResponseLog: (sessionId: string) => Promise<string>
@@ -1122,9 +998,6 @@ declare global {
       ghosttyShutdown: () => Promise<void>
     }
     gitOps: {
-      listPullRequestInbox: (
-        request: PullRequestInboxRequest
-      ) => Promise<PullRequestInboxResponse>
       // Get file statuses for a worktree
       getFileStatuses: (worktreePath: string) => Promise<{
         success: boolean
@@ -1599,133 +1472,6 @@ declare global {
     }
     codexDebugLoggerOps: {
       configure: (enabled: boolean, resetPerSession: boolean) => Promise<void>
-    }
-    kanban: {
-      ticket: {
-        create: (data: KanbanTicketCreate) => Promise<KanbanTicket>
-        createBatch: (data: { drafts: KanbanTicketBatchCreateItem[] }) => Promise<KanbanTicketBatchCreateResult>
-        get: (id: string) => Promise<KanbanTicket | null>
-        getByProject: (projectId: string) => Promise<KanbanTicket[]>
-        update: (id: string, data: KanbanTicketUpdate) => Promise<KanbanTicket | null>
-        delete: (id: string) => Promise<boolean>
-        archive: (id: string) => Promise<KanbanTicket | null>
-        archiveAllDone: (projectId: string) => Promise<number>
-        unarchive: (id: string) => Promise<KanbanTicket | null>
-        move: (
-          id: string,
-          column: KanbanTicketColumn,
-          sortOrder: number
-        ) => Promise<KanbanTicket | null>
-        reorder: (id: string, sortOrder: number) => Promise<void>
-        getBySession: (sessionId: string) => Promise<KanbanTicket[]>
-        addTokens: (id: string, tokens: number) => Promise<KanbanTicket | null>
-        syncPR: (worktreeId: string, prNumber: number, prUrl: string) => Promise<void>
-        clearPR: (worktreeId: string) => Promise<void>
-        attachPR: (ticketId: string, projectId: string, prNumber: number, prUrl: string) => Promise<void>
-        detachPR: (ticketId: string, projectId: string) => Promise<void>
-        detachWorktree: (worktreeId: string) => Promise<number>
-      }
-      simpleMode: {
-        toggle: (projectId: string, enabled: boolean) => Promise<void>
-      }
-      dependency: {
-        add: (dependentId: string, blockerId: string) => Promise<{ success: boolean; error?: string }>
-        remove: (dependentId: string, blockerId: string) => Promise<boolean>
-        getBlockers: (ticketId: string) => Promise<KanbanTicket[]>
-        getDependents: (ticketId: string) => Promise<KanbanTicket[]>
-        getForProject: (projectId: string) => Promise<Array<{ dependent_id: string; blocker_id: string; created_at: string }>>
-        removeAll: (ticketId: string) => Promise<number>
-      }
-      board: {
-        export: (projectId: string, projectName: string) => Promise<{ success: boolean; ticketCount: number; path?: string }>
-        openImportFile: () => Promise<{
-          tickets: Array<{
-            id: string
-            title: string
-            description?: string | null
-            attachments?: unknown[]
-            column?: string
-          }>
-          dependencies?: Array<{
-            dependentId: string
-            blockerId: string
-          }>
-          projectName?: string
-        } | null>
-        importTickets: (
-          projectId: string,
-          tickets: Array<{
-            id: string
-            title: string
-            description?: string | null
-            attachments?: unknown[]
-            column?: string
-          }>,
-          dependencies?: Array<{
-            dependentId: string
-            blockerId: string
-          }>
-        ) => Promise<{ created: number; updated: number; dependencyCount: number; ignoredDependencyCount: number }>
-      }
-    }
-    ticketImport: {
-      listProviders: () => Promise<Array<{ id: string; name: string; icon: string }>>
-      getSettingsSchema: (
-        providerId: string
-      ) => Promise<Array<{ key: string; label: string; type: string; required: boolean; placeholder?: string }>>
-      authenticate: (
-        providerId: string,
-        settings: Record<string, string>
-      ) => Promise<{ success: boolean; error: string | null }>
-      detectRepo: (
-        providerId: string,
-        projectPath: string
-      ) => Promise<{ repo: string | null }>
-      listIssues: (
-        providerId: string,
-        repo: string,
-        options: { page: number; perPage: number; state: 'open' | 'closed' | 'all'; search?: string; nextPageToken?: string },
-        settings: Record<string, string>
-      ) => Promise<{
-        issues: Array<{
-          externalId: string
-          title: string
-          body: string | null
-          state: 'open' | 'closed' | 'in_progress'
-          url: string
-          createdAt: string
-          updatedAt: string
-        }>
-        hasNextPage: boolean
-        totalCount: number
-        nextPageToken?: string
-      }>
-      importIssues: (
-        providerId: string,
-        projectId: string,
-        repo: string,
-        issues: Array<{ externalId: string; title: string; body: string | null; state: string; url: string }>
-      ) => Promise<{ imported: string[]; skipped: string[] }>
-      getAvailableStatuses: (
-        providerId: string,
-        repo: string,
-        externalId: string,
-        settings: Record<string, string>
-      ) => Promise<Array<{ id: string; label: string }>>
-      updateRemoteStatus: (
-        providerId: string,
-        repo: string,
-        externalId: string,
-        statusId: string,
-        settings: Record<string, string>
-      ) => Promise<{ success: boolean; error?: string }>
-      azureDevOpsListProjects: (settings: Record<string, string>) => Promise<string[]>
-      azureDevOpsListStates: (settings: Record<string, string>) => Promise<string[]>
-      azureDevOpsListWorkItemTypes: (settings: Record<string, string>) => Promise<string[]>
-      azureDevOpsSearchUsers: (
-        settings: Record<string, string>,
-        query: string
-      ) => Promise<Array<{ displayName: string; uniqueName: string }>>
     }
     bash: {
       run: (sessionId: string, command: string, cwd: string) => Promise<{ success: boolean; runId?: string; error?: string }>

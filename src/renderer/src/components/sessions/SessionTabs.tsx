@@ -443,12 +443,13 @@ function DiffTabItem({
   )
 }
 
-// Sticky connection session tab — simplified, non-closable, non-draggable
+// Sticky connection session tab — simplified and non-draggable
 interface ConnectionSessionTabProps {
   sessionId: string
   name: string
   isActive: boolean
   onClick: () => void
+  onClose: (event: React.MouseEvent) => void
   connectionColor: string | null
   connectionName: string
 }
@@ -458,6 +459,7 @@ const ConnectionSessionTab = memo(function ConnectionSessionTab({
   name,
   isActive,
   onClick,
+  onClose,
   connectionColor,
   connectionName
 }: ConnectionSessionTabProps): React.JSX.Element {
@@ -510,6 +512,19 @@ const ConnectionSessionTab = memo(function ConnectionSessionTab({
       )}
 
       <span className="truncate flex-1">{name || 'Untitled'}</span>
+      <button
+        type="button"
+        onClick={onClose}
+        className={cn(
+          'p-0.5 rounded hover:bg-accent/60 transition-opacity',
+          isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+        )}
+        title="Close tab"
+        aria-label={`Close ${name || 'Untitled'}`}
+        data-testid={`close-tab-${sessionId}`}
+      >
+        <X className="h-3 w-3" />
+      </button>
     </div>
   )
 })
@@ -730,6 +745,10 @@ export function SessionTabs(): React.JSX.Element | null {
               name={session.name || `Session ${index + 1}`}
               isActive={!hasOverlay && activeSessionId === session.id}
               onClick={() => activateSession(session.id)}
+              onClose={(event) => {
+                event.stopPropagation()
+                void closeSession(session.id)
+              }}
               connectionColor={connection.color}
               connectionName={connection.custom_name || connection.name}
             />

@@ -223,6 +223,9 @@ function applyWorktreeSelectionEffects(
 ): void {
   if (nextWorktreeId !== previousWorktreeId) {
     useFileViewerStore.getState().closeAllFiles()
+    // Keep the visible session scoped to the selected worktree. This only changes
+    // UI focus; sessions from the previous worktree keep running in the background.
+    useSessionStore.getState().setActiveWorktree(nextWorktreeId)
   }
 
   if (options.clearConnectionSelection) {

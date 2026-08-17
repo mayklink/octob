@@ -1,6 +1,6 @@
 {
   "name": "octob",
-  "version": "1.0.167",
+  "version": "1.0.168",
   "description": "Native macOS app for managing git worktrees and AI-powered coding sessions",
   "main": "./out/main/index.js",
   "private": true,

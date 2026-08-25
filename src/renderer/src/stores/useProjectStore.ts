@@ -436,13 +436,17 @@ export const useProjectStore = create<ProjectState>()(
     {
       name: 'octob-projects',
       storage: createJSONStorage(() => localStorage),
-      // Only persist expandedProjectIds
+      // Keep the currently selected project as well as the expansion state. The
+      // worktree store uses this to restore the last workspace after relaunch.
       partialize: (state) => ({
-        expandedProjectIds: Array.from(state.expandedProjectIds)
+        expandedProjectIds: Array.from(state.expandedProjectIds),
+        selectedProjectId: state.selectedProjectId
       }),
       // Merge persisted state, converting array back to Set
       merge: (persistedState, currentState) => ({
         ...currentState,
+        selectedProjectId:
+          (persistedState as { selectedProjectId?: string | null })?.selectedProjectId ?? null,
         expandedProjectIds: new Set(
           (persistedState as { expandedProjectIds?: string[] })?.expandedProjectIds ?? []
         )

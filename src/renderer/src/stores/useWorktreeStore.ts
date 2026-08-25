@@ -165,6 +165,26 @@ function loadPersistedOrder(): Map<string, string[]> {
   return new Map()
 }
 
+function loadPersistedSelectedWorktreeId(): string | null {
+  try {
+    return localStorage.getItem('octob-selected-worktree')
+  } catch {
+    return null
+  }
+}
+
+function persistSelectedWorktreeId(worktreeId: string | null): void {
+  try {
+    if (worktreeId) {
+      localStorage.setItem('octob-selected-worktree', worktreeId)
+    } else {
+      localStorage.removeItem('octob-selected-worktree')
+    }
+  } catch {
+    // Ignore storage failures; selecting a workspace must still work in memory.
+  }
+}
+
 function getOrderedProjectWorktrees(
   worktreesByProject: Map<string, Worktree[]>,
   worktreeOrderByProject: Map<string, string[]>,
@@ -243,6 +263,22 @@ function applyWorktreeSelectionEffects(
 
   if (!nextWorktreeId) return
 
+  // Sessions are persisted in SQLite, while the renderer's session maps are
+  // intentionally memory-only. Rehydrate the selected worktree every time it
+  // becomes active so its tabs and last active session survive an app restart
+  // (including a machine shutdown).
+  const selectedWorktree = Array.from(
+    useWorktreeStore.getState().worktreesByProject.values()
+  )
+    .flat()
+    .find((worktree) => worktree.id === nextWorktreeId)
+
+  if (selectedWorktree) {
+    void useSessionStore
+      .getState()
+      .loadSessions(selectedWorktree.id, selectedWorktree.project_id)
+  }
+
   void useWorktreeStore.getState().touchWorktree(nextWorktreeId)
 
   if (options.refreshLanguage) {
@@ -264,7 +300,7 @@ export const useWorktreeStore = create<WorktreeState>((set, get) => ({
   worktreeOrderByProject: loadPersistedOrder(),
   isLoading: false,
   error: null,
-  selectedWorktreeId: null,
+  selectedWorktreeId: loadPersistedSelectedWorktreeId(),
   creatingForProjectId: null,
   archivingWorktreeIds: new Set(),
 
@@ -637,6 +673,7 @@ export const useWorktreeStore = create<WorktreeState>((set, get) => ({
   selectWorktree: (id: string | null, options?: WorktreeSelectionOptions) => {
     const previousWorktreeId = get().selectedWorktreeId
     set({ selectedWorktreeId: id })
+    persistSelectedWorktreeId(id)
     applyWorktreeSelectionEffects(previousWorktreeId, id, {
       clearConnectionSelection: Boolean(id),
       closePinnedBoard: Boolean(id) && !options?.preservePinnedBoard,

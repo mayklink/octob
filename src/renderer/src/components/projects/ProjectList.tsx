@@ -30,8 +30,12 @@ export function ProjectList({
   filterQuery,
   activeLanguages = []
 }: ProjectListProps): React.JSX.Element {
-  const { projects, isLoading, error, loadProjects, reorderProjects } = useProjectStore()
+  const { projects, isLoading, error, loadProjects, reorderProjects, selectedProjectId } = useProjectStore()
   const worktreesByProject = useWorktreeStore((s) => s.worktreesByProject)
+  const selectedWorktreeId = useWorktreeStore((s) => s.selectedWorktreeId)
+  const loadWorktrees = useWorktreeStore((s) => s.loadWorktrees)
+  const selectWorktree = useWorktreeStore((s) => s.selectWorktree)
+  const selectProject = useProjectStore((s) => s.selectProject)
   const { setHints, clearHints, setFilterActive } = useHintStore()
   const vimMode = useVimModeStore((s) => s.mode)
   const vimModeEnabled = useSettingsStore((s) => s.vimModeEnabled)
@@ -94,6 +98,36 @@ export function ProjectList({
     loadProjects()
     loadSpaces()
   }, [loadProjects, loadSpaces])
+
+  // Restore the last selected workspace only after the project list is known.
+  // This validates stale local state (for example, after a project was removed)
+  // and triggers the session-store hydration for the selected workspace.
+  useEffect(() => {
+    if (projects.length === 0 || !selectedProjectId) return
+
+    if (!projects.some((project) => project.id === selectedProjectId)) {
+      selectProject(null)
+      selectWorktree(null)
+      return
+    }
+
+    if (!selectedWorktreeId) return
+
+    void (async () => {
+      await loadWorktrees(selectedProjectId)
+      const selectedWorktree = useWorktreeStore
+        .getState()
+        .getWorktreesForProject(selectedProjectId)
+        .find((worktree) => worktree.id === selectedWorktreeId)
+
+      if (selectedWorktree) {
+        selectWorktree(selectedWorktree.id)
+      } else {
+        // The worktree may have been archived outside Octob since the last run.
+        selectWorktree(null)
+      }
+    })()
+  }, [projects, selectedProjectId, selectedWorktreeId, loadWorktrees, selectWorktree, selectProject])
 
   // Space filtering: restrict to projects in the active space
   const activeSpaceId = useSpaceStore((s) => s.activeSpaceId)

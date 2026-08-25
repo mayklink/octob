@@ -114,7 +114,7 @@ export function ProjectItem({
     refreshLanguage
   } = useProjectStore()
 
-  const { createWorktree, creatingForProjectId, syncWorktrees } = useWorktreeStore()
+  const { createWorktree, creatingForProjectId, syncWorktrees, selectWorktree } = useWorktreeStore()
 
   const spaces = useSpaceStore((s) => s.spaces)
   const projectSpaceMap = useSpaceStore((s) => s.projectSpaceMap)
@@ -159,6 +159,10 @@ export function ProjectItem({
   }, [isEditing])
 
   const handleClick = (): void => {
+    // A different project row is not a workspace selection. Clear the previous
+    // workspace first so its sessions and file tabs cannot appear under it.
+    // Keep the workspace when merely expanding/collapsing the same project.
+    if (!isSelected) selectWorktree(null)
     selectProject(project.id)
     toggleProjectExpanded(project.id)
   }

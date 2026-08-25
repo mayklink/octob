@@ -5,9 +5,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { AppI18nProvider } from '@/i18n/I18nProvider'
 import { initPlatform } from '@/lib/platform'
 import { useTipStore } from '@/stores/useTipStore'
-import { useConnectionStore } from '@/stores/useConnectionStore'
 import { useSessionStore } from '@/stores/useSessionStore'
-import { useLayoutStore } from '@/stores/useLayoutStore'
 import { toast } from '@/lib/toast'
 
 function App(): React.JSX.Element {
@@ -23,27 +21,16 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     const openAssistant = async (): Promise<void> => {
-      const result = await window.assistantOps.ensureGlobalConnection()
-      if (!result.success || !result.connection) {
-        toast.error(result.error || 'Unable to open Octob Assistant')
+      const sessions = useSessionStore.getState()
+      if (sessions.activeSessionId) return
+      const worktreeId = sessions.activeWorktreeId
+      if (!worktreeId) {
+        toast.error('Selecione um projeto ou worktree para abrir uma sessão.')
         return
       }
-
-      const connectionStore = useConnectionStore.getState()
-      await connectionStore.loadConnections()
-      connectionStore.selectConnection(result.connection.id)
-      useLayoutStore.getState().setWorkspaceView('connection')
-      useLayoutStore.getState().setWorkspaceContentView('session')
-      useLayoutStore.getState().setWorkspaceMode('chat')
-
-      const sessions = useSessionStore.getState()
-      await sessions.loadConnectionSessions(result.connection.id)
-      const existing = useSessionStore.getState().getSessionsForConnection(result.connection.id)[0]
-      if (existing) {
-        useSessionStore.getState().setActiveConnectionSession(existing.id)
-      } else {
-        await useSessionStore.getState().createConnectionSession(result.connection.id)
-      }
+      const worktree = await window.db.worktree.get(worktreeId)
+      if (!worktree) return
+      await sessions.createSession(worktree.id, worktree.project_id)
     }
 
     return window.assistantOps.onOpen(() => void openAssistant())

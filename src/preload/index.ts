@@ -1985,7 +1985,6 @@ const updates = {
 }
 
 const assistantOps = {
-  ensureGlobalConnection: () => ipcRenderer.invoke('assistant:ensure-global-connection'),
   show: () => ipcRenderer.invoke('assistant:show'),
   hide: () => ipcRenderer.invoke('assistant:hide'),
   onOpen: (callback: () => void): (() => void) => {

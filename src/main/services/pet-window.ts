@@ -1,4 +1,4 @@
-import { app, BrowserWindow, screen } from 'electron'
+import { app, BrowserWindow, nativeImage, screen } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
@@ -58,7 +58,10 @@ export function createPetWindow(): BrowserWindow | null {
     focusMainWindowFromPet()
   })
 
-  const markup = `<!doctype html><html><body style="margin:0;background:transparent;overflow:hidden"><a href="octob://assistant/open" title="Open Octob Assistant" style="display:grid;place-items:center;width:88px;height:88px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#6ee7ff,#2563eb 58%,#172554);color:white;font:700 28px system-ui;text-decoration:none;box-shadow:0 8px 25px #0008;border:2px solid #93c5fd">O</a></body></html>`
+  const iconPath = join(app.getAppPath(), 'resources', 'icon.png')
+  const icon = nativeImage.createFromPath(iconPath)
+  const iconDataUrl = icon.isEmpty() ? '' : icon.toDataURL()
+  const markup = `<!doctype html><html><body style="margin:0;background:transparent;overflow:hidden"><a href="octob://assistant/open" title="Abrir sessão do Octob" style="display:grid;place-items:center;width:88px;height:88px;border-radius:50%;background:transparent;text-decoration:none"><img src="${iconDataUrl}" style="width:88px;height:88px;object-fit:contain;filter:drop-shadow(0 8px 12px #0006)"></a></body></html>`
   void assistantWindow.loadURL(`data:text/html,${encodeURIComponent(markup)}`)
   return assistantWindow
 }

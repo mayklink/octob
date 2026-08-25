@@ -27,7 +27,8 @@ import {
   MessageSquare,
   Code2,
   GitBranch,
-  MoreHorizontal
+  MoreHorizontal,
+  Bot
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -369,6 +370,11 @@ export function Header(): React.JSX.Element {
     !!conflictFixFlow &&
     conflictFixFlow.worktreePath === selectedWorktree.path
 
+  const handleAssistant = useCallback(() => {
+    if (!selectedWorktreeId || !selectedProjectId) return
+    void createSession(selectedWorktreeId, selectedProjectId)
+  }, [createSession, selectedProjectId, selectedWorktreeId])
+
   const showFixConflictsButton = hasConflicts || isFixConflictsLoading
 
   const activeWorkspaceMode = workspaceMode
@@ -690,6 +696,22 @@ export function Header(): React.JSX.Element {
         className="flex items-center gap-2"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={handleAssistant}
+              disabled={!selectedWorktreeId || !selectedProjectId}
+              aria-label="Abrir assistente"
+              data-testid="assistant-launcher"
+            >
+              <Bot className="h-4 w-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Abrir assistente</TooltipContent>
+        </Tooltip>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button

@@ -28,8 +28,7 @@ import {
   registerConnectionHandlers,
   registerUsageHandlers,
   registerAccountHandlers,
-  registerAttachmentHandlers,
-  registerPetHandlers
+  registerAttachmentHandlers
 } from './ipc'
 import { buildMenu, updateMenuState, shutdownMenu } from './menu'
 import type { MenuState } from './menu'
@@ -74,7 +73,6 @@ import { APP_SETTINGS_DB_KEY } from '../shared/types/settings'
 import { openCodeService } from './services/opencode-service'
 import { setKeepAwake, cleanupPowerSaveBlocker } from './services/power-save-blocker'
 import { registerUpdateService } from './services/update-service'
-import { configurePetWindow, createPetWindow, destroyPetWindow } from './services/pet-window'
 
 const log = createLogger({ component: 'Main' })
 let activeCodexImplementer: CodexImplementer | null = null
@@ -554,8 +552,6 @@ app.whenReady().then(async () => {
   registerConnectionHandlers()
   registerUsageHandlers()
   registerAccountHandlers()
-  configurePetWindow({ getMainWindow: () => mainWindow })
-  registerPetHandlers()
 
   // Telemetry IPC
   ipcMain.handle(
@@ -599,7 +595,6 @@ app.whenReady().then(async () => {
 
   log.info('Creating main window')
   createWindow()
-  createPetWindow()
   log.info('Main window created, waiting for renderer to load')
 
   // Register OpenCode handlers after window is created
@@ -795,7 +790,6 @@ app.on('window-all-closed', () => {
 app.on('will-quit', async () => {
   // Prevent further menu mutations — must be first to avoid native WeakPtr errors
   shutdownMenu()
-  destroyPetWindow()
   // Cleanup performance diagnostics
   perfDiagnostics.cleanup()
   // Cleanup terminal PTYs

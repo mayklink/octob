@@ -244,6 +244,16 @@ declare global {
 
 
   interface Window {
+    assistantOps: {
+      ensureGlobalConnection: () => Promise<{
+        success: boolean
+        connection?: ConnectionWithMembers
+        error?: string
+      }>
+      show: () => Promise<void>
+      hide: () => Promise<void>
+      onOpen: (callback: () => void) => () => void
+    }
     db: {
       setting: {
         get: (key: string) => Promise<string | null>

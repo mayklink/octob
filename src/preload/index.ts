@@ -1984,6 +1984,17 @@ const updates = {
   }
 }
 
+const assistantOps = {
+  ensureGlobalConnection: () => ipcRenderer.invoke('assistant:ensure-global-connection'),
+  show: () => ipcRenderer.invoke('assistant:show'),
+  hide: () => ipcRenderer.invoke('assistant:hide'),
+  onOpen: (callback: () => void): (() => void) => {
+    const handler = (): void => callback()
+    ipcRenderer.on('assistant:open', handler)
+    return () => ipcRenderer.removeListener('assistant:open', handler)
+  }
+}
+
 // Use `contextBridge` APIs to expose Electron APIs to
 // renderer only if context isolation is enabled, otherwise
 // just add to the DOM global.
@@ -2010,6 +2021,7 @@ if (process.contextIsolated) {
     contextBridge.exposeInMainWorld('codexDebugLoggerOps', codexDebugLoggerOps)
     contextBridge.exposeInMainWorld('bash', bash)
     contextBridge.exposeInMainWorld('updates', updates)
+    contextBridge.exposeInMainWorld('assistantOps', assistantOps)
   } catch (error) {
     console.error(error)
   }
@@ -2056,4 +2068,6 @@ if (process.contextIsolated) {
   window.bash = bash
   // @ts-expect-error (define in dts)
   window.updates = updates
+  // @ts-expect-error (define in dts)
+  window.assistantOps = assistantOps
 }

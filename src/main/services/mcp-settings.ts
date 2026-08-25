@@ -4,6 +4,7 @@ import type { JsonValue } from '@shared/codex-schemas/serde_json/JsonValue'
 import { APP_SETTINGS_DB_KEY } from '@shared/types/settings'
 import type { McpKeyValue, McpServerConfig, McpTransport } from '@shared/types/mcp'
 import type { DatabaseService } from '../db/database'
+import { isGlobalAssistantConnection } from './global-assistant'
 
 function normalizeKeyValues(value: unknown): McpKeyValue[] {
   if (!Array.isArray(value)) return []
@@ -53,6 +54,9 @@ function getSelectedMcpServers(
   const enabledServers = normalizeMcpServers(parsed.mcpServers).filter((server) => server.enabled)
   if (!contextPath) return enabledServers
 
+  const connection = dbService.getConnectionByPath(contextPath)
+  if (connection && isGlobalAssistantConnection(dbService, connection.id)) return enabledServers
+
   const projectIds = new Set<string>()
   const worktree = dbService.getWorktreeByPath(contextPath)
   if (worktree) projectIds.add(worktree.project_id)
@@ -60,7 +64,6 @@ function getSelectedMcpServers(
   const project = dbService.getProjectByPath(contextPath)
   if (project) projectIds.add(project.id)
 
-  const connection = dbService.getConnectionByPath(contextPath)
   for (const member of connection?.members ?? []) projectIds.add(member.project_id)
 
   if (projectIds.size === 0) return enabledServers

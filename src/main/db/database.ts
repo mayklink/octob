@@ -537,6 +537,17 @@ export class DatabaseService {
     return rows.map((row) => this.mapWorktreeRow(row))
   }
 
+  /** All active worktrees, used by the assistant's global connection. */
+  getAllActiveWorktrees(): Worktree[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        "SELECT * FROM worktrees WHERE status = 'active' ORDER BY project_id ASC, is_default ASC, last_accessed_at DESC"
+      )
+      .all() as Record<string, unknown>[]
+    return rows.map((row) => this.mapWorktreeRow(row))
+  }
+
   getRecentlyActiveWorktrees(cutoffMs: number): Worktree[] {
     const db = this.getDb()
     const rows = db

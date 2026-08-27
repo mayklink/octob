@@ -38,6 +38,8 @@ mac:
         - arm64
         - x64
   notarize: true
+  extendInfo:
+    NSMicrophoneUsageDescription: "O Octob usa o microfone somente quando você inicia uma transcrição de voz."
 
 dmg:
   sign: false

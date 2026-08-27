@@ -28,7 +28,8 @@ import {
   registerConnectionHandlers,
   registerUsageHandlers,
   registerAccountHandlers,
-  registerAttachmentHandlers
+  registerAttachmentHandlers,
+  registerVoiceTranscriptionHandlers
 } from './ipc'
 import { buildMenu, updateMenuState, shutdownMenu } from './menu'
 import type { MenuState } from './menu'
@@ -549,6 +550,7 @@ app.whenReady().then(async () => {
   registerSettingsHandlers()
   registerFileHandlers()
   registerAttachmentHandlers()
+  registerVoiceTranscriptionHandlers()
   registerConnectionHandlers()
   registerUsageHandlers()
   registerAccountHandlers()

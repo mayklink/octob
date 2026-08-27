@@ -10,7 +10,8 @@ import {
   X,
   Github,
   Minimize2,
-  Terminal
+  Terminal,
+  Mic
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -245,6 +246,19 @@ function derivePendingCodexPlan(
   }
 
   return null
+}
+
+function samplesToWav(input: number[], inputRate: number): ArrayBuffer {
+    const rate = 16_000
+    const length = Math.floor(input.length * rate / inputRate)
+    const wav = new ArrayBuffer(44 + length * 2)
+    const view = new DataView(wav)
+    const write = (offset: number, value: string) => { for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)) }
+    write(0, 'RIFF'); view.setUint32(4, 36 + length * 2, true); write(8, 'WAVE'); write(12, 'fmt ')
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, rate, true)
+    view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); write(36, 'data'); view.setUint32(40, length * 2, true)
+    for (let i = 0; i < length; i++) { const sample = Math.max(-1, Math.min(1, input[Math.floor(i * inputRate / rate)])); view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true) }
+    return wav
 }
 
 function hasSuspiciousCodexRoleGrouping(messages: OpenCodeMessage[]): boolean {
@@ -503,6 +517,8 @@ export function SessionView({ sessionId }: SessionViewProps): React.JSX.Element 
   const [planTemplateDialogOpen, setPlanTemplateDialogOpen] = useState(false)
   const [viewState, setViewState] = useState<SessionViewState>({ status: 'connecting' })
   const [isSending, setIsSending] = useState(false)
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false)
+  const [isTranscribingVoice, setIsTranscribingVoice] = useState(false)
   const [queuedMessages, setQueuedMessages] = useState<
     Array<{
       id: string
@@ -724,6 +740,9 @@ export function SessionView({ sessionId }: SessionViewProps): React.JSX.Element 
   // Refs
   const virtualizedListRef = useRef<VirtualizedMessageListHandle>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const voiceLiveRef = useRef<{ stop: () => void } | null>(null)
+  const voiceQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const voiceTypewriterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const prevFileIndexWorktreeRef = useRef<string | null>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null)
@@ -5106,6 +5125,64 @@ export function SessionView({ sessionId }: SessionViewProps): React.JSX.Element 
     [sessionId, historyIndex, fileMentions]
   )
 
+  const handleVoiceTranscription = useCallback(async () => {
+    if (isRecordingVoice) return voiceLiveRef.current?.stop()
+    if (isTranscribingVoice || isOrphanedSession || activePermission) return
+    const status = await window.voiceTranscriptionOps.status()
+    if (!status.binaryAvailable) return toast.error('O mecanismo local de voz não está disponível nesta instalação')
+    if (!status.installed) {
+      if (!window.confirm(`Baixar o modelo de voz ${status.modelName} para este dispositivo?`)) return
+      setIsTranscribingVoice(true)
+      const download = await window.voiceTranscriptionOps.downloadModel()
+      setIsTranscribingVoice(false)
+      if (!download.success) return toast.error(download.error || 'Não foi possível baixar o modelo de voz')
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } })
+      const context = new AudioContext()
+      const source = context.createMediaStreamSource(stream)
+      const processor = context.createScriptProcessor(4096, 1, 1)
+      const silent = context.createGain(); silent.gain.value = 0
+      const samples: number[] = []; const chunkSize = Math.floor(context.sampleRate * 3)
+      const flush = (force = false) => {
+        if (samples.length < chunkSize && !force) return
+        const chunk = samples.splice(0, force ? samples.length : chunkSize)
+        if (!chunk.length) return
+        setIsTranscribingVoice(true)
+        voiceQueueRef.current = voiceQueueRef.current.then(async () => {
+          const result = await window.voiceTranscriptionOps.transcribe(samplesToWav(chunk, context.sampleRate))
+          if (!result.success) {
+            // Silence and background noise are expected between spoken phrases.
+            if (/no speech was recognized/i.test(result.error)) return
+            throw new Error(result.error)
+          }
+          await new Promise<void>((resolveTyping) => {
+            const prefix = inputValueRef.current.trimEnd()
+            const text = `${prefix ? ' ' : ''}${result.text}`
+            let index = 0
+            const typeNext = () => {
+              const value = `${prefix}${text.slice(0, index += 1)}`
+              handleInputChange(value, value.length)
+              textareaRef.current?.focus()
+              if (index < text.length) voiceTypewriterTimerRef.current = setTimeout(typeNext, 36)
+              else resolveTyping()
+            }
+            typeNext()
+          })
+        }).catch((error) => toast.error(error instanceof Error ? error.message : 'Falha ao transcrever')).finally(() => setIsTranscribingVoice(false))
+      }
+      processor.onaudioprocess = (event) => { samples.push(...event.inputBuffer.getChannelData(0)); flush() }
+      source.connect(processor); processor.connect(silent); silent.connect(context.destination)
+      voiceLiveRef.current = { stop: () => { processor.disconnect(); source.disconnect(); silent.disconnect(); stream.getTracks().forEach((track) => track.stop()); flush(true); void context.close(); voiceLiveRef.current = null; setIsRecordingVoice(false) } }
+      setIsRecordingVoice(true)
+    } catch (error) { toast.error(error instanceof Error ? error.message : 'Não foi possível acessar o microfone') }
+  }, [activePermission, handleInputChange, isOrphanedSession, isRecordingVoice, isTranscribingVoice])
+
+  useEffect(() => () => {
+    voiceLiveRef.current?.stop()
+    if (voiceTypewriterTimerRef.current) clearTimeout(voiceTypewriterTimerRef.current)
+  }, [])
+
   const handleCommandSelect = useCallback((cmd: { name: string; template: string }) => {
     setInputValue(`/${cmd.name} `)
     setShowSlashCommands(false)
@@ -5786,6 +5863,9 @@ export function SessionView({ sessionId }: SessionViewProps): React.JSX.Element 
                   onAttach={handleAttach}
                   disabled={isOrphanedSession}
                 />
+                <Button onClick={() => void handleVoiceTranscription()} disabled={!!activePermission || isOrphanedSession || (!isRecordingVoice && isTranscribingVoice)} size="sm" variant={isRecordingVoice ? 'destructive' : 'ghost'} className="h-7 w-7 p-0" aria-label={isRecordingVoice ? 'Parar ditado' : 'Iniciar ditado por voz'} title={isRecordingVoice ? 'Parar ditado' : 'Iniciar ditado por voz'} data-testid="voice-transcription-button">
+                  {isRecordingVoice ? <Mic className="h-3.5 w-3.5 animate-pulse" /> : isTranscribingVoice ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mic className="h-3.5 w-3.5" />}
+                </Button>
                 <PromptTemplateMenu
                   onSelect={handlePromptTemplateSelect}
                   disabled={isOrphanedSession}

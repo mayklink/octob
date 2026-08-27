@@ -875,6 +875,14 @@ declare global {
         filePath: string
       ) => Promise<{ success: boolean; error?: string }>
     }
+    voiceTranscriptionOps: {
+      status: () => Promise<{ installed: boolean; binaryAvailable: boolean; modelName: string }>
+      downloadModel: () => Promise<{ success: boolean; error?: string }>
+      transcribe: (audio: ArrayBuffer) => Promise<
+        | { success: true; text: string }
+        | { success: false; code: 'model-missing' | 'binary-missing' | 'failed'; error: string }
+      >
+    }
     settingsOps: {
       detectEditors: () => Promise<DetectedApp[]>
       detectTerminals: () => Promise<DetectedApp[]>

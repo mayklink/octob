@@ -49,6 +49,8 @@ jobs:
 
       - run: yarn build
 
+      - run: yarn prepare:whisper
+
       - name: Package (Windows)
         run: yarn electron-builder --win --publish never
         env:
@@ -92,6 +94,8 @@ jobs:
 
       - run: yarn build
 
+      - run: yarn prepare:whisper
+
       - name: Package (Linux)
         run: yarn electron-builder --linux --publish never
 
@@ -127,6 +131,8 @@ jobs:
       - run: yarn install:ci
 
       - run: yarn build
+
+      - run: yarn prepare:whisper
 
       - name: Package (macOS, unsigned, no notarize)
         run: yarn electron-builder --mac --publish never -c.mac.notarize=false

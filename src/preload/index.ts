@@ -1655,6 +1655,15 @@ const attachmentOps = {
     ipcRenderer.invoke('attachment:delete', filePath)
 }
 
+const voiceTranscriptionOps = {
+  status: (): Promise<{ installed: boolean; binaryAvailable: boolean; modelName: string }> => ipcRenderer.invoke('voice:status'),
+  downloadModel: (): Promise<{ success: boolean; error?: string }> => ipcRenderer.invoke('voice:downloadModel'),
+  transcribe: (audio: ArrayBuffer): Promise<
+    | { success: true; text: string }
+    | { success: false; code: 'model-missing' | 'binary-missing' | 'failed'; error: string }
+  > => ipcRenderer.invoke('voice:transcribe', Buffer.from(audio))
+}
+
 // Settings operations API
 export interface DetectedApp {
   id: string
@@ -2009,6 +2018,7 @@ if (process.contextIsolated) {
     contextBridge.exposeInMainWorld('settingsOps', settingsOps)
     contextBridge.exposeInMainWorld('fileOps', fileOps)
     contextBridge.exposeInMainWorld('attachmentOps', attachmentOps)
+    contextBridge.exposeInMainWorld('voiceTranscriptionOps', voiceTranscriptionOps)
     contextBridge.exposeInMainWorld('loggingOps', loggingOps)
     contextBridge.exposeInMainWorld('scriptOps', scriptOps)
     contextBridge.exposeInMainWorld('terminalOps', terminalOps)

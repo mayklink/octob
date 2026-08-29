@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowRight, Bell, Bot, CheckCircle2, FolderGit2, Loader2, MessageSquarePlus, MoreHorizontal, RefreshCw } from 'lucide-react'
+import { ArrowRight, Bell, Bot, CheckCircle2, CircleCheckBig, FileText, FolderGit2, GitPullRequest, Lightbulb, Loader2, MessageSquare, MessageSquarePlus, MoreHorizontal, Play, RefreshCw, Search, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -10,6 +10,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { SessionView } from '@/components/sessions'
+import { OctobMark } from '@/components/brand/OctoBMark'
 import { useGlobalAssistantStore } from '@/stores/useGlobalAssistantStore'
 import { useProjectStore } from '@/stores/useProjectStore'
 import { useSessionStore } from '@/stores/useSessionStore'
@@ -22,6 +23,63 @@ import type {
 } from '@shared/types/assistant'
 
 const GLOBAL_SCOPE_ID = '__octob_global_assistant__'
+
+const assistantActions = [
+  { label: 'Listar tarefas pendentes', prompt: 'Mostre as tarefas pendentes atribuídas a mim.', icon: CircleCheckBig },
+  { label: 'Investigar problema', prompt: 'Investigue os problemas abertos mais importantes dos meus projetos.', icon: Search },
+  { label: 'Criar plano', prompt: 'Crie um plano para melhorar a cobertura de testes do repositório.', icon: FileText },
+  { label: 'Revisar PR', prompt: 'Quais pull requests estão aguardando revisão?', icon: GitPullRequest }
+]
+
+const assistantExamples = [
+  'Quais PRs estão aguardando revisão?',
+  'Resuma os problemas abertos da API.',
+  'Crie um plano para melhorar a cobertura de testes do repositório.',
+  'Investigue falhas nos jobs do CI dos últimos 7 dias.',
+  'Mostre tarefas pendentes atribuídas a mim.'
+]
+
+function AssistantWelcome({ onSelect }: { onSelect: (prompt: string) => void }): React.JSX.Element {
+  return (
+    <div className="mx-auto flex h-full w-full max-w-4xl flex-col justify-center px-7 py-7">
+      <div className="text-center">
+        <div className="mb-2 flex items-center justify-center gap-3">
+          <Sparkles className="h-8 w-8 text-violet-400" />
+          <h1 className="text-3xl font-semibold tracking-tight text-foreground">Assistente do Octob</h1>
+        </div>
+        <p className="text-sm text-muted-foreground">Converse naturalmente e delegue trabalhos sem abrir um projeto primeiro.</p>
+      </div>
+
+      <div className="mt-7 grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+        {assistantActions.map(({ label, prompt, icon: Icon }) => (
+          <button key={label} type="button" onClick={() => onSelect(prompt)} className="group flex min-h-16 items-center gap-3 rounded-lg border border-border/45 bg-card/35 px-3.5 text-left transition-colors hover:border-border hover:bg-muted/45">
+            <Icon className="h-5 w-5 shrink-0 text-primary" />
+            <span className="text-sm font-medium leading-snug">{label}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-4 grid overflow-hidden rounded-xl border border-border/45 bg-card/20 md:grid-cols-[205px_1fr]">
+        <div className="relative hidden min-h-60 border-r border-border/40 md:flex md:items-center md:justify-center">
+          <div className="absolute h-28 w-28 rounded-full bg-violet-500/12 blur-3xl" />
+          <OctobMark className="relative h-36 w-36 opacity-90 drop-shadow-[0_10px_20px_rgba(76,29,149,0.16)]" />
+        </div>
+        <div className="px-7 py-5">
+          <h2 className="text-lg font-semibold">Como posso ajudar hoje?</h2>
+          <p className="mt-1 text-xs text-muted-foreground">Aqui estão alguns exemplos do que você pode pedir:</p>
+          <div className="mt-4 space-y-1">
+            {assistantExamples.map((example) => (
+              <button key={example} type="button" onClick={() => onSelect(example)} className="group flex w-full items-center gap-3 rounded-lg px-1 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground">
+                <ArrowRight className="h-3.5 w-3.5 shrink-0 text-primary/80 transition-transform group-hover:translate-x-0.5" />{example}
+              </button>
+            ))}
+          </div>
+          <div className="mt-4 flex items-center gap-2 border-t border-border/50 pt-4 text-xs text-muted-foreground"><Lightbulb className="h-4 w-4 text-primary" /><span><strong className="font-medium text-foreground">Dica:</strong> descreva o que você precisa e eu executo para você.</span></div>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function taskStatusLabel(status: string | undefined): string {
   if (status === 'planning') return 'Elaborando plano'
@@ -295,7 +353,7 @@ export function GlobalAssistantView(): React.JSX.Element {
 
       <div className="flex h-full min-h-0 flex-1 overflow-hidden bg-background">
       <main className="flex min-w-0 flex-1 flex-col border-r border-border/70">
-        <header className="shrink-0 border-b border-border/70 px-7 py-4">
+        <header className="shrink-0 border-b border-border/70 px-7 py-3">
           <div className="mx-auto flex w-full max-w-4xl items-center justify-between gap-4">
             <div className="flex min-w-0 items-center gap-3">
               <div className="rounded-xl bg-primary/10 p-2.5 text-primary">
@@ -308,9 +366,7 @@ export function GlobalAssistantView(): React.JSX.Element {
                     Global
                   </span>
                 </div>
-                <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                  Converse naturalmente e delegue trabalhos sem abrir um projeto primeiro.
-                </p>
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">Espaço global de trabalho</p>
               </div>
             </div>
             <Button
@@ -331,18 +387,20 @@ export function GlobalAssistantView(): React.JSX.Element {
           </div>
         </header>
 
-        <section className="min-h-0 flex-1 overflow-hidden bg-gradient-to-b from-background to-muted/[0.08]">
-          <div className="mx-auto flex h-full w-full max-w-4xl">
+        <section className="min-h-0 flex-1 overflow-hidden">
+          <div className="mx-auto flex h-full w-full max-w-5xl">
             <SessionView
               key={assistantSessionId}
               sessionId={assistantSessionId}
               workspacePathOverride={workspacePath}
+              layoutVariant="global-assistant"
+              emptyState={(selectPrompt) => <AssistantWelcome onSelect={selectPrompt} />}
             />
           </div>
         </section>
       </main>
 
-      <aside className="flex w-[360px] shrink-0 flex-col bg-card/25">
+      <aside className="flex w-[320px] shrink-0 flex-col bg-muted/[0.12]">
         <div className="flex h-[69px] shrink-0 items-center justify-between border-b border-border/70 px-5">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold">Trabalhos do assistente</h2>
@@ -355,12 +413,15 @@ export function GlobalAssistantView(): React.JSX.Element {
 
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
           {tasks.length === 0 ? (
-            <div className="flex min-h-40 flex-col items-center justify-center rounded-xl border border-dashed border-border/80 px-7 text-center">
-              <Bot className="mb-3 h-6 w-6 text-muted-foreground/60" />
+            <div className="flex min-h-40 flex-col items-center justify-center rounded-xl bg-muted/25 px-7 text-center">
+              <div className="mb-3 rounded-xl bg-background/60 p-3"><Bot className="h-6 w-6 text-muted-foreground/70" /></div>
               <p className="text-sm font-medium">Nenhum trabalho delegado</p>
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                 Quando o agente abrir uma worktree, o andamento aparecerá aqui.
               </p>
+              <Button variant="secondary" size="sm" className="mt-4 h-8 text-xs" onClick={() => void handleStartNewSession()}>
+                Novo trabalho
+              </Button>
             </div>
           ) : tasks.map((task) => {
             const status = sessionStatuses[task.sessionId]?.status
@@ -439,9 +500,22 @@ export function GlobalAssistantView(): React.JSX.Element {
         </div>
 
         <footer className="shrink-0 border-t border-border/70 p-4">
-          <div className="flex items-start gap-2 text-xs text-muted-foreground">
+          <div className="rounded-xl bg-muted/25 p-3.5">
+            <p className="mb-3 text-xs font-semibold text-foreground">Como funciona</p>
+            {[
+              { icon: MessageSquare, title: 'Você pede', description: 'Descreva a tarefa em linguagem natural.' },
+              { icon: Play, title: 'O agente executa', description: 'Ele cria a worktree, faz mudanças e valida.' },
+              { icon: CheckCircle2, title: 'Você revisa', description: 'Acompanhe o progresso e revise os resultados.' }
+            ].map(({ icon: Icon, title, description }) => (
+              <div key={title} className="mb-3 flex items-start gap-3 last:mb-0">
+                <div className="rounded-lg bg-background/60 p-2 text-primary"><Icon className="h-4 w-4" /></div>
+                <div><p className="text-xs font-medium text-foreground">{title}</p><p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">{description}</p></div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex items-start gap-2 text-[10px] text-muted-foreground">
             <Bell className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <p className="leading-relaxed">Você pode sair desta tela. Os trabalhos continuam em segundo plano.</p>
+            <p className="leading-relaxed">Os trabalhos continuam em segundo plano quando você sai desta tela.</p>
           </div>
         </footer>
       </aside>

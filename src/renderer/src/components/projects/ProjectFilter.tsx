@@ -241,8 +241,8 @@ export function ProjectFilter({ value, onChange }: ProjectFilterProps): React.JS
         onKeyDown={handleKeyDown}
         onFocus={handleFocus}
         onBlur={handleBlur}
-        placeholder="Filter projects..."
-        className="h-8 w-full text-sm px-2 pl-8 pr-12 rounded-md border border-input bg-transparent placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+        placeholder="Filtrar projetos..."
+        className="h-9 w-full rounded-lg border border-input bg-background/25 px-2 pl-9 pr-12 text-sm placeholder:text-muted-foreground focus:border-primary/50 focus:outline-none focus:ring-1 focus:ring-ring"
         data-testid="project-filter-input"
       />
       {value ? (

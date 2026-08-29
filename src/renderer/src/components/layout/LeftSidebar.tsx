@@ -4,7 +4,7 @@ import { useLayoutStore } from '@/stores/useLayoutStore'
 import { useProjectStore, useConnectionStore, useFilterStore, useSpaceStore } from '@/stores'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { ResizeHandle } from './ResizeHandle'
-import { Bot, ChevronRight, FolderGit2, Link, Loader2 } from 'lucide-react'
+import { Bot, ChevronRight, FolderGit2, Link, Loader2, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   ProjectList,
@@ -163,35 +163,33 @@ export function LeftSidebar(): React.JSX.Element {
             </div>
           </div>
         ) : (
-          <div className="border-b">
+          <div className="border-b border-sidebar-border px-3 pb-3 pt-3">
             <button
               type="button"
               onClick={() => useGlobalAssistantStore.getState().open()}
-              className={`mx-2 mt-2 flex w-[calc(100%-1rem)] items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+              className={`flex h-10 w-full items-center gap-3 rounded-lg border px-3 text-sm font-medium transition-all ${
                 globalAssistantOpen
-                  ? 'bg-primary/12 text-primary'
-                  : 'text-sidebar-foreground hover:bg-sidebar-accent'
+                  ? 'border-primary/20 bg-sidebar-accent text-sidebar-accent-foreground'
+                  : 'border-transparent text-sidebar-foreground hover:bg-sidebar-accent/70'
               }`}
             >
-              <Bot className="h-4 w-4" />
+              <Sparkles className={`h-4 w-4 shrink-0 ${globalAssistantOpen ? 'text-violet-400' : ''}`} />
               <span className="flex-1 text-left">Assistente</span>
             </button>
-            <div className="px-3 py-2.5 flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm font-medium">
-                <FolderGit2 className="h-4 w-4" />
-                <span>{t('common.projects')}</span>
-              </div>
-              <div className="flex items-center gap-0.5">
-                <RecentToggleButton />
-                <ExpandProjectsButton />
-                <SortProjectsButton />
+            <div className="mt-1 flex h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium text-sidebar-accent-foreground">
+              <FolderGit2 className="h-4 w-4 shrink-0" />
+              <span>{t('common.projects')}</span>
+            </div>
+            <div className="mt-2 grid grid-cols-4 rounded-lg bg-sidebar-accent/45 p-0.5 [&>button]:h-8 [&>button]:w-full [&>button]:rounded-md">
                 <AddProjectButton />
-              </div>
+                <SortProjectsButton />
+                <ExpandProjectsButton />
+                <RecentToggleButton />
             </div>
           </div>
         )}
-        {projectCount > 1 && (
-          <div className="px-2.5 py-2 border-b">
+        {!connectionModeActive && projectCount > 0 && (
+          <div className="border-b border-sidebar-border px-3 py-3">
             <ProjectFilter value={filterQuery} onChange={setFilterQuery} />
           </div>
         )}
@@ -200,19 +198,23 @@ export function LeftSidebar(): React.JSX.Element {
             <FilterChips languages={activeLanguages} onRemove={removeLanguage} />
           </div>
         )}
-        <div className="flex-1 overflow-auto px-1.5 py-2" data-testid="sidebar-scroll-container">
-          <PinnedList />
-          <RecentList />
+        <div className="flex-1 overflow-auto px-2 py-3" data-testid="sidebar-scroll-container">
           <button
             type="button"
             onClick={() => setConnectionsExpanded((expanded) => !expanded)}
-            className="mb-1 flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            className="mb-1 flex h-8 w-full items-center gap-2 rounded-md px-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
             aria-expanded={connectionsExpanded}
           >
-            <ChevronRight className={`h-3 w-3 transition-transform ${connectionsExpanded ? 'rotate-90' : ''}`} />
+            <ChevronRight className={`h-3.5 w-3.5 shrink-0 transition-transform ${connectionsExpanded ? 'rotate-90' : ''}`} />
             {t('common.connections')}
           </button>
           {connectionsExpanded && <ConnectionList />}
+          <PinnedList />
+          <RecentList />
+          <div className="mb-1 mt-2 flex h-8 items-center gap-2 px-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+            <Bot className="h-3.5 w-3.5 shrink-0" />
+            Projetos
+          </div>
           <ProjectList
             onAddProject={handleAddProject}
             filterQuery={filterQuery}

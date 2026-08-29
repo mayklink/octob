@@ -401,25 +401,9 @@ export function Header(): React.JSX.Element {
               )}
             </Button>
             <OctobMark className="h-5 w-5 shrink-0 self-center" />
-            {isConnectionMode && selectedConnection ? (
-              <span className="self-center truncate text-sm font-medium" data-testid="header-connection-info">
-                {selectedConnection.name}
-                <span className="text-primary font-normal">
-                  {' '}({selectedConnection.members.map((member) => member.project_name).join(' + ')})
-                </span>
-              </span>
-            ) : selectedProject ? (
-              <span className="self-center truncate text-sm font-medium" data-testid="header-project-info">
-                {selectedProject.name}
-                {selectedWorktree?.branch_name && selectedWorktree.name !== '(no-worktree)' && (
-                  <span className="text-primary font-normal"> ({selectedWorktree.branch_name})</span>
-                )}
-              </span>
-            ) : (
-              <span className="self-center text-sm font-medium" data-testid="header-brand-fallback">
-                Octob
-              </span>
-            )}
+            <span className="self-center text-sm font-semibold tracking-tight" data-testid="header-brand-fallback">
+              Octob
+            </span>
           </>
         ) : (
           <>

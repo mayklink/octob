@@ -289,6 +289,8 @@ function delay(ms: number): Promise<void> {
 interface SessionViewProps {
   sessionId: string
   workspacePathOverride?: string
+  emptyState?: (selectPrompt: (prompt: string) => void) => React.ReactNode
+  layoutVariant?: 'default' | 'global-assistant'
 }
 
 interface SessionRetryState {
@@ -510,7 +512,7 @@ function ErrorState({ message, onRetry }: ErrorStateProps): React.JSX.Element {
 }
 
 // Main SessionView component
-export function SessionView({ sessionId, workspacePathOverride }: SessionViewProps): React.JSX.Element {
+export function SessionView({ sessionId, workspacePathOverride, emptyState, layoutVariant = 'default' }: SessionViewProps): React.JSX.Element {
   // State
   const [messages, setMessagesState] = useState<OpenCodeMessage[]>([])
   const [inputValue, setInputValue] = useState('')
@@ -5668,7 +5670,11 @@ export function SessionView({ sessionId, workspacePathOverride }: SessionViewPro
             </div>
           )}
           {visibleMessages.length === 0 && !hasStreamingContent ? (
-            <div className="flex-1 flex items-center justify-center h-full text-muted-foreground">
+            emptyState ? emptyState((prompt) => {
+              setInputValue(prompt)
+              inputValueRef.current = prompt
+              window.requestAnimationFrame(() => textareaRef.current?.focus())
+            }) : <div className="flex-1 flex items-center justify-center h-full text-muted-foreground">
               <div className="text-center">
                 <p className="text-lg font-medium">Start a conversation</p>
                 <p className="text-sm mt-1">Type a message below to begin</p>
@@ -5777,7 +5783,7 @@ export function SessionView({ sessionId, workspacePathOverride }: SessionViewPro
 
       {/* Input area */}
       <div
-        className="p-4 bg-background"
+        className={cn('bg-background', layoutVariant === 'global-assistant' ? 'px-6 pb-6 pt-2' : 'p-4')}
         data-testid="input-area"
         role="form"
         aria-label="Message input"
@@ -5804,7 +5810,10 @@ export function SessionView({ sessionId, workspacePathOverride }: SessionViewPro
           {/* Diff comment attachments — above the input container */}
           <DiffCommentAttachments />          <div
             className={cn(
-              'rounded-xl border-2 transition-colors duration-200 overflow-hidden',
+              'rounded-xl transition-all duration-200 overflow-hidden',
+              layoutVariant === 'global-assistant'
+                ? 'border border-border/70 bg-card/65 shadow-sm'
+                : 'border-2',
               isBashMode
                 ? 'border-zinc-400/50 bg-zinc-500/5'
                 : mode === 'build'

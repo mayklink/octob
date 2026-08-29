@@ -49,6 +49,21 @@ interface MappedMessage {
   originalIndex: number
 }
 
+const GLOBAL_ASSISTANT_CONTEXT_HEADER = '[Global Assistant Operating Context]'
+const USER_MESSAGE_MARKER = '[User Message]'
+
+/** Keep the global assistant's operating contract in the backend transcript, not in the chat UI. */
+export function stripGlobalAssistantOperatingContext(value: string): string {
+  if (!value.trimStart().startsWith(GLOBAL_ASSISTANT_CONTEXT_HEADER)) return value
+
+  const markerIndex = value.indexOf(USER_MESSAGE_MARKER)
+  if (markerIndex < 0) return value
+
+  return value
+    .slice(markerIndex + USER_MESSAGE_MARKER.length)
+    .replace(/^\r?\n/, '')
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -331,7 +346,15 @@ function mapMessage(rawMessage: unknown, index: number): MappedMessage {
     coerceOpenCodeRenderableString(info?.content) ||
     coerceOpenCodeRenderableString(messageRecord?.content)
 
-  const content = extracted || topLevel || ''
+  const rawContent = extracted || topLevel || ''
+  const content = role === 'user' ? stripGlobalAssistantOperatingContext(rawContent) : rawContent
+  const displayParts = role === 'user'
+    ? mappedParts.map((part) =>
+        part.type === 'text' && part.text
+          ? { ...part, text: stripGlobalAssistantOperatingContext(part.text) }
+          : part
+      )
+    : mappedParts
 
   const sortTime =
     toTimestampMs(info?.time && asRecord(info.time)?.created) ??
@@ -352,7 +375,7 @@ function mapMessage(rawMessage: unknown, index: number): MappedMessage {
       role,
       content,
       timestamp,
-      parts: mappedParts.length > 0 ? mappedParts : undefined
+      parts: displayParts.length > 0 ? displayParts : undefined
     },
     sortTime,
     originalIndex: index

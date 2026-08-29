@@ -23,12 +23,10 @@ import {
   Hammer,
   Map,
   Check,
-  LayoutGrid,
   MessageSquare,
   Code2,
   GitBranch,
-  MoreHorizontal,
-  Bot
+  MoreHorizontal
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -111,8 +109,7 @@ export function Header(): React.JSX.Element {
     setRightSidebarCollapsed,
     setRightSidebarTab,
     setWorkspaceMode,
-    displayLayout,
-    setDisplayLayout
+    displayLayout
   } =
     useLayoutStore()
   const { openPanel: openSessionHistory } = useSessionHistoryStore()
@@ -168,35 +165,6 @@ export function Header(): React.JSX.Element {
     s.selectedConnectionId ? s.connections.find((c) => c.id === s.selectedConnectionId) : null
   )
   const isConnectionMode = !!selectedConnectionId && !selectedWorktreeId
-
-  const handleDisplayLayoutChange = useCallback(
-    (mode: 'overview' | 'compact') => {
-      setDisplayLayout(mode)
-      if (mode === 'compact') {
-        useLayoutStore.getState().setLeftSidebarCollapsed(false)
-        return
-      }
-
-      if (selectedConnectionId) {
-        setWorkspaceView('connection')
-        setWorkspaceContentView('overview')
-      } else if (selectedProjectId) {
-        setWorkspaceView('project')
-        setWorkspaceContentView(selectedWorktreeId ? 'session' : 'overview')
-      } else {
-        setWorkspaceView('projects')
-        setWorkspaceContentView('overview')
-      }
-    },
-    [
-      selectedConnectionId,
-      selectedProjectId,
-      selectedWorktreeId,
-      setDisplayLayout,
-      setWorkspaceContentView,
-      setWorkspaceView
-    ]
-  )
 
   const hasConflicts = useGitStore(
     (state) =>
@@ -369,11 +337,6 @@ export function Header(): React.JSX.Element {
     !!selectedWorktree?.path &&
     !!conflictFixFlow &&
     conflictFixFlow.worktreePath === selectedWorktree.path
-
-  const handleAssistant = useCallback(() => {
-    if (!selectedWorktreeId || !selectedProjectId) return
-    void createSession(selectedWorktreeId, selectedProjectId)
-  }, [createSession, selectedProjectId, selectedWorktreeId])
 
   const showFixConflictsButton = hasConflicts || isFixConflictsLoading
 
@@ -696,62 +659,6 @@ export function Header(): React.JSX.Element {
         className="flex items-center gap-2"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              onClick={handleAssistant}
-              disabled={!selectedWorktreeId || !selectedProjectId}
-              aria-label="Abrir assistente"
-              data-testid="assistant-launcher"
-            >
-              <Bot className="h-4 w-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Abrir assistente</TooltipContent>
-        </Tooltip>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 gap-1.5 text-xs"
-              title={t('settings.general.display')}
-              data-testid="display-layout-trigger"
-            >
-              {displayLayout === 'overview' ? (
-                <LayoutGrid className="h-3.5 w-3.5" />
-              ) : (
-                <PanelLeftOpen className="h-3.5 w-3.5" />
-              )}
-              {displayLayout === 'overview'
-                ? t('settings.general.displayOverview')
-                : t('settings.general.displayCompact')}
-              <ChevronDown className="h-3 w-3" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-64">
-            <DropdownMenuLabel>{t('settings.general.display')}</DropdownMenuLabel>
-            <DropdownMenuItem onClick={() => handleDisplayLayoutChange('overview')}>
-              <LayoutGrid className="mr-2 h-4 w-4" />
-              <div className="flex flex-1 flex-col">
-                <span>{t('settings.general.displayOverview')}</span>
-                <span className="text-xs text-muted-foreground">{t('settings.general.displayOverviewHint')}</span>
-              </div>
-              {displayLayout === 'overview' && <Check className="ml-2 h-4 w-4" />}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => handleDisplayLayoutChange('compact')}>
-              <PanelLeftOpen className="mr-2 h-4 w-4" />
-              <div className="flex flex-1 flex-col">
-                <span>{t('settings.general.displayCompact')}</span>
-                <span className="text-xs text-muted-foreground">{t('settings.general.displayCompactHint')}</span>
-              </div>
-              {displayLayout === 'compact' && <Check className="ml-2 h-4 w-4" />}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
         {!isConnectionMode &&
           isGitHub &&
           hasAttachedPR &&

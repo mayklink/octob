@@ -175,7 +175,6 @@ export function LeftSidebar(): React.JSX.Element {
             >
               <Bot className="h-4 w-4" />
               <span className="flex-1 text-left">Assistente</span>
-              <span className="rounded-full border px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">Global</span>
             </button>
             <div className="px-3 py-2.5 flex items-center justify-between">
               <div className="flex items-center gap-2 text-sm font-medium">

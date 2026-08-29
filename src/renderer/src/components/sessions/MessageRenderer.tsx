@@ -9,7 +9,10 @@ import {
   ASK_MODE_PREFIX,
   stripSuperPlanModePrefix
 } from '@/lib/constants'
-import { coerceOpenCodeRenderableString } from '@/lib/opencode-transcript'
+import {
+  coerceOpenCodeRenderableString,
+  stripGlobalAssistantOperatingContext
+} from '@/lib/opencode-transcript'
 import type { OpenCodeMessage } from './SessionView'
 
 interface MessageRendererProps {
@@ -72,6 +75,10 @@ export const MessageRenderer = memo(function MessageRenderer({
   let displayContent = coerceOpenCodeRenderableString(message.content)
 
   if (message.role === 'user') {
+    // Live OpenCode events can arrive before the sanitized transcript refresh.
+    // Strip the global operating contract at the final display boundary so it
+    // can never flash in the chat, even for a single optimistic/live frame.
+    displayContent = stripGlobalAssistantOperatingContext(displayContent)
     const { prefix, remaining } = skipAttachments(displayContent)
 
     // Check for mode prefixes in order (longest first to avoid false positives)

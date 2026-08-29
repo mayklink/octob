@@ -18,7 +18,17 @@ const modelPath = () => join(modelDirectory(), MODEL_FILE)
 const vadPath = () => join(modelDirectory(), VAD_FILE)
 const binaryName = () => process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli'
 const resourceDirectory = () => app.isPackaged ? process.resourcesPath : join(app.getAppPath(), 'resources')
-const binaryPath = () => join(resourceDirectory(), 'whisper.cpp', `${process.platform}-${process.arch}`, binaryName())
+const binaryPath = () => {
+  const platformDirectory = join(resourceDirectory(), 'whisper.cpp', `${process.platform}-${process.arch}`)
+  const binary = join(platformDirectory, binaryName())
+  if (existsSync(binary)) return binary
+
+  // Visual Studio generators place runtime files under bin/Release. Keep this
+  // fallback so installations built before the sidecar layout was flattened
+  // can still discover the bundled Windows engine.
+  const releaseBinary = join(platformDirectory, 'Release', binaryName())
+  return process.platform === 'win32' && existsSync(releaseBinary) ? releaseBinary : binary
+}
 
 export type VoiceResult =
   | { success: true; text: string }

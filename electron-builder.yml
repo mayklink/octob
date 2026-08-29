@@ -7,6 +7,12 @@ files:
   - out/**/*
   - resources/**/*
 
+# The local voice sidecar is executed at runtime, so it must remain outside
+# app.asar at process.resourcesPath/whisper.cpp.
+extraResources:
+  - from: resources/whisper.cpp
+    to: whisper.cpp
+
 publish:
   provider: generic
   url: https://pub-be8ec9b63e674561a210de4fa05a958e.r2.dev

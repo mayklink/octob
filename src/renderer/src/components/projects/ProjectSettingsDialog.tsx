@@ -46,6 +46,8 @@ export function ProjectSettingsDialog({
   const [archiveScript, setArchiveScript] = useState('')
   const [customIcon, setCustomIcon] = useState<string | null>(null)
   const [autoAssignPort, setAutoAssignPort] = useState(false)
+  const [assistantInstructions, setAssistantInstructions] = useState('')
+  const [loadingAssistantInstructions, setLoadingAssistantInstructions] = useState(false)
   const [saving, setSaving] = useState(false)
   const [pickingIcon, setPickingIcon] = useState(false)
 
@@ -57,6 +59,11 @@ export function ProjectSettingsDialog({
       setArchiveScript(project.archive_script ?? '')
       setCustomIcon(project.custom_icon ?? null)
       setAutoAssignPort(project.auto_assign_port ?? false)
+      setLoadingAssistantInstructions(true)
+      void window.assistantOps.getProjectInstructions(project.id)
+        .then((instructions) => setAssistantInstructions(instructions.join('\n')))
+        .catch(() => toast.error('Failed to load assistant memory'))
+        .finally(() => setLoadingAssistantInstructions(false))
     }
   }, [
     open,
@@ -64,7 +71,8 @@ export function ProjectSettingsDialog({
     project.run_script,
     project.archive_script,
     project.custom_icon,
-    project.auto_assign_port
+    project.auto_assign_port,
+    project.id
   ])
 
   const handlePickIcon = async (): Promise<void> => {
@@ -101,6 +109,10 @@ export function ProjectSettingsDialog({
         custom_icon: customIcon,
         auto_assign_port: autoAssignPort
       })
+      await window.assistantOps.setProjectInstructions(
+        project.id,
+        assistantInstructions.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
+      )
       if (success) {
         toast.success('Project settings saved')
         onOpenChange(false)
@@ -174,6 +186,24 @@ export function ProjectSettingsDialog({
               </div>
               <Switch checked={autoAssignPort} onCheckedChange={setAutoAssignPort} />
             </div>
+          </div>
+
+          {/* Assistant Memory */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium">Assistant Memory</label>
+            <p className="text-xs text-muted-foreground">
+              Durable project-specific instructions remembered by the assistant, such as where to
+              search for work items, which account to use, or naming conventions. One instruction
+              per line.
+            </p>
+            <Textarea
+              value={assistantInstructions}
+              onChange={(event) => setAssistantInstructions(event.target.value)}
+              placeholder={'Search work items in Azure DevOps, project V ERP\nUse the UAT Team backlog by default'}
+              rows={5}
+              disabled={loadingAssistantInstructions}
+              className="text-sm resize-y"
+            />
           </div>
 
           {/* Setup Script */}

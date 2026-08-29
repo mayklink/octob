@@ -1998,10 +1998,19 @@ const assistantOps = {
   hide: () => ipcRenderer.invoke('assistant:hide'),
   getWorkspacePath: (): Promise<string> => ipcRenderer.invoke('assistant:getWorkspacePath'),
   listTasks: (): Promise<import('@shared/types/assistant').AssistantTask[]> => ipcRenderer.invoke('assistant:listTasks'),
+  listProjectSelectionRequests: (): Promise<import('@shared/types/assistant').AssistantProjectSelectionRequest[]> => ipcRenderer.invoke('assistant:listProjectSelectionRequests'),
+  resolveProjectSelection: (requestId: string, projectId: string | null): Promise<boolean> => ipcRenderer.invoke('assistant:resolveProjectSelection', requestId, projectId),
+  getProjectInstructions: (projectId: string): Promise<string[]> => ipcRenderer.invoke('assistant:getProjectInstructions', projectId),
+  setProjectInstructions: (projectId: string, instructions: string[]): Promise<string[]> => ipcRenderer.invoke('assistant:setProjectInstructions', projectId, instructions),
   onTaskCreated: (callback: (task: import('@shared/types/assistant').AssistantTask) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, task: import('@shared/types/assistant').AssistantTask): void => callback(task)
     ipcRenderer.on('assistant:task-created', handler)
     return () => ipcRenderer.removeListener('assistant:task-created', handler)
+  },
+  onProjectSelectionRequested: (callback: (request: import('@shared/types/assistant').AssistantProjectSelectionRequest) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, request: import('@shared/types/assistant').AssistantProjectSelectionRequest): void => callback(request)
+    ipcRenderer.on('assistant:project-selection-requested', handler)
+    return () => ipcRenderer.removeListener('assistant:project-selection-requested', handler)
   },
   onOpen: (callback: () => void): (() => void) => {
     const handler = (): void => callback()

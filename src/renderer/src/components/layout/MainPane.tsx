@@ -404,7 +404,9 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
       data-testid="main-pane"
     >
       <PRNotificationStack />
-      {!settingsOpen && (selectedWorktreeId || selectedConnectionId) && <SessionTabs />}
+      {!settingsOpen && !globalAssistantOpen && (selectedWorktreeId || selectedConnectionId) && (
+        <SessionTabs />
+      )}
       <div className="flex-1 flex flex-col min-h-0">
         {renderContent()}
         {renderedTerminalSessionIds.map((sessionId) => {

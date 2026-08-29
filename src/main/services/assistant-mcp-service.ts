@@ -1,5 +1,6 @@
 import { app, type BrowserWindow } from 'electron'
 import { join, resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js'
@@ -11,12 +12,22 @@ import { createWorktreeOp } from './worktree-ops'
 import { APP_SETTINGS_DB_KEY } from '@shared/types/settings'
 import { createLogger } from './logger'
 import { openCodeService } from './opencode-service'
-import type { AssistantTask } from '@shared/types/assistant'
+import type {
+  AssistantProjectSelectionRequest,
+  AssistantTask
+} from '@shared/types/assistant'
 
 const log = createLogger({ component: 'AssistantMcpService' })
 const ASSISTANT_PROJECT_INSTRUCTIONS_KEY = 'assistant_project_instructions_v1'
 const ASSISTANT_TASKS_KEY = 'assistant_delegated_tasks_v1'
 let assistantMcpUrl: string | null = null
+const pendingProjectSelections = new Map<
+  string,
+  {
+    request: AssistantProjectSelectionRequest
+    resolve: (projectId: string | null) => void
+  }
+>()
 
 export function getAssistantWorkspacePath(): string {
   return join(app.getPath('userData'), 'assistant-workspace')
@@ -28,6 +39,36 @@ export function isAssistantWorkspacePath(value?: string): boolean {
 
 export function getAssistantMcpUrl(): string | null {
   return assistantMcpUrl
+}
+
+export function getPendingAssistantProjectSelections(): AssistantProjectSelectionRequest[] {
+  return Array.from(pendingProjectSelections.values(), (entry) => entry.request)
+}
+
+export function resolveAssistantProjectSelection(
+  requestId: string,
+  projectId: string | null
+): boolean {
+  const pending = pendingProjectSelections.get(requestId)
+  if (!pending) return false
+  if (projectId && !pending.request.projects.some((project) => project.id === projectId)) {
+    return false
+  }
+  pendingProjectSelections.delete(requestId)
+  pending.resolve(projectId)
+  return true
+}
+
+function waitForAssistantProjectSelection(
+  request: AssistantProjectSelectionRequest,
+  mainWindow: BrowserWindow
+): Promise<string | null> {
+  return new Promise((resolveSelection) => {
+    pendingProjectSelections.set(request.id, { request, resolve: resolveSelection })
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('assistant:project-selection-requested', request)
+    }
+  })
 }
 
 function readDefaultAgentSdk(db: DatabaseService): AgentSdkId {
@@ -57,6 +98,32 @@ function readProjectInstructions(db: DatabaseService): Record<string, string[]> 
   } catch {
     return {}
   }
+}
+
+export function getAssistantProjectInstructions(
+  db: DatabaseService,
+  projectId: string
+): string[] {
+  if (!db.getProject(projectId)) return []
+  return readProjectInstructions(db)[projectId] ?? []
+}
+
+export function setAssistantProjectInstructions(
+  db: DatabaseService,
+  projectId: string,
+  instructions: string[]
+): string[] {
+  if (!db.getProject(projectId)) throw new Error('Project not found')
+  const normalized = instructions.map((item) => item.trim()).filter(Boolean)
+  const deduplicated = normalized.filter(
+    (item, index, all) => all.findIndex(
+      (candidate) => candidate.toLocaleLowerCase() === item.toLocaleLowerCase()
+    ) === index
+  )
+  const allInstructions = readProjectInstructions(db)
+  allInstructions[projectId] = deduplicated
+  writeProjectInstructions(db, allInstructions)
+  return deduplicated
 }
 
 function writeProjectInstructions(db: DatabaseService, value: Record<string, string[]>): void {
@@ -111,14 +178,12 @@ export async function startAssistantMcpService(
       description: 'List projects registered in Octob. Use this before asking the user which repository a nickname refers to.',
       inputSchema: {}
     }, async () => {
-      const instructions = readProjectInstructions(db)
       return text(db.getAllProjects().map((project) => ({
         id: project.id,
         name: project.name,
         description: project.description,
         tags: project.tags,
-        language: project.language,
-        assistant_instructions: instructions[project.id] ?? []
+        language: project.language
       })))
     })
 
@@ -138,6 +203,41 @@ export async function startAssistantMcpService(
           status: worktree.status,
           is_default: worktree.is_default
         }))
+      })
+    })
+
+    server.registerTool('request_project_selection', {
+      description: 'Show the user an Octob project picker and wait for an explicit selection. When project-scoped work is requested, call list_projects first, then call this tool with every matching project id. This confirmation is mandatory even when there is exactly one match. Do not print a plain-text project list instead. The selected project and its saved assistant memory are returned together.',
+      inputSchema: {
+        project_ids: z.array(z.string()).min(1),
+        question: z.string().min(1).optional()
+      }
+    }, async ({ project_ids, question }) => {
+      const uniqueIds = Array.from(new Set(project_ids))
+      const projects = uniqueIds
+        .map((projectId) => db.getProject(projectId))
+        .filter((project): project is NonNullable<typeof project> => Boolean(project))
+
+      if (projects.length === 0) return text({ error: 'No matching registered projects found' })
+
+      const request: AssistantProjectSelectionRequest = {
+        id: randomUUID(),
+        question: question?.trim() || 'Sobre qual projeto você quer falar?',
+        projects: projects.map((project) => ({
+          id: project.id,
+          name: project.name,
+          description: project.description,
+          language: project.language
+        }))
+      }
+      const selectedProjectId = await waitForAssistantProjectSelection(request, mainWindow)
+      if (!selectedProjectId) return text({ cancelled: true })
+
+      const selectedProject = db.getProject(selectedProjectId)
+      if (!selectedProject) return text({ error: 'Selected project no longer exists' })
+      return text({
+        selected_project: selectedProject,
+        assistant_instructions: readProjectInstructions(db)[selectedProject.id] ?? []
       })
     })
 

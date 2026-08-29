@@ -1,6 +1,14 @@
 import { useEffect, useState } from 'react'
-import { ArrowRight, Bell, Bot, CheckCircle2, Loader2, MessageSquarePlus, MoreHorizontal, RefreshCw } from 'lucide-react'
+import { ArrowRight, Bell, Bot, CheckCircle2, FolderGit2, Loader2, MessageSquarePlus, MoreHorizontal, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { SessionView } from '@/components/sessions'
 import { useGlobalAssistantStore } from '@/stores/useGlobalAssistantStore'
 import { useProjectStore } from '@/stores/useProjectStore'
@@ -8,7 +16,10 @@ import { useSessionStore } from '@/stores/useSessionStore'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
-import type { AssistantTask } from '@shared/types/assistant'
+import type {
+  AssistantProjectSelectionRequest,
+  AssistantTask
+} from '@shared/types/assistant'
 
 const GLOBAL_SCOPE_ID = '__octob_global_assistant__'
 
@@ -71,6 +82,8 @@ export function GlobalAssistantView(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [retry, setRetry] = useState(0)
   const [isStartingNewSession, setIsStartingNewSession] = useState(false)
+  const [projectSelectionRequests, setProjectSelectionRequests] = useState<AssistantProjectSelectionRequest[]>([])
+  const [resolvingProjectId, setResolvingProjectId] = useState<string | null>(null)
   const projectId = projects[0]?.id
 
   useEffect(() => {
@@ -83,6 +96,27 @@ export function GlobalAssistantView(): React.JSX.Element {
       if (!cancelled) useGlobalAssistantStore.getState().mergeTasks(persistedTasks)
     }).catch((cause) => {
       console.warn('Failed to load delegated assistant tasks:', cause)
+    })
+
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const unsubscribe = window.assistantOps.onProjectSelectionRequested((request) => {
+      setProjectSelectionRequests((current) => [
+        ...current.filter((item) => item.id !== request.id),
+        request
+      ])
+    })
+
+    void window.assistantOps.listProjectSelectionRequests().then((requests) => {
+      if (!cancelled) setProjectSelectionRequests(requests)
+    }).catch((cause) => {
+      console.warn('Failed to load project selection requests:', cause)
     })
 
     return () => {
@@ -171,6 +205,26 @@ export function GlobalAssistantView(): React.JSX.Element {
     useSessionStore.getState().setActiveSession(task.sessionId)
   }
 
+  const activeProjectSelection = projectSelectionRequests[0] ?? null
+
+  const handleProjectSelection = async (projectId: string | null): Promise<void> => {
+    if (!activeProjectSelection || resolvingProjectId) return
+    setResolvingProjectId(projectId ?? '__cancel__')
+    try {
+      const resolved = await window.assistantOps.resolveProjectSelection(
+        activeProjectSelection.id,
+        projectId
+      )
+      if (resolved) {
+        setProjectSelectionRequests((current) => current.filter(
+          (request) => request.id !== activeProjectSelection.id
+        ))
+      }
+    } finally {
+      setResolvingProjectId(null)
+    }
+  }
+
   if (error) {
     return (
       <div className="flex h-full flex-1 items-center justify-center">
@@ -190,7 +244,56 @@ export function GlobalAssistantView(): React.JSX.Element {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-1 overflow-hidden bg-background">
+    <>
+      <Dialog
+        open={Boolean(activeProjectSelection)}
+        onOpenChange={(open) => {
+          if (!open) void handleProjectSelection(null)
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Selecionar projeto</DialogTitle>
+            <DialogDescription>
+              {activeProjectSelection?.question}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-1">
+            {activeProjectSelection?.projects.map((project) => (
+              <button
+                key={project.id}
+                type="button"
+                disabled={Boolean(resolvingProjectId)}
+                onClick={() => void handleProjectSelection(project.id)}
+                className="flex w-full items-start gap-3 rounded-lg border border-border bg-card px-3.5 py-3 text-left transition-colors hover:border-primary/45 hover:bg-muted/40 disabled:opacity-60"
+              >
+                {resolvingProjectId === project.id ? (
+                  <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary" />
+                ) : (
+                  <FolderGit2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                )}
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium">{project.name}</span>
+                  <span className="mt-0.5 block text-xs text-muted-foreground">
+                    {project.description || project.language || 'Projeto registrado no Octob'}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={Boolean(resolvingProjectId)}
+              onClick={() => void handleProjectSelection(null)}
+            >
+              Cancelar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <div className="flex h-full min-h-0 flex-1 overflow-hidden bg-background">
       <main className="flex min-w-0 flex-1 flex-col border-r border-border/70">
         <header className="shrink-0 border-b border-border/70 px-7 py-4">
           <div className="mx-auto flex w-full max-w-4xl items-center justify-between gap-4">
@@ -342,6 +445,7 @@ export function GlobalAssistantView(): React.JSX.Element {
           </div>
         </footer>
       </aside>
-    </div>
+      </div>
+    </>
   )
 }

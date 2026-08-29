@@ -77,7 +77,11 @@ import { registerUpdateService } from './services/update-service'
 import {
   startAssistantMcpService,
   getAssistantWorkspacePath,
-  getAssistantTasks
+  getAssistantTasks,
+  getPendingAssistantProjectSelections,
+  resolveAssistantProjectSelection,
+  getAssistantProjectInstructions,
+  setAssistantProjectInstructions
 } from './services/assistant-mcp-service'
 
 const log = createLogger({ component: 'Main' })
@@ -474,6 +478,32 @@ function registerSystemHandlers(openCodeLaunchSpec: OpenCodeLaunchSpec | null): 
   ipcMain.handle('assistant:listTasks', () => {
     return getAssistantTasks(getDatabase())
   })
+
+  ipcMain.handle('assistant:listProjectSelectionRequests', () => {
+    return getPendingAssistantProjectSelections()
+  })
+
+  ipcMain.handle(
+    'assistant:resolveProjectSelection',
+    (_event, requestId: string, projectId: string | null) => {
+      return resolveAssistantProjectSelection(requestId, projectId)
+    }
+  )
+
+  ipcMain.handle('assistant:getProjectInstructions', (_event, projectId: string) => {
+    return getAssistantProjectInstructions(getDatabase(), projectId)
+  })
+
+  ipcMain.handle(
+    'assistant:setProjectInstructions',
+    (_event, projectId: string, instructions: string[]) => {
+      return setAssistantProjectInstructions(
+        getDatabase(),
+        projectId,
+        Array.isArray(instructions) ? instructions.filter((item) => typeof item === 'string') : []
+      )
+    }
+  )
 
   // Prevent display sleep while renderer-driven sessions are active.
   // The renderer owns the decision of when to hold the blocker; this handler

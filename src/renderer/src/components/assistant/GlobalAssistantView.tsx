@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowRight, Bell, Bot, CheckCircle2, CircleCheckBig, FileText, FolderGit2, GitPullRequest, Lightbulb, Loader2, MessageSquare, MessageSquarePlus, MoreHorizontal, Play, RefreshCw, Search, Sparkles } from 'lucide-react'
+import { ArrowRight, Bell, Bot, CheckCircle2, CircleCheckBig, FileText, FolderGit2, GitPullRequest, Lightbulb, Loader2, MessageSquare, MessageSquarePlus, MoreHorizontal, Play, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -17,6 +17,7 @@ import { useSessionStore } from '@/stores/useSessionStore'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
+import { toast } from '@/lib/toast'
 import type {
   AssistantProjectSelectionRequest,
   AssistantTask
@@ -140,6 +141,8 @@ export function GlobalAssistantView(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [retry, setRetry] = useState(0)
   const [isStartingNewSession, setIsStartingNewSession] = useState(false)
+  const [taskPendingRemoval, setTaskPendingRemoval] = useState<AssistantTask | null>(null)
+  const [isRemovingTask, setIsRemovingTask] = useState(false)
   const [projectSelectionRequests, setProjectSelectionRequests] = useState<AssistantProjectSelectionRequest[]>([])
   const [resolvingProjectId, setResolvingProjectId] = useState<string | null>(null)
   const projectId = projects[0]?.id
@@ -149,9 +152,12 @@ export function GlobalAssistantView(): React.JSX.Element {
     const unsubscribe = window.assistantOps.onTaskCreated((task) => {
       useGlobalAssistantStore.getState().addTask(task)
     })
+    const unsubscribeTasksChanged = window.assistantOps.onTasksChanged((updatedTasks) => {
+      useGlobalAssistantStore.getState().replaceTasks(updatedTasks)
+    })
 
     void window.assistantOps.listTasks().then((persistedTasks) => {
-      if (!cancelled) useGlobalAssistantStore.getState().mergeTasks(persistedTasks)
+      if (!cancelled) useGlobalAssistantStore.getState().replaceTasks(persistedTasks)
     }).catch((cause) => {
       console.warn('Failed to load delegated assistant tasks:', cause)
     })
@@ -159,6 +165,7 @@ export function GlobalAssistantView(): React.JSX.Element {
     return () => {
       cancelled = true
       unsubscribe()
+      unsubscribeTasksChanged()
     }
   }, [])
 
@@ -263,6 +270,50 @@ export function GlobalAssistantView(): React.JSX.Element {
     useSessionStore.getState().setActiveSession(task.sessionId)
   }
 
+  const handleRemoveTask = async (removeResources: boolean): Promise<void> => {
+    const task = taskPendingRemoval
+    if (!task || isRemovingTask) return
+
+    setIsRemovingTask(true)
+    try {
+      if (removeResources) {
+        const project = projects.find((item) => item.id === task.projectId)
+        if (!project) throw new Error('Projeto do trabalho não encontrado.')
+        const worktree = await window.db.worktree.get(task.worktreeId)
+        if (!worktree) throw new Error('Workspace do trabalho não encontrado.')
+
+        const session = await window.db.session.get(task.sessionId)
+        if (session?.opencode_session_id) {
+          try {
+            await window.opencodeOps.abort(task.worktreePath, session.opencode_session_id)
+          } catch {
+            // The agent may already be stopped or disconnected.
+          }
+        }
+
+        await window.db.session.delete(task.sessionId)
+        const result = await useWorktreeStore.getState().unbranchWorktree(
+          task.worktreeId,
+          task.worktreePath,
+          worktree.branch_name,
+          project.path
+        )
+        if (!result.success) {
+          throw new Error(result.error || 'Não foi possível remover o workspace.')
+        }
+      }
+
+      const remainingTasks = await window.assistantOps.removeTask(task.sessionId)
+      useGlobalAssistantStore.getState().replaceTasks(remainingTasks)
+      setTaskPendingRemoval(null)
+      toast.success(removeResources ? 'Trabalho, sessão e workspace removidos.' : 'Trabalho removido desta lista.')
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'Não foi possível remover o trabalho.')
+    } finally {
+      setIsRemovingTask(false)
+    }
+  }
+
   const activeProjectSelection = projectSelectionRequests[0] ?? null
 
   const handleProjectSelection = async (projectId: string | null): Promise<void> => {
@@ -346,6 +397,49 @@ export function GlobalAssistantView(): React.JSX.Element {
               onClick={() => void handleProjectSelection(null)}
             >
               Cancelar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(taskPendingRemoval)}
+        onOpenChange={(open) => {
+          if (!open && !isRemovingTask) setTaskPendingRemoval(null)
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Remover trabalho do painel?</DialogTitle>
+            <DialogDescription>
+              {taskPendingRemoval?.title}
+            </DialogDescription>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Você pode apenas ocultar este trabalho ou também apagar sua sessão e remover o workspace. A remoção do workspace mantém a branch.
+          </p>
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button
+              variant="outline"
+              disabled={isRemovingTask}
+              onClick={() => setTaskPendingRemoval(null)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="secondary"
+              disabled={isRemovingTask}
+              onClick={() => void handleRemoveTask(false)}
+            >
+              Somente remover
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={isRemovingTask}
+              onClick={() => void handleRemoveTask(true)}
+            >
+              {isRemovingTask && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Remover tudo
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -454,11 +548,26 @@ export function GlobalAssistantView(): React.JSX.Element {
                       {task.title}
                     </h3>
                   </div>
-                  {ready ? (
-                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
-                  ) : (
-                    <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary" />
-                  )}
+                  <div className="flex shrink-0 items-center gap-1">
+                    {ready ? (
+                      <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                    ) : (
+                      <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                      title="Remover trabalho do painel"
+                      aria-label="Remover trabalho do painel"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setTaskPendingRemoval(task)
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
                 </div>
 
                 <div className={`mt-3 flex items-center gap-1.5 text-[11px] font-medium ${ready ? 'text-emerald-500' : 'text-foreground/75'}`}>

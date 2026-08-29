@@ -10,7 +10,7 @@ interface GlobalAssistantState {
   close: () => void
   setAssistantSessionId: (sessionId: string) => void
   addTask: (task: GlobalAssistantState['tasks'][number]) => void
-  mergeTasks: (tasks: AssistantTask[]) => void
+  replaceTasks: (tasks: AssistantTask[]) => void
 }
 
 export const useGlobalAssistantStore = create<GlobalAssistantState>()(
@@ -25,11 +25,7 @@ export const useGlobalAssistantStore = create<GlobalAssistantState>()(
       addTask: (task) => set((state) => ({
         tasks: [task, ...state.tasks.filter((item) => item.sessionId !== task.sessionId)]
       })),
-      mergeTasks: (tasks) => set((state) => ({
-        tasks: [...tasks, ...state.tasks].filter(
-          (task, index, all) => all.findIndex((item) => item.sessionId === task.sessionId) === index
-        )
-      }))
+      replaceTasks: (tasks) => set({ tasks })
     }),
     {
       name: 'octob-global-assistant',

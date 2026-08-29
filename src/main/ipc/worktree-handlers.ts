@@ -18,6 +18,7 @@ import {
   type CreateFromBranchParams
 } from '../services/worktree-ops'
 import { getDatabase } from '../db'
+import { notifyAssistantTasksChanged } from '../services/assistant-mcp-service'
 
 export type {
   CreateWorktreeParams,
@@ -51,12 +52,18 @@ export function registerWorktreeHandlers(): void {
 
   // Delete/Archive a worktree
   ipcMain.handle('worktree:delete', async (_event, params: DeleteWorktreeParams) => {
-    return deleteWorktreeOp(getDatabase(), params)
+    const db = getDatabase()
+    const result = await deleteWorktreeOp(db, params)
+    if (result.success) notifyAssistantTasksChanged(db)
+    return result
   })
 
   // Sync worktrees with actual git state
   ipcMain.handle('worktree:sync', async (_event, params: SyncWorktreesParams) => {
-    return syncWorktreesOp(getDatabase(), params)
+    const db = getDatabase()
+    const result = await syncWorktreesOp(db, params)
+    if (result.success) notifyAssistantTasksChanged(db)
+    return result
   })
 
   // Duplicate a worktree (clone branch with uncommitted state)

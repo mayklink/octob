@@ -249,11 +249,13 @@ declare global {
       hide: () => Promise<void>
       getWorkspacePath: () => Promise<string>
       listTasks: () => Promise<import('@shared/types/assistant').AssistantTask[]>
+      removeTask: (sessionId: string) => Promise<import('@shared/types/assistant').AssistantTask[]>
       listProjectSelectionRequests: () => Promise<import('@shared/types/assistant').AssistantProjectSelectionRequest[]>
       resolveProjectSelection: (requestId: string, projectId: string | null) => Promise<boolean>
       getProjectInstructions: (projectId: string) => Promise<string[]>
       setProjectInstructions: (projectId: string, instructions: string[]) => Promise<string[]>
       onTaskCreated: (callback: (task: import('@shared/types/assistant').AssistantTask) => void) => () => void
+      onTasksChanged: (callback: (tasks: import('@shared/types/assistant').AssistantTask[]) => void) => () => void
       onProjectSelectionRequested: (callback: (request: import('@shared/types/assistant').AssistantProjectSelectionRequest) => void) => () => void
       onOpen: (callback: () => void) => () => void
     }

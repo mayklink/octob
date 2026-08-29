@@ -78,6 +78,7 @@ import {
   startAssistantMcpService,
   getAssistantWorkspacePath,
   getAssistantTasks,
+  removeAssistantTask,
   getPendingAssistantProjectSelections,
   resolveAssistantProjectSelection,
   getAssistantProjectInstructions,
@@ -477,6 +478,10 @@ function registerSystemHandlers(openCodeLaunchSpec: OpenCodeLaunchSpec | null): 
 
   ipcMain.handle('assistant:listTasks', () => {
     return getAssistantTasks(getDatabase())
+  })
+
+  ipcMain.handle('assistant:removeTask', (_event, sessionId: string) => {
+    return removeAssistantTask(getDatabase(), sessionId)
   })
 
   ipcMain.handle('assistant:listProjectSelectionRequests', () => {

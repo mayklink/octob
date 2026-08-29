@@ -1,5 +1,6 @@
 import { ipcMain } from 'electron'
 import { getDatabase } from '../db'
+import { notifyAssistantTasksChanged } from '../services/assistant-mcp-service'
 import { createLogger } from '../services/logger'
 import { telemetryService } from '../services/telemetry-service'
 import type {
@@ -74,7 +75,10 @@ export function registerDatabaseHandlers(): void {
   })
 
   ipcMain.handle('db:project:delete', (_event, id: string) => {
-    return getDatabase().deleteProject(id)
+    const db = getDatabase()
+    const deleted = db.deleteProject(id)
+    if (deleted) notifyAssistantTasksChanged(db)
+    return deleted
   })
 
   ipcMain.handle('db:project:touch', (_event, id: string) => {
@@ -117,11 +121,17 @@ export function registerDatabaseHandlers(): void {
   })
 
   ipcMain.handle('db:worktree:delete', (_event, id: string) => {
-    return getDatabase().deleteWorktree(id)
+    const db = getDatabase()
+    const deleted = db.deleteWorktree(id)
+    if (deleted) notifyAssistantTasksChanged(db)
+    return deleted
   })
 
   ipcMain.handle('db:worktree:archive', (_event, id: string) => {
-    return getDatabase().archiveWorktree(id)
+    const db = getDatabase()
+    const worktree = db.archiveWorktree(id)
+    if (worktree) notifyAssistantTasksChanged(db)
+    return worktree
   })
 
   ipcMain.handle('db:worktree:touch', (_event, id: string) => {
@@ -270,7 +280,10 @@ export function registerDatabaseHandlers(): void {
   })
 
   ipcMain.handle('db:session:delete', (_event, id: string) => {
-    return getDatabase().deleteSession(id)
+    const db = getDatabase()
+    const deleted = db.deleteSession(id)
+    if (deleted) notifyAssistantTasksChanged(db)
+    return deleted
   })
 
   ipcMain.handle('db:session:getByConnection', (_event, connectionId: string) => {

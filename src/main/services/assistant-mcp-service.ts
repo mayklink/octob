@@ -1,4 +1,4 @@
-import { app, type BrowserWindow } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -149,13 +149,39 @@ export function getAssistantTasks(db: DatabaseService): AssistantTask[] {
     if (!raw) return []
     const tasks = JSON.parse(raw) as unknown
     if (!Array.isArray(tasks)) return []
-    return tasks.filter(isAssistantTask).filter((task) => (
-      Boolean(db.getProject(task.projectId)) &&
-      Boolean(db.getWorktree(task.worktreeId)) &&
-      Boolean(db.getSession(task.sessionId))
-    ))
+    const validTasks = tasks.filter(isAssistantTask).filter((task) => {
+      const worktree = db.getWorktree(task.worktreeId)
+      return (
+        Boolean(db.getProject(task.projectId)) &&
+        worktree?.status === 'active' &&
+        Boolean(db.getSession(task.sessionId))
+      )
+    })
+
+    // Keep the persisted list in sync with resources that were removed or archived
+    // outside the assistant panel. This also removes invalid legacy entries.
+    if (validTasks.length !== tasks.length) {
+      db.setSetting(ASSISTANT_TASKS_KEY, JSON.stringify(validTasks))
+    }
+
+    return validTasks
   } catch {
     return []
+  }
+}
+
+export function removeAssistantTask(db: DatabaseService, sessionId: string): AssistantTask[] {
+  const remainingTasks = getAssistantTasks(db).filter((task) => task.sessionId !== sessionId)
+  db.setSetting(ASSISTANT_TASKS_KEY, JSON.stringify(remainingTasks))
+  return remainingTasks
+}
+
+export function notifyAssistantTasksChanged(db: DatabaseService): void {
+  const tasks = getAssistantTasks(db)
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      window.webContents.send('assistant:tasks-changed', tasks)
+    }
   }
 }
 

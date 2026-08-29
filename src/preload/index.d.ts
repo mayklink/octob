@@ -247,6 +247,8 @@ declare global {
     assistantOps: {
       show: () => Promise<void>
       hide: () => Promise<void>
+      getWorkspacePath: () => Promise<string>
+      onTaskCreated: (callback: (task: { projectId: string; projectName: string; worktreeId: string; worktreePath: string; sessionId: string; title: string }) => void) => () => void
       onOpen: (callback: () => void) => () => void
     }
     db: {

@@ -74,6 +74,7 @@ import { APP_SETTINGS_DB_KEY } from '../shared/types/settings'
 import { openCodeService } from './services/opencode-service'
 import { setKeepAwake, cleanupPowerSaveBlocker } from './services/power-save-blocker'
 import { registerUpdateService } from './services/update-service'
+import { startAssistantMcpService, getAssistantWorkspacePath } from './services/assistant-mcp-service'
 
 const log = createLogger({ component: 'Main' })
 let activeCodexImplementer: CodexImplementer | null = null
@@ -460,6 +461,12 @@ function registerSystemHandlers(openCodeLaunchSpec: OpenCodeLaunchSpec | null): 
     return process.platform
   })
 
+  ipcMain.handle('assistant:getWorkspacePath', () => {
+    const workspacePath = getAssistantWorkspacePath()
+    mkdirSync(workspacePath, { recursive: true })
+    return workspacePath
+  })
+
   // Prevent display sleep while renderer-driven sessions are active.
   // The renderer owns the decision of when to hold the blocker; this handler
   // simply forwards the desired state to the idempotent service.
@@ -678,6 +685,8 @@ app.whenReady().then(async () => {
     sdkManager.setMainWindow(mainWindow)
 
     const databaseService = getDatabase()
+
+    await startAssistantMcpService(databaseService, sdkManager, mainWindow)
 
     log.info('Registering OpenCode handlers')
     registerOpenCodeHandlers(mainWindow, sdkManager, databaseService)

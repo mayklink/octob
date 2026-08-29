@@ -1996,6 +1996,12 @@ const updates = {
 const assistantOps = {
   show: () => ipcRenderer.invoke('assistant:show'),
   hide: () => ipcRenderer.invoke('assistant:hide'),
+  getWorkspacePath: (): Promise<string> => ipcRenderer.invoke('assistant:getWorkspacePath'),
+  onTaskCreated: (callback: (task: { projectId: string; projectName: string; worktreeId: string; worktreePath: string; sessionId: string; title: string }) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, task: { projectId: string; projectName: string; worktreeId: string; worktreePath: string; sessionId: string; title: string }): void => callback(task)
+    ipcRenderer.on('assistant:task-created', handler)
+    return () => ipcRenderer.removeListener('assistant:task-created', handler)
+  },
   onOpen: (callback: () => void): (() => void) => {
     const handler = (): void => callback()
     ipcRenderer.on('assistant:open', handler)

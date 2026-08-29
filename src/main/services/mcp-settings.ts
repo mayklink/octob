@@ -4,6 +4,7 @@ import type { JsonValue } from '@shared/codex-schemas/serde_json/JsonValue'
 import { APP_SETTINGS_DB_KEY } from '@shared/types/settings'
 import type { McpKeyValue, McpServerConfig, McpTransport } from '@shared/types/mcp'
 import type { DatabaseService } from '../db/database'
+import { getAssistantMcpUrl, isAssistantWorkspacePath } from './assistant-mcp-service'
 
 function normalizeKeyValues(value: unknown): McpKeyValue[] {
   if (!Array.isArray(value)) return []
@@ -223,10 +224,9 @@ export function getConfiguredMcpServers(
 
   try {
     const raw = dbService.getSetting(APP_SETTINGS_DB_KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
 
-    return getSelectedMcpServers(parsed, dbService, contextPath)
+    const configured = getSelectedMcpServers(parsed, dbService, contextPath)
       .map((server): McpServer | null => {
         const name = server.name.trim()
         if (!name) return null
@@ -255,6 +255,11 @@ export function getConfiguredMcpServers(
         }
       })
       .filter((server): server is McpServer => server !== null)
+    const internalUrl = isAssistantWorkspacePath(contextPath) ? getAssistantMcpUrl() : null
+    if (internalUrl) {
+      configured.unshift({ type: 'http', name: 'octob', url: internalUrl, headers: [] })
+    }
+    return configured
   } catch {
     return []
   }
@@ -268,9 +273,11 @@ export function getConfiguredCodexMcpServers(
 
   try {
     const raw = dbService.getSetting(APP_SETTINGS_DB_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
     const entries: Array<[string, { [key in string]?: JsonValue }]> = []
+
+    const internalUrl = isAssistantWorkspacePath(contextPath) ? getAssistantMcpUrl() : null
+    if (internalUrl) entries.push(['octob', { url: internalUrl }])
 
     for (const server of getSelectedMcpServers(parsed, dbService, contextPath)) {
 
@@ -316,9 +323,11 @@ export function getConfiguredClaudeMcpServers(
 
   try {
     const raw = dbService.getSetting(APP_SETTINGS_DB_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
     const entries: Array<[string, ClaudeMcpServerConfig]> = []
+
+    const internalUrl = isAssistantWorkspacePath(contextPath) ? getAssistantMcpUrl() : null
+    if (internalUrl) entries.push(['octob', { type: 'http', url: internalUrl }])
 
     for (const server of getSelectedMcpServers(parsed, dbService, contextPath)) {
 

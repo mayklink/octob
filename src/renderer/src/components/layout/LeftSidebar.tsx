@@ -4,7 +4,7 @@ import { useLayoutStore } from '@/stores/useLayoutStore'
 import { useProjectStore, useConnectionStore, useFilterStore, useSpaceStore } from '@/stores'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { ResizeHandle } from './ResizeHandle'
-import { ChevronRight, FolderGit2, Link, Loader2 } from 'lucide-react'
+import { Bot, ChevronRight, FolderGit2, Link, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   ProjectList,
@@ -20,6 +20,7 @@ import { ProjectFilter } from '@/components/projects/ProjectFilter'
 import { UsageIndicator } from './UsageIndicator'
 import { PinnedList } from './PinnedList'
 import { RecentList } from './RecentList'
+import { useGlobalAssistantStore } from '@/stores/useGlobalAssistantStore'
 
 export function LeftSidebar(): React.JSX.Element {
   const { t } = useTranslation()
@@ -32,6 +33,7 @@ export function LeftSidebar(): React.JSX.Element {
     (usageIndicatorMode === 'specific-providers' && usageIndicatorProviders.length > 0)
   const [filterQuery, setFilterQuery] = useState('')
   const [connectionsExpanded, setConnectionsExpanded] = useState(false)
+  const globalAssistantOpen = useGlobalAssistantStore((s) => s.isOpen)
 
   // Filter store for language filters
   const activeLanguages = useFilterStore((s) => s.activeLanguages)
@@ -161,16 +163,31 @@ export function LeftSidebar(): React.JSX.Element {
             </div>
           </div>
         ) : (
-          <div className="px-3 py-2.5 border-b flex items-center justify-between">
-            <div className="flex items-center gap-2 text-sm font-medium">
-              <FolderGit2 className="h-4 w-4" />
-              <span>{t('common.projects')}</span>
-            </div>
-            <div className="flex items-center gap-0.5">
-              <RecentToggleButton />
-              <ExpandProjectsButton />
-              <SortProjectsButton />
-              <AddProjectButton />
+          <div className="border-b">
+            <button
+              type="button"
+              onClick={() => useGlobalAssistantStore.getState().open()}
+              className={`mx-2 mt-2 flex w-[calc(100%-1rem)] items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                globalAssistantOpen
+                  ? 'bg-primary/12 text-primary'
+                  : 'text-sidebar-foreground hover:bg-sidebar-accent'
+              }`}
+            >
+              <Bot className="h-4 w-4" />
+              <span className="flex-1 text-left">Assistente</span>
+              <span className="rounded-full border px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">Global</span>
+            </button>
+            <div className="px-3 py-2.5 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <FolderGit2 className="h-4 w-4" />
+                <span>{t('common.projects')}</span>
+              </div>
+              <div className="flex items-center gap-0.5">
+                <RecentToggleButton />
+                <ExpandProjectsButton />
+                <SortProjectsButton />
+                <AddProjectButton />
+              </div>
             </div>
           </div>
         )}

@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { toast } from '@/lib/toast'
 import { registerConnectionClear, clearWorktreeSelection } from './store-coordination'
+import { useGlobalAssistantStore } from './useGlobalAssistantStore'
 
 // Connection types matching the database schema
 interface ConnectionMemberEnriched {
@@ -333,6 +334,7 @@ export const useConnectionStore = create<ConnectionState>()(
       selectConnection: (id: string | null) => {
         set({ selectedConnectionId: id })
         if (id) {
+          useGlobalAssistantStore.getState().close()
           // Deconflict: clear worktree selection synchronously (same tick)
           clearWorktreeSelection()
         }

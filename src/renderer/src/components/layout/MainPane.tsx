@@ -17,6 +17,8 @@ import { MainPaneTerminalPanel } from './MainPaneTerminalPanel'
 import { SettingsView } from '@/components/settings'
 import { ProjectDashboard } from '@/components/projects/ProjectDashboard'
 import { WorkspaceFocusView } from './WorkspaceFocusView'
+import { GlobalAssistantView } from '@/components/assistant/GlobalAssistantView'
+import { useGlobalAssistantStore } from '@/stores/useGlobalAssistantStore'
 
 const SESSION_TERMINAL_VIEW_IDLE_UNMOUNT_MS = 60_000
 const MAX_MOUNTED_SESSION_TERMINAL_VIEWS = 2
@@ -53,6 +55,7 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
   const workspaceMode = useLayoutStore((state) => state.workspaceMode)
   const terminalPosition = useSettingsStore((s) => s.terminalPosition)
   const settingsOpen = useSettingsStore((s) => s.isOpen)
+  const globalAssistantOpen = useGlobalAssistantStore((s) => s.isOpen)
   const selectedProjectId = useProjectStore((state) => state.selectedProjectId)
   const selectedWorktreePath = useMemo(() => {
     if (!selectedWorktreeId) return null
@@ -227,6 +230,10 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
 
     if (settingsOpen) {
       return <SettingsView />
+    }
+
+    if (globalAssistantOpen) {
+      return <GlobalAssistantView />
     }
 
     if (

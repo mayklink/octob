@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { LANGUAGE_MAP } from '@/components/projects/LanguageIcon'
+import { useGlobalAssistantStore } from './useGlobalAssistantStore'
 
 // Project type matching the database schema
 interface Project {
@@ -282,6 +283,7 @@ export const useProjectStore = create<ProjectState>()(
       selectProject: (id: string | null, options?: ProjectSelectionOptions) => {
         set({ selectedProjectId: id })
         if (id) {
+          useGlobalAssistantStore.getState().close()
           // Touch project to update last_accessed_at
           get().touchProject(id)
         }

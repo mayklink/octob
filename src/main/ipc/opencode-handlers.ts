@@ -10,6 +10,7 @@ import { CodexImplementer } from '../services/codex-implementer'
 import { MistralVibeImplementer } from '../services/mistral-vibe-implementer'
 import { CursorCliImplementer } from '../services/cursor-cli-implementer'
 import { toError } from '../services/error-utils'
+import { isAssistantWorkspacePath } from '../services/assistant-mcp-service'
 
 const log = createLogger({ component: 'OpenCodeHandlers' })
 
@@ -249,6 +250,35 @@ export function registerOpenCodeHandlers(
             worktreePath,
             error: err instanceof Error ? err.message : String(err)
           })
+        }
+      }
+    }
+
+    // A global assistant is a real long-lived agent session, not a renderer-side
+    // intent router. Give the model its operating contract while keeping the
+    // user's visible message untouched in the transcript UI.
+    if (isAssistantWorkspacePath(worktreePath)) {
+      const globalContext = `[Global Assistant Operating Context]
+You are Octob's global assistant. This is a clean workspace with no repository context preloaded. Use the internal Octob tools to discover registered projects only when the conversation requires it. Other enabled MCP tools provide external sources.
+Interpret the user naturally; do not use canned responses or keyword routing. Reason about ambiguity and ask a concise clarifying question when a project, source, account, or scope is genuinely unclear.
+When the user states a durable preference such as where a project's work items live, use remember_project_instruction after resolving the project. Apply saved assistant_instructions in later conversations; if the user retracts or replaces one, use forget_project_instruction and save the replacement.
+Use list_projects to resolve a project name or nickname before asking the user, and get_project only after narrowing the target. Use create_worktree_and_delegate only after the user chooses or approves concrete work; pass a complete prompt that you elaborated for the delegated agent.
+Do not create branches, worktrees, edit code, or start implementation while merely discovering or listing work. First research and present the findings. Wait for the user to choose work before moving into execution.
+Never claim that a source was searched unless you actually used the corresponding tool or inspected it successfully.
+
+[User Message]
+`
+      if (typeof messageOrParts === 'string') {
+        messageOrParts = globalContext + messageOrParts
+      } else if (Array.isArray(messageOrParts)) {
+        const textPartIndex = messageOrParts.findIndex((part) => part.type === 'text')
+        if (textPartIndex >= 0) {
+          const textPart = messageOrParts[textPartIndex]
+          messageOrParts = [...messageOrParts]
+          messageOrParts[textPartIndex] = {
+            ...textPart,
+            text: globalContext + (textPart.text ?? '')
+          }
         }
       }
     }

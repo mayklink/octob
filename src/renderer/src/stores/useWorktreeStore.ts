@@ -9,6 +9,7 @@ import type { SelectedModel } from './useSettingsStore'
 import { toast } from '@/lib/toast'
 import { deleteBuffer } from '@/lib/output-ring-buffer'
 import { registerWorktreeClear, clearConnectionSelection } from './store-coordination'
+import { useGlobalAssistantStore } from './useGlobalAssistantStore'
 
 /** Fire-and-forget: run setup script for a worktree, subscribing to output events
  *  so output is captured even when SetupTab is not mounted. */
@@ -673,6 +674,7 @@ export const useWorktreeStore = create<WorktreeState>((set, get) => ({
   selectWorktree: (id: string | null, options?: WorktreeSelectionOptions) => {
     const previousWorktreeId = get().selectedWorktreeId
     set({ selectedWorktreeId: id })
+    if (id) useGlobalAssistantStore.getState().close()
     persistSelectedWorktreeId(id)
     applyWorktreeSelectionEffects(previousWorktreeId, id, {
       clearConnectionSelection: Boolean(id),

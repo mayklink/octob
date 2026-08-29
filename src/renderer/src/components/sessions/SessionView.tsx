@@ -288,6 +288,7 @@ function delay(ms: number): Promise<void> {
 
 interface SessionViewProps {
   sessionId: string
+  workspacePathOverride?: string
 }
 
 interface SessionRetryState {
@@ -509,7 +510,7 @@ function ErrorState({ message, onRetry }: ErrorStateProps): React.JSX.Element {
 }
 
 // Main SessionView component
-export function SessionView({ sessionId }: SessionViewProps): React.JSX.Element {
+export function SessionView({ sessionId, workspacePathOverride }: SessionViewProps): React.JSX.Element {
   // State
   const [messages, setMessagesState] = useState<OpenCodeMessage[]>([])
   const [inputValue, setInputValue] = useState('')
@@ -2779,8 +2780,11 @@ export function SessionView({ sessionId }: SessionViewProps): React.JSX.Element 
             })
         }
 
-        let wtPath: string | null = null
-        if (session.worktree_id) {
+        let wtPath: string | null = workspacePathOverride ?? null
+        if (wtPath) {
+          setWorktreePath(wtPath)
+          transcriptSourceRef.current.worktreePath = wtPath
+        } else if (session.worktree_id) {
           setWorktreeId(session.worktree_id)
           const worktree = (await window.db.worktree.get(session.worktree_id)) as DbWorktree | null
           if (shouldAbortInit()) return
@@ -3295,13 +3299,18 @@ export function SessionView({ sessionId }: SessionViewProps): React.JSX.Element 
         throw new Error('Session not found')
       }
 
-      if (!session.worktree_id) {
+      if (workspacePathOverride) {
+        setWorktreePath(workspacePathOverride)
+        transcriptSourceRef.current.worktreePath = workspacePathOverride
+      } else if (!session.worktree_id) {
         setMessages([])
         setViewState({ status: 'connected' })
         return
       }
 
-      const worktree = (await window.db.worktree.get(session.worktree_id)) as DbWorktree | null
+      const worktree = workspacePathOverride
+        ? ({ path: workspacePathOverride } as DbWorktree)
+        : (await window.db.worktree.get(session.worktree_id!)) as DbWorktree | null
       if (!worktree) {
         setMessages([])
         setViewState({ status: 'connected' })
@@ -3939,6 +3948,20 @@ export function SessionView({ sessionId }: SessionViewProps): React.JSX.Element 
     [forkingMessageId, opencodeSessionId, sessionId, sessionRecord, worktreeId, worktreePath]
   )
 
+  // Codex prompt IPC resolves only after the turn has completed. Stream events
+  // normally finalize the UI first, but a renderer event can be missed during
+  // a view transition. Reconcile from the durable transcript so the composer
+  // never remains stuck and the completed response is always shown.
+  const reconcileCompletedCodexPrompt = useCallback(async (): Promise<void> => {
+    if (sessionAgentSdk !== 'codex') return
+
+    await refreshMessagesFromOpenCode()
+    newPromptPendingRef.current = false
+    setIsCompacting(false)
+    setIsStreaming(false)
+    setIsSending(false)
+  }, [refreshMessagesFromOpenCode, sessionAgentSdk])
+
   // Handle send message
   const handleSend = useCallback(
     async (overrideValue?: string) => {
@@ -4130,6 +4153,8 @@ export function SessionView({ sessionId }: SessionViewProps): React.JSX.Element 
               console.error('Failed to send /ask question:', result.error)
               toast.error('Failed to send question')
               setIsSending(false)
+            } else {
+              await reconcileCompletedCodexPrompt()
             }
           } catch (error) {
             console.error('Error sending /ask question:', error)
@@ -4347,6 +4372,8 @@ export function SessionView({ sessionId }: SessionViewProps): React.JSX.Element 
                 console.error('Failed to send prompt to OpenCode:', result.error)
                 toast.error('Failed to send message to AI')
                 setIsSending(false)
+              } else {
+                await reconcileCompletedCodexPrompt()
               }
             }
           } else {
@@ -4376,6 +4403,8 @@ export function SessionView({ sessionId }: SessionViewProps): React.JSX.Element 
               console.error('Failed to send prompt to OpenCode:', result.error)
               toast.error('Failed to send message to AI')
               setIsSending(false)
+            } else {
+              await reconcileCompletedCodexPrompt()
             }
           }
           // Don't set isSending to false here - wait for streaming to complete
@@ -4417,7 +4446,8 @@ export function SessionView({ sessionId }: SessionViewProps): React.JSX.Element 
       resetAutoScrollState,
       stripAtMentions,
       isBashRunning,
-      runBashCommand
+      runBashCommand,
+      reconcileCompletedCodexPrompt
     ]
   )
 

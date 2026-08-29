@@ -1997,8 +1997,9 @@ const assistantOps = {
   show: () => ipcRenderer.invoke('assistant:show'),
   hide: () => ipcRenderer.invoke('assistant:hide'),
   getWorkspacePath: (): Promise<string> => ipcRenderer.invoke('assistant:getWorkspacePath'),
-  onTaskCreated: (callback: (task: { projectId: string; projectName: string; worktreeId: string; worktreePath: string; sessionId: string; title: string }) => void): (() => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, task: { projectId: string; projectName: string; worktreeId: string; worktreePath: string; sessionId: string; title: string }): void => callback(task)
+  listTasks: (): Promise<import('@shared/types/assistant').AssistantTask[]> => ipcRenderer.invoke('assistant:listTasks'),
+  onTaskCreated: (callback: (task: import('@shared/types/assistant').AssistantTask) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, task: import('@shared/types/assistant').AssistantTask): void => callback(task)
     ipcRenderer.on('assistant:task-created', handler)
     return () => ipcRenderer.removeListener('assistant:task-created', handler)
   },

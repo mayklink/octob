@@ -11,9 +11,11 @@ import { createWorktreeOp } from './worktree-ops'
 import { APP_SETTINGS_DB_KEY } from '@shared/types/settings'
 import { createLogger } from './logger'
 import { openCodeService } from './opencode-service'
+import type { AssistantTask } from '@shared/types/assistant'
 
 const log = createLogger({ component: 'AssistantMcpService' })
 const ASSISTANT_PROJECT_INSTRUCTIONS_KEY = 'assistant_project_instructions_v1'
+const ASSISTANT_TASKS_KEY = 'assistant_delegated_tasks_v1'
 let assistantMcpUrl: string | null = null
 
 export function getAssistantWorkspacePath(): string {
@@ -59,6 +61,40 @@ function readProjectInstructions(db: DatabaseService): Record<string, string[]> 
 
 function writeProjectInstructions(db: DatabaseService, value: Record<string, string[]>): void {
   db.setSetting(ASSISTANT_PROJECT_INSTRUCTIONS_KEY, JSON.stringify(value))
+}
+
+function isAssistantTask(value: unknown): value is AssistantTask {
+  if (!value || typeof value !== 'object') return false
+  const task = value as Record<string, unknown>
+  return (
+    typeof task.projectId === 'string' &&
+    typeof task.projectName === 'string' &&
+    typeof task.worktreeId === 'string' &&
+    typeof task.worktreePath === 'string' &&
+    typeof task.sessionId === 'string' &&
+    typeof task.title === 'string'
+  )
+}
+
+export function getAssistantTasks(db: DatabaseService): AssistantTask[] {
+  try {
+    const raw = db.getSetting(ASSISTANT_TASKS_KEY)
+    if (!raw) return []
+    const tasks = JSON.parse(raw) as unknown
+    if (!Array.isArray(tasks)) return []
+    return tasks.filter(isAssistantTask).filter((task) => (
+      Boolean(db.getProject(task.projectId)) &&
+      Boolean(db.getWorktree(task.worktreeId)) &&
+      Boolean(db.getSession(task.sessionId))
+    ))
+  } catch {
+    return []
+  }
+}
+
+function recordAssistantTask(db: DatabaseService, task: AssistantTask): void {
+  const tasks = [task, ...getAssistantTasks(db).filter((item) => item.sessionId !== task.sessionId)]
+  db.setSetting(ASSISTANT_TASKS_KEY, JSON.stringify(tasks.slice(0, 100)))
 }
 
 export async function startAssistantMcpService(
@@ -170,14 +206,30 @@ export async function startAssistantMcpService(
       const implementer = agentSdk === 'opencode' ? openCodeService : sdkManager.getImplementer(agentSdk)
       const connected = await implementer.connect(result.worktree.path, session.id)
       db.updateSession(session.id, { opencode_session_id: connected.sessionId })
-      await implementer.prompt(result.worktree.path, connected.sessionId, prompt)
-      mainWindow.webContents.send('assistant:task-created', {
+      const task: AssistantTask = {
         projectId: project.id,
         projectName: project.name,
         worktreeId: result.worktree.id,
         worktreePath: result.worktree.path,
         sessionId: session.id,
         title
+      }
+
+      // Persist and announce the task before starting the long-running prompt.
+      // The MCP call must return immediately so the global assistant remains
+      // responsive while the delegated agent continues in the background.
+      recordAssistantTask(db, task)
+      mainWindow.webContents.send('assistant:task-created', task)
+      void implementer.prompt(result.worktree.path, connected.sessionId, prompt).catch((error) => {
+        log.error(
+          'Delegated assistant task failed',
+          error instanceof Error ? error : new Error(String(error)),
+          { sessionId: session.id, worktreePath: result.worktree!.path }
+        )
+        db.updateSession(session.id, {
+          status: 'error',
+          completed_at: new Date().toISOString()
+        })
       })
       return text({
         success: true,

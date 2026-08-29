@@ -8,6 +8,7 @@ import { useSessionStore } from '@/stores/useSessionStore'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
+import type { AssistantTask } from '@shared/types/assistant'
 
 const GLOBAL_SCOPE_ID = '__octob_global_assistant__'
 
@@ -72,9 +73,23 @@ export function GlobalAssistantView(): React.JSX.Element {
   const [isStartingNewSession, setIsStartingNewSession] = useState(false)
   const projectId = projects[0]?.id
 
-  useEffect(() => window.assistantOps.onTaskCreated((task) => {
-    useGlobalAssistantStore.getState().addTask(task)
-  }), [])
+  useEffect(() => {
+    let cancelled = false
+    const unsubscribe = window.assistantOps.onTaskCreated((task) => {
+      useGlobalAssistantStore.getState().addTask(task)
+    })
+
+    void window.assistantOps.listTasks().then((persistedTasks) => {
+      if (!cancelled) useGlobalAssistantStore.getState().mergeTasks(persistedTasks)
+    }).catch((cause) => {
+      console.warn('Failed to load delegated assistant tasks:', cause)
+    })
+
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -144,6 +159,16 @@ export function GlobalAssistantView(): React.JSX.Element {
     } finally {
       setIsStartingNewSession(false)
     }
+  }
+
+  const handleOpenTask = async (task: AssistantTask): Promise<void> => {
+    useProjectStore.getState().selectProject(task.projectId)
+    useWorktreeStore.getState().selectWorktree(task.worktreeId)
+
+    const sessionStore = useSessionStore.getState()
+    sessionStore.setActiveWorktree(task.worktreeId)
+    await sessionStore.loadSessions(task.worktreeId, task.projectId)
+    useSessionStore.getState().setActiveSession(task.sessionId)
   }
 
   if (error) {
@@ -240,10 +265,20 @@ export function GlobalAssistantView(): React.JSX.Element {
             return (
               <article
                 key={task.sessionId}
-                className={`rounded-xl border p-3.5 transition-colors ${
+                role="link"
+                tabIndex={0}
+                title={`Abrir ${worktreeName(task.worktreePath)} nesta sessão`}
+                onClick={() => void handleOpenTask(task)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    void handleOpenTask(task)
+                  }
+                }}
+                className={`cursor-pointer rounded-xl border p-3.5 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
                   ready
-                    ? 'border-emerald-500/45 bg-emerald-500/[0.06]'
-                    : 'border-border/80 bg-card/80'
+                    ? 'border-emerald-500/45 bg-emerald-500/[0.06] hover:border-emerald-500/70 hover:bg-emerald-500/[0.1]'
+                    : 'border-border/80 bg-card/80 hover:border-primary/45 hover:bg-card'
                 }`}
               >
                 <div className="flex items-start justify-between gap-3">
@@ -286,15 +321,10 @@ export function GlobalAssistantView(): React.JSX.Element {
                     variant="outline"
                     size="sm"
                     className="mt-3 h-8 w-full justify-between border-emerald-500/30 bg-emerald-500/[0.04] px-3 text-xs hover:bg-emerald-500/10"
-                    onClick={() => { void (async () => {
-                      useGlobalAssistantStore.getState().close()
-                      useProjectStore.getState().selectProject(task.projectId)
-                      useWorktreeStore.getState().selectWorktree(task.worktreeId)
-                      const sessionStore = useSessionStore.getState()
-                      sessionStore.setActiveWorktree(task.worktreeId)
-                      await sessionStore.loadSessions(task.worktreeId, task.projectId)
-                      useSessionStore.getState().setActiveSession(task.sessionId)
-                    })() }}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      void handleOpenTask(task)
+                    }}
                   >
                     Abrir worktree
                     <ArrowRight className="h-3.5 w-3.5" />

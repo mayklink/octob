@@ -248,7 +248,8 @@ declare global {
       show: () => Promise<void>
       hide: () => Promise<void>
       getWorkspacePath: () => Promise<string>
-      onTaskCreated: (callback: (task: { projectId: string; projectName: string; worktreeId: string; worktreePath: string; sessionId: string; title: string }) => void) => () => void
+      listTasks: () => Promise<import('@shared/types/assistant').AssistantTask[]>
+      onTaskCreated: (callback: (task: import('@shared/types/assistant').AssistantTask) => void) => () => void
       onOpen: (callback: () => void) => () => void
     }
     db: {

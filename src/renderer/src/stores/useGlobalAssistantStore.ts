@@ -1,14 +1,16 @@
 import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
+import type { AssistantTask } from '@shared/types/assistant'
 
 interface GlobalAssistantState {
   isOpen: boolean
   assistantSessionId: string | null
-  tasks: Array<{ projectId: string; projectName: string; worktreeId: string; worktreePath: string; sessionId: string; title: string }>
+  tasks: AssistantTask[]
   open: () => void
   close: () => void
   setAssistantSessionId: (sessionId: string) => void
   addTask: (task: GlobalAssistantState['tasks'][number]) => void
+  mergeTasks: (tasks: AssistantTask[]) => void
 }
 
 export const useGlobalAssistantStore = create<GlobalAssistantState>()(
@@ -22,6 +24,11 @@ export const useGlobalAssistantStore = create<GlobalAssistantState>()(
       setAssistantSessionId: (assistantSessionId) => set({ assistantSessionId }),
       addTask: (task) => set((state) => ({
         tasks: [task, ...state.tasks.filter((item) => item.sessionId !== task.sessionId)]
+      })),
+      mergeTasks: (tasks) => set((state) => ({
+        tasks: [...tasks, ...state.tasks].filter(
+          (task, index, all) => all.findIndex((item) => item.sessionId === task.sessionId) === index
+        )
       }))
     }),
     {

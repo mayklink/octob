@@ -259,11 +259,11 @@ export function AppLayout({ children }: AppLayoutProps): React.JSX.Element {
           {displayLayout === 'compact' && (
             <ErrorBoundary
               componentName="LeftSidebar"
-              fallback={
+              fallback={(error, reset) => (
                 <div className="w-60 border-r bg-muted/50 flex items-center justify-center">
-                  <ErrorFallback compact title="Sidebar Error" />
+                  <ErrorFallback compact title="Sidebar Error" error={error} resetError={reset} />
                 </div>
-              }
+              )}
             >
               <LeftSidebar />
             </ErrorBoundary>

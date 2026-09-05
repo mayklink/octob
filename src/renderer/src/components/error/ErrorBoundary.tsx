@@ -4,7 +4,11 @@ import { Button } from '../ui/button'
 
 interface Props {
   children: ReactNode
-  fallback?: ReactNode
+  /**
+   * Static node, or a render function that receives the caught error so the
+   * fallback can show the real message instead of a generic placeholder.
+   */
+  fallback?: ReactNode | ((error: Error | null, reset: () => void) => ReactNode)
   onError?: (error: Error, errorInfo: ErrorInfo) => void
   componentName?: string
 }
@@ -31,8 +35,12 @@ export class ErrorBoundary extends Component<Props, State> {
   public componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
     this.setState({ errorInfo })
 
-    // Log to console in development
-    console.error('ErrorBoundary caught error:', error, errorInfo)
+    // Log as a flat string so the main process (console-message listener) can
+    // persist a readable entry in packaged builds where DevTools is disabled.
+    console.error(
+      `ErrorBoundary[${this.props.componentName ?? 'unknown'}] ${error?.name}: ${error?.message}\n` +
+        `${error?.stack ?? 'no stack'}\nComponent stack:${errorInfo?.componentStack ?? 'n/a'}`
+    )
 
     // Call optional error handler
     this.props.onError?.(error, errorInfo)
@@ -86,6 +94,9 @@ ${errorInfo?.componentStack || 'No component stack'}
 
     if (hasError) {
       // If custom fallback provided, use it
+      if (typeof fallback === 'function') {
+        return fallback(error, this.handleReset)
+      }
       if (fallback) {
         return fallback
       }

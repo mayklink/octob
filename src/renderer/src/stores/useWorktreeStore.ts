@@ -232,6 +232,10 @@ function resolveArchiveFallbackWorktreeId(
   return remaining[0]?.id ?? null
 }
 
+// Projects whose language/favicon auto-detection already ran in this session.
+// Explicit refresh from the project context menu bypasses this set.
+const languageDetectionAttempted = new Set<string>()
+
 function applyWorktreeSelectionEffects(
   previousWorktreeId: string | null,
   nextWorktreeId: string | null,
@@ -288,7 +292,17 @@ function applyWorktreeSelectionEffects(
     if (worktree) {
       const ps = useProjectStore.getState()
       const project = ps.projects.find((p) => p.id === worktree.project_id)
-      if (project && !project.language && !project.custom_icon) {
+      if (
+        project &&
+        !project.language &&
+        !project.custom_icon &&
+        !languageDetectionAttempted.has(project.id)
+      ) {
+        // Detection legitimately returns null for projects with no recognizable
+        // language, which leaves `project.language` falsy forever. Without this
+        // guard every selection re-runs detection, and each run writes to the
+        // project store — feeding back into selection effects.
+        languageDetectionAttempted.add(project.id)
         void ps.refreshLanguage(project.id, worktree.path)
       }
     }

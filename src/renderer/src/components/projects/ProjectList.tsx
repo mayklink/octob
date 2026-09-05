@@ -102,10 +102,20 @@ export function ProjectList({
   // Restore the last selected workspace only after the project list is known.
   // This validates stale local state (for example, after a project was removed)
   // and triggers the session-store hydration for the selected workspace.
-  useEffect(() => {
-    if (projects.length === 0 || !selectedProjectId) return
+  //
+  // NOTE: this effect must NOT depend on the `projects` array identity. It calls
+  // selectWorktree, which can write back to the project store (language/favicon
+  // detection), producing a new array on every run — that is an infinite
+  // update loop. Depend on the two facts actually used instead.
+  const hasProjects = projects.length > 0
+  const selectedProjectExists = selectedProjectId
+    ? projects.some((project) => project.id === selectedProjectId)
+    : false
 
-    if (!projects.some((project) => project.id === selectedProjectId)) {
+  useEffect(() => {
+    if (!hasProjects || !selectedProjectId) return
+
+    if (!selectedProjectExists) {
       selectProject(null)
       selectWorktree(null)
       return
@@ -127,7 +137,15 @@ export function ProjectList({
         selectWorktree(null)
       }
     })()
-  }, [projects, selectedProjectId, selectedWorktreeId, loadWorktrees, selectWorktree, selectProject])
+  }, [
+    hasProjects,
+    selectedProjectExists,
+    selectedProjectId,
+    selectedWorktreeId,
+    loadWorktrees,
+    selectWorktree,
+    selectProject
+  ])
 
   // Space filtering: restrict to projects in the active space
   const activeSpaceId = useSpaceStore((s) => s.activeSpaceId)

@@ -232,6 +232,20 @@ function createWindow(): void {
     log.error('Renderer process gone', new Error(details.reason), { exitCode: details.exitCode })
   })
 
+  // Forward renderer console errors/warnings to the log file. In packaged builds
+  // DevTools is unavailable, so this is the only way to see renderer crashes.
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    // level: 0=verbose 1=info 2=warning 3=error
+    if (level >= 2) {
+      log.error('Renderer console', undefined, { level, message, line, sourceId })
+    }
+  })
+
+  // Escape hatch: allow opening DevTools in packaged builds with OCTOB_DEVTOOLS=1
+  if (process.env.OCTOB_DEVTOOLS === '1') {
+    mainWindow.webContents.openDevTools({ mode: 'detach' })
+  }
+
   mainWindow.on('unresponsive', () => {
     log.warn('Window became unresponsive')
   })

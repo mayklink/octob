@@ -136,11 +136,11 @@ export function RightSidebar(): React.JSX.Element {
         >
           <ErrorBoundary
             componentName="FileSidebar"
-            fallback={
+            fallback={(error, reset) => (
               <div className="flex-1 p-2">
-                <ErrorFallback compact title="File sidebar error" />
+                <ErrorFallback compact title="File sidebar error" error={error} resetError={reset} />
               </div>
-            }
+            )}
           >
             <FileSidebar
               worktreePath={selectedWorktreePath}

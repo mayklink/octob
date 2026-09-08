@@ -2935,6 +2935,7 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
         // renders immediately before the first thread/tokenUsage/updated event.
         if (sessionRecord?.agent_sdk === 'codex') {
           const codexModels = [
+            { id: 'gpt-6-astra', context: 272000 },
             { id: 'gpt-5.6-sol', context: 272000 },
             { id: 'gpt-5.6-terra', context: 272000 },
             { id: 'gpt-5.6-luna', context: 272000 },

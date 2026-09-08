@@ -35,6 +35,13 @@ const CODEX_LUNA_EFFORT_VARIANTS: Record<string, Record<string, never>> = {
 
 export const CODEX_MODELS: CodexModelInfo[] = [
   {
+    id: 'gpt-6-astra',
+    name: 'GPT-6 Astra',
+    limit: { context: 272000, output: 128000 },
+    variants: CODEX_SOL_EFFORT_VARIANTS,
+    defaultVariant: 'medium'
+  },
+  {
     id: 'gpt-5.6-sol',
     name: 'GPT-5.6 Sol',
     limit: { context: 272000, output: 128000 },
@@ -134,6 +141,10 @@ export function getCodexModelInfo(
 // ── Model slug normalization ──────────────────────────────────────
 
 export const CODEX_MODEL_ALIASES: Record<string, string> = {
+  '6': 'gpt-6-astra',
+  'gpt-6': 'gpt-6-astra',
+  astra: 'gpt-6-astra',
+  '6-astra': 'gpt-6-astra',
   '5.6': 'gpt-5.6-sol',
   'gpt-5.6': 'gpt-5.6-sol',
   '5.6-sol': 'gpt-5.6-sol',

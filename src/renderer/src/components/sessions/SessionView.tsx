@@ -1162,11 +1162,16 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
     if (!isStreaming || !worktreePath || activePermission) return
     if (!sdkUsesAggregatorPermissionList(sessionAgentSdk)) return
 
-    // First check after a short delay, then periodic
+    let disposed = false
+    let pending = false
+    // Keep the safety net, but never overlap slow IPC requests.
     const timerId = setInterval(() => {
+      if (pending || document.hidden) return
+      pending = true
       window.opencodeOps
         ?.permissionList(worktreePath)
         .then((result) => {
+          if (disposed) return
           if (result.success && result.permissions) {
             for (const req of result.permissions) {
               const r = req as PermissionRequest
@@ -1181,9 +1186,13 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
         .catch(() => {
           // Silently ignore — this is a best-effort check
         })
+        .finally(() => { pending = false })
     }, 3000)
 
-    return () => clearInterval(timerId)
+    return () => {
+      disposed = true
+      clearInterval(timerId)
+    }
   }, [isStreaming, worktreePath, activePermission, sessionId, sessionAgentSdk])
 
   // Clean up rAF-based streaming and scroll guards on unmount

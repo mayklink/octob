@@ -1,4 +1,4 @@
-import simpleGit, { SimpleGit, BranchSummary } from 'simple-git'
+import simpleGit, { SimpleGit, BranchSummary, StatusResult } from 'simple-git'
 import { app } from 'electron'
 import { join, basename, dirname, normalize, resolve } from 'path'
 import {
@@ -183,10 +183,26 @@ export interface GitDiffStatResult {
 export class GitService {
   private repoPath: string
   private git: SimpleGit
+  private statusGit: SimpleGit
+  private pendingStatus: Promise<StatusResult> | null = null
 
   constructor(repoPath: string) {
     this.repoPath = repoPath
     this.git = simpleGit(repoPath)
+    // Background status must not rewrite the index and trigger our own watcher.
+    this.statusGit = simpleGit(repoPath).env({ ...process.env, GIT_OPTIONAL_LOCKS: '0' })
+  }
+
+  private readStatus(): Promise<StatusResult> {
+    if (this.pendingStatus) return this.pendingStatus
+    // File and branch panels consume the same snapshot; retain it only in flight.
+    const request = this.statusGit.status().then((status) => status)
+    this.pendingStatus = request
+    const release = (): void => {
+      if (this.pendingStatus === request) this.pendingStatus = null
+    }
+    void request.then(release, release)
+    return request
   }
 
   private normalizePathForWorktreeMatch(worktreePath: string): string {
@@ -705,7 +721,7 @@ export class GitService {
    */
   async getFileStatuses(): Promise<GitStatusResult> {
     try {
-      const status = await this.git.status()
+      const status = await this.readStatus()
       const files: GitFileStatus[] = []
       const conflictedSet = new Set(status.conflicted)
 
@@ -845,7 +861,7 @@ export class GitService {
    */
   async getBranchInfo(): Promise<GitBranchInfoResult> {
     try {
-      const status = await this.git.status()
+      const status = await this.readStatus()
       const branchName = status.current || 'HEAD'
 
       // Get tracking branch info

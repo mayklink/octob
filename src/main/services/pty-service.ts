@@ -134,7 +134,7 @@ class PtyService {
       const code = exitCode ?? -1
       const sig = signal ?? 0
       log.info('PTY exited', { id, exitCode: code, signal: sig })
-      for (const listener of instance.exitListeners) {
+      for (const listener of [...instance.exitListeners]) {
         try {
           listener(code, sig)
         } catch (err) {
@@ -145,7 +145,10 @@ class PtyService {
           )
         }
       }
-      this.ptys.delete(id)
+      instance.dataListeners.length = 0
+      instance.exitListeners.length = 0
+      // A delayed exit from a destroyed PTY must not remove its replacement.
+      if (this.ptys.get(id) === instance) this.ptys.delete(id)
     })
 
     this.ptys.set(id, instance)

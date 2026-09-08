@@ -6,6 +6,31 @@ const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
 // Pending promise resolvers — accumulated so ALL callers resolve when debounced work completes
 const pendingResolvers = new Map<string, Array<() => void>>()
 const REFRESH_DEBOUNCE_MS = 150
+const activeRefreshes = new Map<string, Set<{ cancelled: boolean }>>()
+
+interface PendingLoad {
+  promise: Promise<void>
+  cancelled: boolean
+}
+const fileLoads = new Map<string, PendingLoad>()
+const branchLoads = new Map<string, PendingLoad>()
+
+function coalesceLoad(
+  loads: Map<string, PendingLoad>,
+  path: string,
+  load: (isCurrent: () => boolean) => Promise<void>
+): Promise<void> {
+  const existing = loads.get(path)
+  if (existing) return existing.promise
+  const entry: PendingLoad = { promise: Promise.resolve(), cancelled: false }
+  loads.set(path, entry)
+  entry.promise = Promise.resolve()
+    .then(() => load(() => !entry.cancelled))
+    .finally(() => {
+      if (loads.get(path) === entry) loads.delete(path)
+    })
+  return entry.promise
+}
 
 // Git status types matching main process
 type GitStatusCode = 'M' | 'A' | 'D' | '?' | 'C' | ''
@@ -195,13 +220,15 @@ export const useGitStore = create<GitStoreState>()((set, get) => ({
   createPRWorktreePath: null,
 
   // Load file statuses for a worktree
-  loadFileStatuses: async (worktreePath: string) => {
+  loadFileStatuses: (worktreePath: string) => coalesceLoad(fileLoads, worktreePath, async (isCurrent) => {
+    if (!isCurrent()) return
     const hadCachedStatuses = get().fileStatusesByWorktree.has(worktreePath)
     if (!hadCachedStatuses) {
       set({ isLoading: true, error: null })
     }
     try {
       const result = await window.gitOps.getFileStatuses(worktreePath)
+      if (!isCurrent()) return
       if (!result.success || !result.files) {
         set({
           error: result.error || 'Failed to load file statuses',
@@ -236,17 +263,20 @@ export const useGitStore = create<GitStoreState>()((set, get) => ({
         }
       })
     } catch (error) {
+      if (!isCurrent()) return
       set({
         error: error instanceof Error ? error.message : 'Failed to load file statuses',
         isLoading: false
       })
     }
-  },
+  }),
 
   // Load branch info for a worktree
-  loadBranchInfo: async (worktreePath: string) => {
+  loadBranchInfo: (worktreePath: string) => coalesceLoad(branchLoads, worktreePath, async (isCurrent) => {
+    if (!isCurrent()) return
     try {
       const result = await window.gitOps.getBranchInfo(worktreePath)
+      if (!isCurrent()) return
       if (!result.success || !result.branch) {
         return
       }
@@ -263,7 +293,7 @@ export const useGitStore = create<GitStoreState>()((set, get) => ({
     } catch (error) {
       console.error('Failed to load branch info:', error)
     }
-  },
+  }),
 
   // Get file statuses for a worktree
   getFileStatuses: (worktreePath: string) => {
@@ -359,31 +389,40 @@ export const useGitStore = create<GitStoreState>()((set, get) => ({
 
   // Refresh statuses and branch info (debounced to batch rapid file changes)
   refreshStatuses: async (worktreePath: string) => {
-    // Clear existing timer for this worktree
+    // Share one bounded batch even when watcher events arrive continuously.
     const existing = refreshTimers.get(worktreePath)
-    if (existing) {
-      clearTimeout(existing)
-    }
 
     // Set debounced refresh — accumulate resolvers so all callers get notified
     return new Promise<void>((resolve) => {
       const resolvers = pendingResolvers.get(worktreePath) || []
       resolvers.push(resolve)
       pendingResolvers.set(worktreePath, resolvers)
+      if (existing) return
 
       refreshTimers.set(
         worktreePath,
         setTimeout(async () => {
           refreshTimers.delete(worktreePath)
+          const toResolve = pendingResolvers.get(worktreePath) || []
+          pendingResolvers.delete(worktreePath)
+          const token = { cancelled: false }
+          const active = activeRefreshes.get(worktreePath) || new Set<{ cancelled: boolean }>()
+          active.add(token)
+          activeRefreshes.set(worktreePath, active)
           try {
+            // A change during an existing read needs a fresh read after it settles.
+            await Promise.all([fileLoads.get(worktreePath)?.promise, branchLoads.get(worktreePath)?.promise])
+            if (token.cancelled) return
             await Promise.all([
               get().loadFileStatuses(worktreePath),
               get().loadBranchInfo(worktreePath)
             ])
           } finally {
+            active.delete(token)
+            if (activeRefreshes.get(worktreePath) === active && active.size === 0) {
+              activeRefreshes.delete(worktreePath)
+            }
             // Resolve ALL pending promises for this worktree
-            const toResolve = pendingResolvers.get(worktreePath) || []
-            pendingResolvers.delete(worktreePath)
             toResolve.forEach((r) => r())
           }
         }, REFRESH_DEBOUNCE_MS)
@@ -393,12 +432,38 @@ export const useGitStore = create<GitStoreState>()((set, get) => ({
 
   // Clear statuses for a worktree
   clearStatuses: (worktreePath: string) => {
+    for (const token of activeRefreshes.get(worktreePath) || []) token.cancelled = true
+    activeRefreshes.delete(worktreePath)
+    const timer = refreshTimers.get(worktreePath)
+    if (timer) clearTimeout(timer)
+    refreshTimers.delete(worktreePath)
+    const resolvers = pendingResolvers.get(worktreePath) || []
+    pendingResolvers.delete(worktreePath)
+    resolvers.forEach((resolve) => resolve())
+    for (const loads of [fileLoads, branchLoads]) {
+      const entry = loads.get(worktreePath)
+      if (entry) entry.cancelled = true
+      loads.delete(worktreePath)
+    }
     set((state) => {
       const newFileMap = new Map(state.fileStatusesByWorktree)
       newFileMap.delete(worktreePath)
       const newBranchMap = new Map(state.branchInfoByWorktree)
       newBranchMap.delete(worktreePath)
-      return { fileStatusesByWorktree: newFileMap, branchInfoByWorktree: newBranchMap }
+      const conflicts = { ...state.conflictsByWorktree }
+      delete conflicts[worktreePath]
+      const mergeBranches = new Map(state.selectedMergeBranch)
+      mergeBranches.delete(worktreePath)
+      const diffBranches = new Map(state.selectedDiffBranch)
+      diffBranches.delete(worktreePath)
+      return {
+        fileStatusesByWorktree: newFileMap,
+        branchInfoByWorktree: newBranchMap,
+        conflictsByWorktree: conflicts,
+        selectedMergeBranch: mergeBranches,
+        selectedDiffBranch: diffBranches,
+        isLoading: fileLoads.size > 0
+      }
     })
   },
 

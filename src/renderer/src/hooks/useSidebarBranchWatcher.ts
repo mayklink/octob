@@ -84,6 +84,7 @@ export function useSidebarBranchWatcher(worktreePaths: string[]): void {
           // Non-critical
         })
       }
+      previousPathsRef.current = []
     }
   }, [])
 }

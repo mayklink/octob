@@ -78,6 +78,7 @@ export function useWorktreeWatcher(): void {
   useEffect(() => {
     return () => {
       const currentPath = previousPathRef.current
+      previousPathRef.current = null
       if (currentPath) {
         window.gitOps.unwatchWorktree(currentPath).catch(() => {
           // Non-critical

@@ -24,7 +24,7 @@ export function useConnectionWatcher(): void {
     if (!isConnectionMode || !selectedConnectionId) return []
     const connection = connections.find((c) => c.id === selectedConnectionId)
     if (!connection) return []
-    return connection.members.map((m) => m.worktree_path).sort()
+    return [...new Set(connection.members.map((m) => m.worktree_path))].sort()
   })()
 
   // Stable string key to detect changes
@@ -38,6 +38,7 @@ export function useConnectionWatcher(): void {
 
     // Stop watching previous paths
     for (const path of prevPaths) {
+      if (memberPaths.includes(path)) continue
       window.gitOps.unwatchWorktree(path).catch(() => {
         // Non-critical - watcher may already be stopped
       })
@@ -46,6 +47,7 @@ export function useConnectionWatcher(): void {
     // Start watching new paths and load initial statuses
     if (memberPaths.length > 0) {
       for (const path of memberPaths) {
+        if (prevPaths.includes(path)) continue
         window.gitOps.watchWorktree(path).catch(() => {
           // Non-critical - watcher setup failed
         })
@@ -53,7 +55,7 @@ export function useConnectionWatcher(): void {
 
       // Load initial statuses for all members
       const { loadStatusesForPaths } = useGitStore.getState()
-      loadStatusesForPaths(memberPaths)
+      loadStatusesForPaths(memberPaths.filter((path) => !prevPaths.includes(path)))
     }
 
     previousPathsRef.current = memberPaths
@@ -84,6 +86,7 @@ export function useConnectionWatcher(): void {
           // Non-critical
         })
       }
+      previousPathsRef.current = []
     }
   }, [])
 }

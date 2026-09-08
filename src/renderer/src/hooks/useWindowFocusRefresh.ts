@@ -72,6 +72,7 @@ export function useWindowFocusRefresh(): void {
 
     // Safety-net: poll every 60s, but only if no watcher event arrived recently
     const pollInterval = setInterval(() => {
+      if (document.hidden || !document.hasFocus()) return
       const timeSinceLastEvent = Date.now() - lastEventRef.current
       if (timeSinceLastEvent < IDLE_POLL_MS) return // watcher is active, skip poll
 

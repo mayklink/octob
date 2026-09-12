@@ -9,6 +9,7 @@ import type { AgentSdkImplementer, PromptOptions } from './agent-sdk-types'
 import { ANTIGRAVITY_CAPABILITIES } from './agent-sdk-types'
 import type { DatabaseService } from '../db/database'
 import { createLogger } from './logger'
+import { emitAgentStreamEvent, type AgentStreamEvent } from './agent-event-bus'
 import { getUserEnvironmentVariables } from './env-vars'
 import {
   acpTranscriptAppendAssistantTextChunk,
@@ -90,13 +91,15 @@ export class AntigravityImplementer implements AgentSdkImplementer {
   setAntigravityBinaryPath(value: string | null): void { this.binaryPath = value }
 
   private send(type: string, state: AntigravitySessionState, data: unknown): void {
-    if (!this.mainWindow || this.mainWindow.isDestroyed()) return
-    this.mainWindow.webContents.send('opencode:stream', {
+    const event = {
       type,
       sessionId: state.octobSessionId,
       data,
       ...(type === 'session.status' ? { statusPayload: (data as { status: unknown }).status } : {})
-    })
+    }
+    emitAgentStreamEvent(event as AgentStreamEvent)
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return
+    this.mainWindow.webContents.send('opencode:stream', event)
   }
 
   private find(worktreePath: string, sessionId: string): AntigravitySessionState | undefined {

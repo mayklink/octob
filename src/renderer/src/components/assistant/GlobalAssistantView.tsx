@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowRight, Bell, Bot, CheckCircle2, CircleCheckBig, FileText, FolderGit2, GitPullRequest, Lightbulb, Loader2, MessageSquare, MessageSquarePlus, MoreHorizontal, Play, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
+import { AlertCircle, ArrowRight, Bell, Bot, CheckCircle2, CircleCheckBig, FileText, FolderGit2, GitPullRequest, HelpCircle, Lightbulb, Link2, Loader2, MessageSquare, MessageSquarePlus, MoreHorizontal, Play, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -17,10 +17,16 @@ import { useSessionStore } from '@/stores/useSessionStore'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
+import { useConnectionStore } from '@/stores/useConnectionStore'
 import { toast } from '@/lib/toast'
+import {
+  countAssistantTasksNeedingAttention,
+  resolveAssistantTaskState
+} from '@/lib/assistant-task-state'
 import type {
   AssistantProjectSelectionRequest,
-  AssistantTask
+  AssistantTask,
+  AssistantTaskWaitingReason
 } from '@shared/types/assistant'
 
 const GLOBAL_SCOPE_ID = '__octob_global_assistant__'
@@ -91,8 +97,22 @@ function taskStatusLabel(status: string | undefined): string {
   return 'Iniciando agente'
 }
 
+const WAITING_REASON_LABEL: Record<AssistantTaskWaitingReason, string> = {
+  plan_review: 'Plano pronto para sua aprovação',
+  permission: 'Precisa da sua permissão',
+  question: 'O agente fez uma pergunta',
+  command_approval: 'Precisa aprovar um comando'
+}
+
 function worktreeName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
+}
+
+function taskLocationLabel(task: AssistantTask): string {
+  if (task.kind === 'connection') {
+    return task.targets.map((target) => target.projectName).join(' + ')
+  }
+  return worktreeName(task.worktreePath)
 }
 
 async function createAssistantSession(projectId: string) {
@@ -147,27 +167,7 @@ export function GlobalAssistantView(): React.JSX.Element {
   const [resolvingProjectId, setResolvingProjectId] = useState<string | null>(null)
   const projectId = projects[0]?.id
 
-  useEffect(() => {
-    let cancelled = false
-    const unsubscribe = window.assistantOps.onTaskCreated((task) => {
-      useGlobalAssistantStore.getState().addTask(task)
-    })
-    const unsubscribeTasksChanged = window.assistantOps.onTasksChanged((updatedTasks) => {
-      useGlobalAssistantStore.getState().replaceTasks(updatedTasks)
-    })
-
-    void window.assistantOps.listTasks().then((persistedTasks) => {
-      if (!cancelled) useGlobalAssistantStore.getState().replaceTasks(persistedTasks)
-    }).catch((cause) => {
-      console.warn('Failed to load delegated assistant tasks:', cause)
-    })
-
-    return () => {
-      cancelled = true
-      unsubscribe()
-      unsubscribeTasksChanged()
-    }
-  }, [])
+  // Delegated jobs are synced app-wide by useAssistantTasksSync.
 
   useEffect(() => {
     let cancelled = false
@@ -261,6 +261,16 @@ export function GlobalAssistantView(): React.JSX.Element {
   }
 
   const handleOpenTask = async (task: AssistantTask): Promise<void> => {
+    if (task.kind === 'connection' && task.connectionId) {
+      useConnectionStore.getState().selectConnection(task.connectionId)
+
+      const sessionStore = useSessionStore.getState()
+      sessionStore.setActiveConnection(task.connectionId)
+      await sessionStore.loadConnectionSessions(task.connectionId)
+      useSessionStore.getState().setActiveConnectionSession(task.sessionId)
+      return
+    }
+
     useProjectStore.getState().selectProject(task.projectId)
     useWorktreeStore.getState().selectWorktree(task.worktreeId)
 
@@ -276,7 +286,22 @@ export function GlobalAssistantView(): React.JSX.Element {
 
     setIsRemovingTask(true)
     try {
-      if (removeResources) {
+      if (removeResources && task.kind === 'connection') {
+        const session = await window.db.session.get(task.sessionId)
+        if (session?.opencode_session_id) {
+          try {
+            await window.opencodeOps.abort(task.workspacePath, session.opencode_session_id)
+          } catch {
+            // The agent may already be stopped or disconnected.
+          }
+        }
+
+        await window.db.session.delete(task.sessionId)
+        if (task.connectionId) {
+          // The store reports its own failures via toast and keeps the connection.
+          await useConnectionStore.getState().deleteConnection(task.connectionId)
+        }
+      } else if (removeResources) {
         const project = projects.find((item) => item.id === task.projectId)
         if (!project) throw new Error('Projeto do trabalho não encontrado.')
         const worktree = await window.db.worktree.get(task.worktreeId)
@@ -315,6 +340,8 @@ export function GlobalAssistantView(): React.JSX.Element {
   }
 
   const activeProjectSelection = projectSelectionRequests[0] ?? null
+
+  const attentionCount = countAssistantTasksNeedingAttention(tasks, sessionStatuses)
 
   const handleProjectSelection = async (projectId: string | null): Promise<void> => {
     if (!activeProjectSelection || resolvingProjectId) return
@@ -501,6 +528,14 @@ export function GlobalAssistantView(): React.JSX.Element {
             <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground">
               {tasks.length}
             </span>
+            {attentionCount > 0 && (
+              <span
+                className="flex h-5 items-center justify-center rounded-full bg-amber-500/15 px-2 text-[10px] font-medium text-amber-500"
+                title="Trabalhos aguardando você"
+              >
+                {attentionCount} para revisar
+              </span>
+            )}
           </div>
           <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
         </div>
@@ -519,13 +554,18 @@ export function GlobalAssistantView(): React.JSX.Element {
             </div>
           ) : tasks.map((task) => {
             const status = sessionStatuses[task.sessionId]?.status
-            const ready = status === 'completed' || status === 'plan_ready' || status === 'unread'
+            const { state, waitingReason } = resolveAssistantTaskState(task, status)
+            const done = state === 'completed'
+            const waiting = state === 'waiting_input'
+            const failed = state === 'error'
+            const location = taskLocationLabel(task)
+            const openLabel = task.kind === 'connection' ? 'Abrir conexão' : 'Abrir worktree'
             return (
               <article
                 key={task.sessionId}
                 role="link"
                 tabIndex={0}
-                title={`Abrir ${worktreeName(task.worktreePath)} nesta sessão`}
+                title={`Abrir ${location} nesta sessão`}
                 onClick={() => void handleOpenTask(task)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
@@ -534,23 +574,32 @@ export function GlobalAssistantView(): React.JSX.Element {
                   }
                 }}
                 className={`cursor-pointer rounded-xl border p-3.5 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
-                  ready
-                    ? 'border-emerald-500/45 bg-emerald-500/[0.06] hover:border-emerald-500/70 hover:bg-emerald-500/[0.1]'
-                    : 'border-border/80 bg-card/80 hover:border-primary/45 hover:bg-card'
+                  waiting
+                    ? 'border-amber-500/55 bg-amber-500/[0.07] hover:border-amber-500/80 hover:bg-amber-500/[0.12]'
+                    : done
+                      ? 'border-emerald-500/45 bg-emerald-500/[0.06] hover:border-emerald-500/70 hover:bg-emerald-500/[0.1]'
+                      : failed
+                        ? 'border-destructive/50 bg-destructive/[0.06] hover:border-destructive/70'
+                        : 'border-border/80 bg-card/80 hover:border-primary/45 hover:bg-card'
                 }`}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
-                      {task.projectName}
+                    <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                      {task.kind === 'connection' && <Link2 className="h-3 w-3 shrink-0 text-primary" />}
+                      <span className="truncate">{task.projectName}</span>
                     </div>
                     <h3 className="mt-1 line-clamp-2 text-xs font-semibold leading-relaxed">
                       {task.title}
                     </h3>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
-                    {ready ? (
+                    {waiting ? (
+                      <HelpCircle className="h-4 w-4 text-amber-500" />
+                    ) : done ? (
                       <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                    ) : failed ? (
+                      <AlertCircle className="h-4 w-4 text-destructive" />
                     ) : (
                       <Loader2 className="h-4 w-4 animate-spin text-primary" />
                     )}
@@ -570,15 +619,39 @@ export function GlobalAssistantView(): React.JSX.Element {
                   </div>
                 </div>
 
-                <div className={`mt-3 flex items-center gap-1.5 text-[11px] font-medium ${ready ? 'text-emerald-500' : 'text-foreground/75'}`}>
-                  {ready ? 'Pronto para revisar' : taskStatusLabel(status)}
+                <div
+                  className={`mt-3 flex items-center gap-1.5 text-[11px] font-medium ${
+                    waiting
+                      ? 'text-amber-500'
+                      : done
+                        ? 'text-emerald-500'
+                        : failed
+                          ? 'text-destructive'
+                          : 'text-foreground/75'
+                  }`}
+                >
+                  {waiting
+                    ? WAITING_REASON_LABEL[waitingReason ?? 'question']
+                    : done
+                      ? 'Pronto para revisar'
+                      : failed
+                        ? 'Falhou — abra para ver o erro'
+                        : taskStatusLabel(status)}
                 </div>
 
-                {ready ? (
+                {waiting ? (
+                  <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                    O trabalho está parado até você responder no workspace.
+                  </p>
+                ) : done ? (
                   <div className="mt-2.5 space-y-1.5 text-[11px] text-muted-foreground">
-                    <div className="flex items-center gap-1.5"><CheckCircle2 className="h-3 w-3 text-emerald-500" />Investigação concluída</div>
+                    <div className="flex items-center gap-1.5"><CheckCircle2 className="h-3 w-3 text-emerald-500" />Trabalho concluído</div>
                     <div className="flex items-center gap-1.5"><CheckCircle2 className="h-3 w-3 text-emerald-500" />Contexto e resultado disponíveis</div>
                   </div>
+                ) : failed ? (
+                  <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
+                    {task.stateDetail || 'O agente delegado terminou com erro.'}
+                  </p>
                 ) : (
                   <div className="mt-3 h-1 overflow-hidden rounded-full bg-muted">
                     <div className="h-full w-2/5 animate-pulse rounded-full bg-primary" />
@@ -586,20 +659,28 @@ export function GlobalAssistantView(): React.JSX.Element {
                 )}
 
                 <div className="mt-2.5 truncate font-mono text-[10px] text-muted-foreground/80">
-                  {worktreeName(task.worktreePath)}
+                  {task.kind === 'connection'
+                    ? task.targets.map((target) => worktreeName(target.worktreePath)).join(' · ')
+                    : worktreeName(task.worktreePath)}
                 </div>
 
-                {ready && (
+                {(done || waiting || failed) && (
                   <Button
                     variant="outline"
                     size="sm"
-                    className="mt-3 h-8 w-full justify-between border-emerald-500/30 bg-emerald-500/[0.04] px-3 text-xs hover:bg-emerald-500/10"
+                    className={`mt-3 h-8 w-full justify-between px-3 text-xs ${
+                      waiting
+                        ? 'border-amber-500/40 bg-amber-500/[0.05] hover:bg-amber-500/10'
+                        : done
+                          ? 'border-emerald-500/30 bg-emerald-500/[0.04] hover:bg-emerald-500/10'
+                          : 'border-destructive/30 bg-destructive/[0.04] hover:bg-destructive/10'
+                    }`}
                     onClick={(event) => {
                       event.stopPropagation()
                       void handleOpenTask(task)
                     }}
                   >
-                    Abrir worktree
+                    {waiting ? 'Responder agora' : openLabel}
                     <ArrowRight className="h-3.5 w-3.5" />
                   </Button>
                 )}

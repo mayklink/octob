@@ -21,6 +21,8 @@ import { UsageIndicator } from './UsageIndicator'
 import { PinnedList } from './PinnedList'
 import { RecentList } from './RecentList'
 import { useGlobalAssistantStore } from '@/stores/useGlobalAssistantStore'
+import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
+import { countAssistantTasksNeedingAttention } from '@/lib/assistant-task-state'
 
 export function LeftSidebar(): React.JSX.Element {
   const { t } = useTranslation()
@@ -34,6 +36,12 @@ export function LeftSidebar(): React.JSX.Element {
   const [filterQuery, setFilterQuery] = useState('')
   const [connectionsExpanded, setConnectionsExpanded] = useState(false)
   const globalAssistantOpen = useGlobalAssistantStore((s) => s.isOpen)
+  const assistantTasks = useGlobalAssistantStore((s) => s.tasks)
+  const sessionStatuses = useWorktreeStatusStore((s) => s.sessionStatuses)
+  const assistantAttentionCount = countAssistantTasksNeedingAttention(
+    assistantTasks,
+    sessionStatuses
+  )
 
   // Filter store for language filters
   const activeLanguages = useFilterStore((s) => s.activeLanguages)
@@ -175,6 +183,14 @@ export function LeftSidebar(): React.JSX.Element {
             >
               <Sparkles className={`h-4 w-4 shrink-0 ${globalAssistantOpen ? 'text-violet-400' : ''}`} />
               <span className="flex-1 text-left">Assistente</span>
+              {assistantAttentionCount > 0 && (
+                <span
+                  className="flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500/15 px-1.5 text-[10px] font-semibold text-amber-500"
+                  title="Trabalhos delegados aguardando você"
+                >
+                  {assistantAttentionCount}
+                </span>
+              )}
             </button>
             <div className="mt-1 flex h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium text-sidebar-accent-foreground">
               <FolderGit2 className="h-4 w-4 shrink-0" />

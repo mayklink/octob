@@ -7,9 +7,12 @@ import { initPlatform } from '@/lib/platform'
 import { useTipStore } from '@/stores/useTipStore'
 import { useSessionStore } from '@/stores/useSessionStore'
 import { useGlobalAssistantStore } from '@/stores/useGlobalAssistantStore'
+import { useAssistantTasksSync } from '@/hooks/useAssistantTasksSync'
 
 function App(): React.JSX.Element {
   const [ready, setReady] = useState(false)
+
+  useAssistantTasksSync()
 
   useEffect(() => {
     initPlatform().then(() => {

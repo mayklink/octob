@@ -1,6 +1,7 @@
 import type { BrowserWindow } from 'electron'
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
+import { emitAgentStreamEvent, type AgentStreamEvent } from './agent-event-bus'
 import {
   spawn,
   type ChildProcessWithoutNullStreams,
@@ -157,6 +158,10 @@ export class CursorCliImplementer implements AgentSdkImplementer {
   }
 
   private sendToRenderer(channel: string, data: unknown): void {
+    if (channel === 'opencode:stream' && data && typeof data === 'object') {
+      const event = data as Partial<AgentStreamEvent>
+      if (event.type && event.sessionId) emitAgentStreamEvent(event as AgentStreamEvent)
+    }
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.send(channel, data)
     } else {

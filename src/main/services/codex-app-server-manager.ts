@@ -115,6 +115,7 @@ export interface CodexSessionContext {
   collabReceiverTurns: Map<string, string> // childThreadId → parentTurnId
   nextRequestId: number
   stopping: boolean
+  lastActivityAt: number
 }
 
 // ── Start session input ───────────────────────────────────────────
@@ -190,6 +191,9 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   'unknown thread',
   'does not exist'
 ]
+
+const CODEX_IDLE_TIMEOUT_MS = Number(process.env.OCTOB_CODEX_IDLE_TIMEOUT_MS ?? 15 * 60 * 1000)
+const CODEX_IDLE_SWEEP_MS = 30_000
 
 function getDefaultCodexRuntimeConfig(): {
   approvalPolicy: AskForApproval
@@ -402,6 +406,31 @@ function toCodexFileChangeApprovalDecision(
 
 export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEvents> {
   private readonly sessions = new Map<string, CodexSessionContext>()
+  private readonly idleSweepTimer: NodeJS.Timeout
+
+  constructor() {
+    super()
+    this.idleSweepTimer = setInterval(() => this.stopIdleSessions(), CODEX_IDLE_SWEEP_MS)
+    this.idleSweepTimer.unref()
+  }
+
+  private stopIdleSessions(): void {
+    if (!Number.isFinite(CODEX_IDLE_TIMEOUT_MS) || CODEX_IDLE_TIMEOUT_MS <= 0) return
+    const now = Date.now()
+    for (const [threadId, context] of this.sessions) {
+      const idle = now - context.lastActivityAt
+      const canStop =
+        context.session.status === 'ready' &&
+        context.session.activeTurnId === null &&
+        context.pending.size === 0 &&
+        context.pendingApprovals.size === 0 &&
+        context.pendingUserInputs.size === 0
+      if (canStop && idle >= CODEX_IDLE_TIMEOUT_MS) {
+        log.info('Stopping idle Codex app-server session', { threadId, idleMs: idle })
+        this.stopSession(threadId)
+      }
+    }
+  }
 
   // ── Public API ────────────────────────────────────────────────
 
@@ -455,7 +484,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         pendingUserInputs: new Map(),
         collabReceiverTurns: new Map(),
         nextRequestId: 1,
-        stopping: false
+        stopping: false,
+        lastActivityAt: Date.now()
       }
 
       this.sessions.set(tempThreadId, context)
@@ -641,6 +671,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     if (!context.session.threadId) {
       throw new Error('sendTurn: session has no threadId')
     }
+
+    context.lastActivityAt = Date.now()
 
     // Reset child tracking for new turn
     context.collabReceiverTurns.clear()

@@ -10,7 +10,10 @@ import { CodexImplementer } from '../services/codex-implementer'
 import { MistralVibeImplementer } from '../services/mistral-vibe-implementer'
 import { CursorCliImplementer } from '../services/cursor-cli-implementer'
 import { toError } from '../services/error-utils'
-import { isAssistantWorkspacePath } from '../services/assistant-mcp-service'
+import {
+  getAssistantProjectInstructions,
+  isAssistantWorkspacePath
+} from '../services/assistant-mcp-service'
 
 const log = createLogger({ component: 'OpenCodeHandlers' })
 
@@ -19,7 +22,11 @@ const log = createLogger({ component: 'OpenCodeHandlers' })
 // Claude Code sessions start with a `pending::` ID that materializes to a real
 // SDK ID after the first prompt — using the session ID would cause re-injection
 // when the ID changes.
-const injectedWorktrees = new Set<string>()
+const injectedSessions = new Set<string>()
+
+function sessionInjectionKey(worktreePath: string, sessionId: string): string {
+  return `${worktreePath}\u0000${sessionId}`
+}
 
 /** Coalesce overlapping permission:list IPC for the same worktree into one aggregation pass */
 const permissionListInflightByDirectory = new Map<
@@ -78,7 +85,7 @@ export function registerOpenCodeHandlers(
     async (_event, worktreePath: string, octobSessionId: string) => {
       log.info('IPC: opencode:connect', { worktreePath, octobSessionId })
       // New session on this worktree — allow context injection for the first prompt
-      injectedWorktrees.delete(worktreePath)
+      injectedSessions.delete(sessionInjectionKey(worktreePath, octobSessionId))
       try {
         // SDK-aware dispatch: route non-OpenCode sessions to their implementer
         if (sdkManager && dbService) {
@@ -204,7 +211,8 @@ export function registerOpenCodeHandlers(
     // We track by worktreePath (not opencodeSessionId) because Claude Code
     // sessions start with a pending:: ID that materializes to a real ID after
     // the first prompt — tracking by session ID would miss the transition.
-    if (!injectedWorktrees.has(worktreePath) && dbService) {
+    const injectionKey = sessionInjectionKey(worktreePath, opencodeSessionId)
+    if (!injectedSessions.has(injectionKey) && dbService) {
       // Skip worktree context injection for Supercharge sessions — the plan
       // content that follows already has full context and the worktree context
       // just pollutes it.
@@ -213,18 +221,21 @@ export function registerOpenCodeHandlers(
         : typeof messageOrParts === 'string'
           ? messageOrParts.trim()
           : undefined
-      if (firstTextPart?.startsWith('/using-superpowers')) {
-        injectedWorktrees.add(worktreePath)
-      } else {
-        try {
+      try {
           const worktree = dbService.getWorktreeByPath(worktreePath)
-          if (worktree?.context) {
+          const projectInstructions = worktree
+            ? getAssistantProjectInstructions(dbService, worktree.project_id)
+            : []
+          const memoryPrefix = `[Assistant Memory]\nBefore giving a factual opinion, inspect or research the relevant available sources and clearly distinguish verified facts from inference.\n${projectInstructions.map((item) => `- ${item}`).join('\n')}\n\n`
+          const includeWorktreeContext = !firstTextPart?.startsWith('/using-superpowers')
+          if ((worktree?.context && includeWorktreeContext) || memoryPrefix) {
             log.info('Injecting worktree context into first prompt', {
               worktreePath,
               opencodeSessionId,
-              contextLength: worktree.context.length
+              contextLength: worktree?.context?.length ?? 0,
+              assistantMemoryCount: projectInstructions.length
             })
-            const contextPrefix = `[Worktree Context]\n${worktree.context}\n\n[User Message]\n`
+            const contextPrefix = `${memoryPrefix}${worktree?.context && includeWorktreeContext ? `[Worktree Context]\n${worktree.context}\n\n` : ''}[User Message]\n`
             if (typeof messageOrParts === 'string') {
               messageOrParts = contextPrefix + messageOrParts
             } else if (Array.isArray(messageOrParts)) {
@@ -243,14 +254,13 @@ export function registerOpenCodeHandlers(
             }
           }
           // Mark as injected after successful lookup (even if no context to inject)
-          injectedWorktrees.add(worktreePath)
-        } catch (err) {
+          injectedSessions.add(injectionKey)
+      } catch (err) {
           // Don't add to injectedWorktrees — allow retry on next prompt
           log.warn('Failed to inject worktree context', {
             worktreePath,
             error: err instanceof Error ? err.message : String(err)
           })
-        }
       }
     }
 
@@ -322,7 +332,7 @@ Never claim that a source was searched unless you actually used the correspondin
     'opencode:disconnect',
     async (_event, worktreePath: string, opencodeSessionId: string) => {
       log.info('IPC: opencode:disconnect', { worktreePath, opencodeSessionId })
-      injectedWorktrees.delete(worktreePath)
+      injectedSessions.delete(sessionInjectionKey(worktreePath, opencodeSessionId))
       try {
         // SDK-aware dispatch: route non-OpenCode sessions to their implementer
         if (sdkManager && dbService) {
@@ -1197,6 +1207,6 @@ Never claim that a source was searched unless you actually used the correspondin
 
 export async function cleanupOpenCode(): Promise<void> {
   log.info('Cleaning up OpenCode service')
-  injectedWorktrees.clear()
+  injectedSessions.clear()
   await openCodeService.cleanup()
 }

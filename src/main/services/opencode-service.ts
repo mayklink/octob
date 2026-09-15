@@ -144,8 +144,10 @@ function spawnOpenCodeServer(
   // uses taskkill /t to kill the entire process tree including the opencode child.
   const terminateProcess = (force: boolean = false): void => {
     if (process.platform === 'win32' && proc.pid !== undefined) {
-      const taskkillArgs = ['/pid', String(proc.pid), '/t']
-      if (force) taskkillArgs.push('/f')
+      // The launcher is commonly a .cmd shim. Killing only that wrapper can
+      // leave the real Node/OpenCode child running. Shutdown is explicit here,
+      // so terminate the complete tree forcefully on Windows.
+      const taskkillArgs = ['/pid', String(proc.pid), '/t', '/f']
       const taskkill = spawn('taskkill', taskkillArgs, { stdio: 'ignore' })
       taskkill.on('error', () => {
         try {

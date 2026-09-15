@@ -107,6 +107,14 @@ export function registerTerminalHandlers(mainWindow: BrowserWindow): void {
     ptyService.resize(terminalId, cols, rows)
   })
 
+  ipcMain.handle('terminal:setFocus', (_event, terminalId: string, focused: boolean) => {
+    ptyService.setFocus(terminalId, focused)
+  })
+
+  ipcMain.handle('terminal:setKeepAlive', (_event, terminalId: string, keepAlive: boolean) => {
+    ptyService.setKeepAlive(terminalId, keepAlive)
+  })
+
   // Destroy a PTY
   ipcMain.handle('terminal:destroy', (_event, terminalId: string) => {
     log.info('IPC: terminal:destroy', { terminalId })

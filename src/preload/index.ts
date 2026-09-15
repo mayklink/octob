@@ -1725,6 +1725,12 @@ const terminalOps = {
   resize: (terminalId: string, cols: number, rows: number): Promise<void> =>
     ipcRenderer.invoke('terminal:resize', terminalId, cols, rows),
 
+  setFocus: (terminalId: string, focused: boolean): Promise<void> =>
+    ipcRenderer.invoke('terminal:setFocus', terminalId, focused),
+
+  setKeepAlive: (terminalId: string, keepAlive: boolean): Promise<void> =>
+    ipcRenderer.invoke('terminal:setKeepAlive', terminalId, keepAlive),
+
   destroy: (terminalId: string): Promise<void> =>
     ipcRenderer.invoke('terminal:destroy', terminalId),
 

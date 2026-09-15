@@ -968,6 +968,8 @@ declare global {
       ) => Promise<{ success: boolean; cols?: number; rows?: number; error?: string }>
       write: (terminalId: string, data: string) => void
       resize: (terminalId: string, cols: number, rows: number) => Promise<void>
+      setFocus: (terminalId: string, focused: boolean) => Promise<void>
+      setKeepAlive: (terminalId: string, keepAlive: boolean) => Promise<void>
       destroy: (terminalId: string) => Promise<void>
       onData: (terminalId: string, callback: (data: string) => void) => () => void
       onExit: (terminalId: string, callback: (code: number) => void) => () => void

@@ -46,7 +46,17 @@ interface PtyInstance {
   backend: TerminalBackend
   dataListeners: Array<(data: string) => void>
   exitListeners: Array<(code: number, signal: number) => void>
+  lastActivityAt: number
+  focused: boolean
+  keepAlive: boolean
 }
+
+// A hidden shell is cheap to recreate, while a collection of forgotten PTYs
+// can keep npm/vite/next descendants alive indefinitely.  Keep this opt-out
+// via an environment variable for users who intentionally keep long-running
+// terminals around.
+const PTY_IDLE_TIMEOUT_MS = Number(process.env.OCTOB_TERMINAL_IDLE_TIMEOUT_MS ?? 15 * 60 * 1000)
+const PTY_IDLE_SWEEP_MS = 30_000
 
 export interface PtyCreateOpts {
   cwd: string
@@ -59,6 +69,35 @@ export interface PtyCreateOpts {
 
 class PtyService {
   private ptys: Map<string, PtyInstance> = new Map()
+  private readonly idleSweepTimer?: NodeJS.Timeout
+
+  constructor() {
+    // Some lightweight test/embedded runtimes intentionally omit timers.
+    if (typeof globalThis.setInterval === 'function') {
+      this.idleSweepTimer = globalThis.setInterval(() => this.pruneIdlePtys(), PTY_IDLE_SWEEP_MS)
+      this.idleSweepTimer.unref()
+    }
+  }
+
+  private touch(id: string): void {
+    const instance = this.ptys.get(id)
+    if (instance) instance.lastActivityAt = Date.now()
+  }
+
+  private pruneIdlePtys(): void {
+    if (!Number.isFinite(PTY_IDLE_TIMEOUT_MS) || PTY_IDLE_TIMEOUT_MS <= 0) return
+    const now = Date.now()
+    for (const [id, instance] of this.ptys) {
+      if (
+        !instance.keepAlive &&
+        !instance.focused &&
+        now - instance.lastActivityAt >= PTY_IDLE_TIMEOUT_MS
+      ) {
+        log.info('Destroying idle PTY', { id, idleMs: now - instance.lastActivityAt })
+        this.destroy(id)
+      }
+    }
+  }
 
   create(id: string, opts: PtyCreateOpts): { cols: number; rows: number } {
     // If using the ghostty backend, the native module handles the PTY internally.
@@ -111,7 +150,10 @@ class PtyService {
       cwd: opts.cwd,
       backend: opts.backend || 'node-pty',
       dataListeners: [],
-      exitListeners: []
+      exitListeners: [],
+      lastActivityAt: Date.now(),
+      focused: true,
+      keepAlive: false
     }
 
     // Wire up data events
@@ -162,6 +204,7 @@ class PtyService {
       log.warn('PTY not found for write', { id })
       return
     }
+    this.touch(id)
     instance.pty.write(data)
   }
 
@@ -171,6 +214,7 @@ class PtyService {
       log.warn('PTY not found for resize', { id })
       return
     }
+    this.touch(id)
     try {
       instance.pty.resize(cols, rows)
     } catch (err) {
@@ -180,6 +224,20 @@ class PtyService {
         rows
       })
     }
+  }
+
+  setFocus(id: string, focused: boolean): void {
+    const instance = this.ptys.get(id)
+    if (!instance) return
+    instance.focused = focused
+    if (focused) instance.lastActivityAt = Date.now()
+  }
+
+  setKeepAlive(id: string, keepAlive: boolean): void {
+    const instance = this.ptys.get(id)
+    if (!instance) return
+    instance.keepAlive = keepAlive
+    if (keepAlive) instance.lastActivityAt = Date.now()
   }
 
   destroy(id: string): void {

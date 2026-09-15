@@ -151,6 +151,15 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(fu
     return () => clearTimeout(timer)
   }, [effectiveVisible])
 
+  // Keep the main-process lifecycle tracker in sync with the terminal UI.
+  // Hidden terminals are eligible for idle cleanup; visible terminals are not.
+  useEffect(() => {
+    window.terminalOps.setFocus(terminalId, effectiveVisible).catch(() => {})
+    return () => {
+      window.terminalOps.setFocus(terminalId, false).catch(() => {})
+    }
+  }, [effectiveVisible, terminalId])
+
   // Paste fallback: the Cmd+V menu accelerator intercepts the keystroke at the
   // macOS application-menu level before it reaches any view. The menu handler
   // uses a three-tier routing strategy:
@@ -342,6 +351,7 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(fu
       )
 
       backendRef.current = backend
+      window.terminalOps.setFocus(terminalId, effectiveVisibleRef.current).catch(() => {})
     },
     [terminalId, cwd, destroyTerminal]
   )

@@ -599,9 +599,12 @@ export class CodexImplementer implements AgentSdkImplementer {
   }> {
     const key = this.getSessionKey(worktreePath, agentSessionId)
 
-    // If session already exists locally, just update the octobSessionId
+    // The implementer state can outlive the app-server process. This happens
+    // when the manager's idle sweep stops an inactive process, or when the
+    // process exits unexpectedly. Do not treat the local state as proof that
+    // the provider session is still connected.
     const existing = this.sessions.get(key)
-    if (existing) {
+    if (existing && this.manager.hasSession(existing.threadId)) {
       existing.octobSessionId = octobSessionId
       const sessionStatus = this.statusToOctob(existing.status)
       log.info('Reconnect: session already registered, updated octobSessionId', {
@@ -611,6 +614,15 @@ export class CodexImplementer implements AgentSdkImplementer {
         sessionStatus
       })
       return { success: true, sessionStatus, revertMessageID: null }
+    }
+
+    if (existing) {
+      log.info('Reconnect: local session exists but provider session is gone; resuming thread', {
+        worktreePath,
+        agentSessionId,
+        threadId: existing.threadId
+      })
+      this.sessions.delete(key)
     }
 
     // Otherwise, start a new session with thread resume
@@ -730,9 +742,30 @@ export class CodexImplementer implements AgentSdkImplementer {
     options?: PromptOptions
   ): Promise<void> {
     const key = this.getSessionKey(worktreePath, agentSessionId)
-    const session = this.sessions.get(key)
+    let session = this.sessions.get(key)
     if (!session) {
       throw new Error(`Prompt failed: session not found for ${worktreePath} / ${agentSessionId}`)
+    }
+
+    // An idle Codex app-server is deliberately stopped to release resources,
+    // while the durable session remains available for the next prompt. Make
+    // sure the provider side is restored before mutating the transcript or
+    // starting a turn. This closes the gap where reconnect() used to report
+    // success based only on the implementer's local map.
+    if (!this.manager.hasSession(session.threadId)) {
+      log.info('Prompt: provider session is not connected; reconnecting before send', {
+        worktreePath,
+        agentSessionId,
+        octobSessionId: session.octobSessionId
+      })
+      const reconnectResult = await this.reconnect(worktreePath, agentSessionId, session.octobSessionId)
+      if (!reconnectResult.success) {
+        throw new Error(`Prompt failed: could not reconnect session ${agentSessionId}`)
+      }
+      session = this.sessions.get(this.getSessionKey(worktreePath, agentSessionId))
+      if (!session || !this.manager.hasSession(session.threadId)) {
+        throw new Error(`Prompt failed: session ${agentSessionId} was not restored`)
+      }
     }
 
     const { text, input } = buildCodexUserInput(message)

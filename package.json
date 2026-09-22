@@ -35,7 +35,7 @@
     "build:mac:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false yarn prepare:whisper && electron-vite build && electron-builder --mac",
     "build:linux": "yarn prepare:whisper && electron-vite build && electron-builder --linux",
     "build:native": "cd src/native && npx node-gyp rebuild",
-    "build:runtime": "tsc -p tsconfig.runtime.json",
+    "build:runtime": "node node_modules/typescript/bin/tsc -p tsconfig.runtime.json",
     "runtime:dev": "yarn build:runtime && node scripts/run-runtime.cjs"
   },
   "dependencies": {

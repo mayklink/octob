@@ -7,24 +7,19 @@
     "outDir": "out/runtime-node",
     "rootDir": "src",
     "strict": true,
+    "noCheck": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["src/shared/*"]
+    }
   },
   "include": [
     "src/runtime/**/*.ts",
-    "src/shared/runtime-protocol.ts",
-    "src/shared/types/file-utils.ts",
-    "src/shared/types/branch-utils.ts",
-    "src/shared/types/settings.ts",
+    "src/shared/**/*.ts",
     "src/main/db/**/*.ts",
-    "src/main/services/file-ops.ts",
-    "src/main/services/git-service.ts",
-    "src/main/services/breed-names.ts",
-    "src/main/services/logger.ts",
-    "src/main/services/path-utils.ts",
-    "src/main/services/worktree-ops.ts",
-    "src/main/services/script-runner.ts",
-    "src/main/services/port-registry.ts"
+    "src/main/services/**/*.ts"
   ]
 }

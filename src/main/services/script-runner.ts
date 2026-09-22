@@ -37,12 +37,23 @@ function getColorEnv(): NodeJS.ProcessEnv {
   }
 }
 
+function shellCommand(command: string): { file: string; args: string[] } {
+  if (process.platform === 'win32') {
+    return {
+      file: process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe',
+      args: ['/d', '/s', '/c', command]
+    }
+  }
+  return { file: 'sh', args: ['-c', command] }
+}
+
 export class ScriptRunner {
   private mainWindow: BrowserWindow | null = null
   private runningProcesses: Map<string, ChildProcess> = new Map()
   private outputBuffers: Map<string, string> = new Map()
   private outputFlushTimers: Map<string, NodeJS.Timeout> = new Map()
   private eventHistory: Map<string, ScriptEvent[]> = new Map()
+  private listeners = new Set<(eventKey: string, event: ScriptEvent) => void>()
   private totalOpened = 0
   private totalClosed = 0
 
@@ -157,8 +168,20 @@ export class ScriptRunner {
 
   private sendEvent(eventKey: string, event: ScriptEvent): void {
     this.rememberEvent(eventKey, event)
+    for (const listener of this.listeners) {
+      try {
+        listener(eventKey, event)
+      } catch {
+        // Listener failures must not affect process execution.
+      }
+    }
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return
     this.mainWindow.webContents.send(eventKey, event)
+  }
+
+  onEvent(callback: (eventKey: string, event: ScriptEvent) => void): () => void {
+    this.listeners.add(callback)
+    return () => this.listeners.delete(callback)
   }
 
   private scheduleOutputFlush(eventKey: string): void {
@@ -241,7 +264,8 @@ export class ScriptRunner {
       let settled = false
       let notificationSent = false
 
-      const proc = spawn('sh', ['-c', command], {
+      const shell = shellCommand(command)
+      const proc = spawn(shell.file, shell.args, {
         cwd,
         env: { ...getColorEnv(), ...extraEnv },
         stdio: ['pipe', 'pipe', 'pipe']  // Fixed: Allow piped commands to work
@@ -322,7 +346,8 @@ export class ScriptRunner {
     log.info('runPersistent starting', { commandCount: parsed.length, cwd, eventKey })
     this.sendEvent(eventKey, { type: 'command-start', command: combined })
 
-    const proc = spawn('sh', ['-c', combined], {
+    const shell = shellCommand(combined)
+    const proc = spawn(shell.file, shell.args, {
       cwd,
       env: { ...getColorEnv(), ...extraEnv },
       stdio: ['pipe', 'pipe', 'pipe'],  // Fixed: Allow piped commands to work
@@ -408,7 +433,8 @@ export class ScriptRunner {
       let settled = false
       let notificationSent = false
 
-      const proc = spawn('sh', ['-c', command], {
+      const shell = shellCommand(command)
+      const proc = spawn(shell.file, shell.args, {
         cwd,
         env: getColorEnv(),
         stdio: ['pipe', 'pipe', 'pipe']  // Fixed: Allow piped commands to work

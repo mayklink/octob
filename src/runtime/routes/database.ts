@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { DatabaseService } from '../../main/db/database'
 import type { ProjectCreate, ProjectUpdate, WorktreeUpdate } from '../../main/db/types'
 import { readJsonBody, writeJson, type JsonRecord } from '../http'
+import { dispatchDatabaseCall } from '../db-dispatch'
 
 interface DatabaseRouteContext {
   db: DatabaseService
@@ -22,6 +23,32 @@ export async function handleDatabaseRoute(
   const parts = segments(url.pathname)
   const resource = parts[2]
   const id = parts[3]
+
+  if (resource === 'call' && request.method === 'POST') {
+    const body = await readJsonBody<JsonRecord>(request)
+    if (typeof body.method !== 'string') {
+      writeJson(request, response, context.allowedOrigins, 400, { error: 'method_required' })
+      return true
+    }
+    try {
+      const result = await dispatchDatabaseCall(
+        context.db,
+        body.method,
+        Array.isArray(body.args) ? body.args : []
+      )
+      writeJson(request, response, context.allowedOrigins, 200, { result })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      writeJson(
+        request,
+        response,
+        context.allowedOrigins,
+        message === 'db_method_not_allowed' ? 403 : 500,
+        { error: message }
+      )
+    }
+    return true
+  }
 
   if (resource === 'projects' && !id) {
     if (request.method === 'GET') {

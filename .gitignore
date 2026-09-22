@@ -50,6 +50,8 @@ scripts/*
 !scripts/electron-native-fingerprint.cjs
 !scripts/prepare-whisper-sidecar.cjs
 !scripts/run-runtime.cjs
+!scripts/run-web-local.cjs
+!scripts/runtime-require-hook.cjs
 
 # Claude worktrees
 .claude/worktrees/

@@ -1,6 +1,6 @@
 import { spawn, ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
-import { BrowserWindow } from 'electron'
+import type { BrowserWindow } from 'electron'
 import { createLogger } from './logger'
 
 const log = createLogger({ component: 'BashService' })
@@ -70,19 +70,42 @@ function getColorEnv(): NodeJS.ProcessEnv {
   }
 }
 
+function shellCommand(command: string): { file: string; args: string[] } {
+  if (process.platform === 'win32') {
+    return {
+      file: process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe',
+      args: ['/d', '/s', '/c', command]
+    }
+  }
+  return { file: 'sh', args: ['-c', command] }
+}
+
 export class BashService {
   private mainWindow: BrowserWindow | null = null
   private runs: Map<string, BashRun> = new Map()
   private outputBuffers: Map<string, string> = new Map()
   private outputFlushTimers: Map<string, NodeJS.Timeout> = new Map()
+  private listeners = new Set<(event: BashStreamEvent) => void>()
 
   setMainWindow(window: BrowserWindow): void {
     this.mainWindow = window
   }
 
   private sendEvent(event: BashStreamEvent): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(event)
+      } catch {
+        // Listener failures must not affect the process lifecycle.
+      }
+    }
     if (!this.mainWindow || this.mainWindow.isDestroyed()) return
     this.mainWindow.webContents.send('bash:stream', event)
+  }
+
+  onEvent(callback: (event: BashStreamEvent) => void): () => void {
+    this.listeners.add(callback)
+    return () => this.listeners.delete(callback)
   }
 
   private scheduleOutputFlush(sessionId: string): void {
@@ -263,7 +286,8 @@ export class BashService {
     const runId = randomUUID()
     const startedAt = Date.now()
 
-    const proc = spawn('sh', ['-c', command], {
+    const shell = shellCommand(command)
+    const proc = spawn(shell.file, shell.args, {
       cwd,
       env: getColorEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],

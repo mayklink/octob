@@ -3,8 +3,9 @@ const path = require('node:path')
 
 const electron = require('electron')
 const entry = path.join(__dirname, '..', 'out', 'runtime-node', 'runtime', 'index.js')
+const hook = path.join(__dirname, 'runtime-require-hook.cjs')
 
-const child = spawn(electron, [entry], {
+const child = spawn(electron, ['-r', hook, entry], {
   stdio: 'inherit',
   env: {
     ...process.env,

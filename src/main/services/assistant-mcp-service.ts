@@ -1,5 +1,5 @@
-import { app, BrowserWindow } from 'electron'
 import { join, resolve } from 'node:path'
+import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
@@ -7,8 +7,7 @@ import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js
 import { z } from 'zod/v4'
 import type { DatabaseService } from '../db/database'
 import type { Session } from '../db/types'
-import type { AgentSdkManager } from './agent-sdk-manager'
-import type { AgentSdkId } from './agent-sdk-types'
+import type { AgentSdkId, AgentSdkImplementer } from './agent-sdk-types'
 import { createWorktreeOp } from './worktree-ops'
 import { createConnectionOp } from './connection-ops'
 import { APP_SETTINGS_DB_KEY } from '@shared/types/settings'
@@ -36,8 +35,22 @@ const pendingProjectSelections = new Map<
   }
 >()
 
+export interface AssistantWindowLike {
+  isDestroyed: () => boolean
+  webContents: {
+    send: (channel: string, ...args: unknown[]) => void
+  }
+}
+
+export interface AssistantAgentSdkManagerLike {
+  getImplementer: (sdkId: AgentSdkId) => AgentSdkImplementer
+}
+
+const assistantWindows = new Set<AssistantWindowLike>()
+
 export function getAssistantWorkspacePath(): string {
-  return join(app.getPath('userData'), 'assistant-workspace')
+  const configured = process.env.OCTOB_ASSISTANT_WORKSPACE?.trim()
+  return configured || join(homedir(), '.octob', 'assistant-workspace')
 }
 
 export function isAssistantWorkspacePath(value?: string): boolean {
@@ -68,7 +81,7 @@ export function resolveAssistantProjectSelection(
 
 function waitForAssistantProjectSelection(
   request: AssistantProjectSelectionRequest,
-  mainWindow: BrowserWindow
+  mainWindow: AssistantWindowLike
 ): Promise<string | null> {
   return new Promise((resolveSelection) => {
     pendingProjectSelections.set(request.id, { request, resolve: resolveSelection })
@@ -263,10 +276,12 @@ export function removeAssistantTask(db: DatabaseService, sessionId: string): Ass
 
 export function notifyAssistantTasksChanged(db: DatabaseService): void {
   const tasks = getAssistantTasks(db)
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) {
-      window.webContents.send('assistant:tasks-changed', tasks)
+  for (const window of assistantWindows) {
+    if (window.isDestroyed()) {
+      assistantWindows.delete(window)
+      continue
     }
+    window.webContents.send('assistant:tasks-changed', tasks)
   }
 }
 
@@ -436,7 +451,10 @@ interface DelegationRunner {
   prompt: (workspacePath: string, agentSessionId: string, message: string) => Promise<void>
 }
 
-function getImplementer(sdkManager: AgentSdkManager, agentSdk: AgentSdkId): DelegationRunner {
+function getImplementer(
+  sdkManager: AssistantAgentSdkManagerLike,
+  agentSdk: AgentSdkId
+): DelegationRunner {
   if (agentSdk === 'opencode') {
     return openCodeService as unknown as DelegationRunner
   }
@@ -465,7 +483,7 @@ function resolveSessionAgentSdk(db: DatabaseService, session: Session): AgentSdk
  */
 async function promptExistingSession(
   db: DatabaseService,
-  sdkManager: AgentSdkManager,
+  sdkManager: AssistantAgentSdkManagerLike,
   session: Session,
   workspacePath: string,
   prompt: string
@@ -527,9 +545,10 @@ function summarizeTask(task: AssistantTask): Record<string, unknown> {
 
 export async function startAssistantMcpService(
   db: DatabaseService,
-  sdkManager: AgentSdkManager,
-  mainWindow: BrowserWindow
+  sdkManager: AssistantAgentSdkManagerLike,
+  mainWindow: AssistantWindowLike
 ): Promise<void> {
+  assistantWindows.add(mainWindow)
   if (assistantMcpUrl) return
 
   startAssistantTaskTracking(db)
@@ -606,7 +625,10 @@ export async function startAssistantMcpService(
   }
 
   const makeServer = (): McpServer => {
-    const server = new McpServer({ name: 'octob-internal-tools', version: app.getVersion() })
+    const server = new McpServer({
+      name: 'octob-internal-tools',
+      version: process.env.npm_package_version ?? '1.0.0'
+    })
 
     server.registerTool('list_projects', {
       description: 'List projects registered in Octob. Use this before asking the user which repository a nickname refers to.',

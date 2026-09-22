@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { homedir } from 'node:os'
 import { join, resolve } from 'path'
 import { mkdir, writeFile, unlink, access } from 'fs/promises'
 import { randomUUID } from 'crypto'
@@ -10,7 +10,7 @@ const MAX_IMAGE_SIZE = 10 * 1024 * 1024 // 10MB
 const ALLOWED_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'])
 
 async function getAttachmentsDir(): Promise<string> {
-  const dir = join(app.getPath('home'), '.octob', 'attachments')
+  const dir = join(homedir(), '.octob', 'attachments')
   await mkdir(dir, { recursive: true })
   return dir
 }

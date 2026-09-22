@@ -1,5 +1,4 @@
 import type { BrowserWindow } from 'electron'
-import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { emitAgentStreamEvent, type AgentStreamEvent } from './agent-event-bus'
 import {
@@ -223,7 +222,7 @@ export class CursorCliImplementer implements AgentSdkImplementer {
       clientInfo: {
         name: 'octob',
         title: 'Octob',
-        version: app.getVersion()
+        version: process.env.npm_package_version ?? '1.0.0'
       },
       clientCapabilities: {
         fs: {

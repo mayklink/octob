@@ -1,6 +1,7 @@
 import { existsSync, realpathSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import type { DatabaseService } from '../main/db/database'
+import { getAssistantWorkspacePath } from '../main/services/assistant-mcp-service'
 
 function normalizeExistingPath(path: string): string {
   try {
@@ -25,6 +26,10 @@ export function listRegisteredWorkspaceRoots(db: DatabaseService): string[] {
       roots.add(worktree.path)
     }
   }
+  for (const connection of db.getAllConnections()) {
+    roots.add(connection.path)
+  }
+  roots.add(getAssistantWorkspacePath())
   return [...roots]
 }
 

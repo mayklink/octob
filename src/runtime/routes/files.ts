@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { existsSync } from 'node:fs'
 import type { DatabaseService } from '../../main/db/database'
 import {
   createFile,
@@ -22,6 +23,16 @@ export async function handleFileRoute(
   context: FileRouteContext
 ): Promise<boolean> {
   if (!url.pathname.startsWith('/v1/files')) return false
+
+  if (request.method === 'GET' && url.pathname === '/v1/files/exists') {
+    const path = url.searchParams.get('path')
+    if (!path || !isPathAllowed(context.db, path)) {
+      writeJson(request, response, context.allowedOrigins, 403, { error: 'path_not_allowed' })
+      return true
+    }
+    writeJson(request, response, context.allowedOrigins, 200, { exists: existsSync(path) })
+    return true
+  }
 
   if (request.method === 'GET' && url.pathname === '/v1/files/read') {
     const path = url.searchParams.get('path')

@@ -1,5 +1,22 @@
-import { Notification, BrowserWindow, app } from 'electron'
+import type { BrowserWindow } from 'electron'
 import { createLogger } from './logger'
+
+type ElectronRuntime = typeof import('electron')
+let electronRuntime: ElectronRuntime | null | undefined
+
+function getElectronRuntime(): ElectronRuntime | null {
+  if (electronRuntime !== undefined) return electronRuntime
+  try {
+    const loaded = require('electron') as ElectronRuntime | string
+    electronRuntime =
+      typeof loaded === 'object' && loaded !== null && 'Notification' in loaded
+        ? loaded as ElectronRuntime
+        : null
+  } catch {
+    electronRuntime = null
+  }
+  return electronRuntime
+}
 
 const log = createLogger({ component: 'NotificationService' })
 
@@ -35,8 +52,9 @@ class NotificationService {
       return
     }
 
-    if (!Notification.isSupported()) {
-      log.warn('Notifications not supported on this platform')
+    const electron = getElectronRuntime()
+    if (!electron?.Notification?.isSupported()) {
+      log.debug('Notifications unavailable in headless runtime')
       return
     }
 
@@ -45,7 +63,7 @@ class NotificationService {
       sessionName: data.sessionName
     })
 
-    const notification = new Notification({
+    const notification = new electron.Notification({
       title: data.projectName,
       body: `"${data.sessionName}" completed`,
       silent: false
@@ -68,9 +86,9 @@ class NotificationService {
     // Increment dock/taskbar badge
     this.unreadCount++
     if (process.platform === 'darwin') {
-      app.dock?.setBadge(String(this.unreadCount))
+      electron.app.dock?.setBadge(String(this.unreadCount))
     } else {
-      app.setBadgeCount(this.unreadCount)
+      electron.app.setBadgeCount(this.unreadCount)
     }
   }
 
@@ -84,8 +102,9 @@ class NotificationService {
     data: SessionNotificationData,
     kind: 'question' | 'permission'
   ): void {
-    if (!Notification.isSupported()) {
-      log.warn('Notifications not supported on this platform')
+    const electron = getElectronRuntime()
+    if (!electron?.Notification?.isSupported()) {
+      log.debug('Notifications unavailable in headless runtime')
       return
     }
 
@@ -100,7 +119,7 @@ class NotificationService {
       kind
     })
 
-    const notification = new Notification({
+    const notification = new electron.Notification({
       title: data.projectName,
       body,
       silent: false
@@ -123,9 +142,9 @@ class NotificationService {
     // Increment dock/taskbar badge (same scheme as showSessionComplete)
     this.unreadCount++
     if (process.platform === 'darwin') {
-      app.dock?.setBadge(String(this.unreadCount))
+      electron.app.dock?.setBadge(String(this.unreadCount))
     } else {
-      app.setBadgeCount(this.unreadCount)
+      electron.app.setBadgeCount(this.unreadCount)
     }
   }
 
@@ -142,10 +161,12 @@ class NotificationService {
 
   private clearBadge(): void {
     this.unreadCount = 0
+    const electron = getElectronRuntime()
+    if (!electron?.app) return
     if (process.platform === 'darwin') {
-      app.dock?.setBadge('')
+      electron.app.dock?.setBadge('')
     } else {
-      app.setBadgeCount(0)
+      electron.app.setBadgeCount(0)
     }
   }
 }

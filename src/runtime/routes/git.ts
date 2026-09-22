@@ -45,6 +45,14 @@ export async function handleGitRoute(
     return true
   }
 
+  if (operation === 'has-commits') {
+    writeJson(request, response, context.allowedOrigins, 200, {
+      success: true,
+      hasCommits: await git.hasCommits()
+    })
+    return true
+  }
+
   if (operation === 'branch') {
     writeJson(request, response, context.allowedOrigins, 200, await git.getBranchInfo())
     return true
@@ -125,6 +133,21 @@ export async function handleGitRoute(
   if (operation === 'remote-url') {
     const remote = typeof body.remote === 'string' ? body.remote : 'origin'
     writeJson(request, response, context.allowedOrigins, 200, await git.getRemoteUrl(remote))
+    return true
+  }
+
+  if (operation === 'add-gitignore') {
+    if (typeof body.pattern !== 'string' || !body.pattern.trim()) {
+      writeJson(request, response, context.allowedOrigins, 400, { error: 'pattern_required' })
+      return true
+    }
+    writeJson(
+      request,
+      response,
+      context.allowedOrigins,
+      200,
+      await git.addToGitignore(body.pattern)
+    )
     return true
   }
 

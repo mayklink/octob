@@ -1,5 +1,4 @@
-import { app } from 'electron'
-import { platform } from 'os'
+import { homedir, platform } from 'os'
 import { join } from 'path'
 import {
   chmodSync,
@@ -21,7 +20,7 @@ const log = createLogger({ component: 'ConnectionService' })
 const CONNECTIONS_DIR_NAME = 'connections'
 
 export function getConnectionsBaseDir(): string {
-  const homeDir = app.getPath('home')
+  const homeDir = homedir()
   return join(homeDir, '.octob', CONNECTIONS_DIR_NAME)
 }
 

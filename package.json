@@ -36,7 +36,10 @@
     "build:linux": "yarn prepare:whisper && electron-vite build && electron-builder --linux",
     "build:native": "cd src/native && npx node-gyp rebuild",
     "build:runtime": "node node_modules/typescript/bin/tsc -p tsconfig.runtime.json",
-    "runtime:dev": "yarn build:runtime && node scripts/run-runtime.cjs"
+    "runtime:dev": "yarn build:runtime && node scripts/run-runtime.cjs",
+    "web:dev": "node node_modules/vite/bin/vite.js --config vite.web.config.ts",
+    "build:web": "node node_modules/vite/bin/vite.js build --config vite.web.config.ts",
+    "web:local": "yarn build:runtime && yarn build:web && node scripts/run-web-local.cjs --preview"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.21.0",

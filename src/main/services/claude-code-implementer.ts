@@ -1,6 +1,6 @@
 import type { BrowserWindow } from 'electron'
-import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { createLogger } from './logger'
@@ -506,7 +506,7 @@ export class ClaudeCodeImplementer implements AgentSdkImplementer {
         ...(modelDef?.adaptiveThinking === false
           ? { maxThinkingTokens: 31999 }
           : { thinking: { type: 'adaptive' as const }, effort: effortLevel }),
-        debugFile: join(app.getPath('home'), '.octob', 'logs', 'claude-debug.log'),
+        debugFile: join(homedir(), '.octob', 'logs', 'claude-debug.log'),
         env: {
           ...process.env,
           ...getUserEnvironmentVariables(this.dbService),

@@ -34,7 +34,9 @@
     "build:mac": "test -f .env.signing && . ./.env.signing; yarn prepare:whisper && electron-vite build && electron-builder --mac",
     "build:mac:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false yarn prepare:whisper && electron-vite build && electron-builder --mac",
     "build:linux": "yarn prepare:whisper && electron-vite build && electron-builder --linux",
-    "build:native": "cd src/native && npx node-gyp rebuild"
+    "build:native": "cd src/native && npx node-gyp rebuild",
+    "build:runtime": "tsc -p tsconfig.runtime.json",
+    "runtime:dev": "yarn build:runtime && node out/runtime-node/runtime/index.js"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.21.0",

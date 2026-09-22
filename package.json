@@ -36,7 +36,7 @@
     "build:linux": "yarn prepare:whisper && electron-vite build && electron-builder --linux",
     "build:native": "cd src/native && npx node-gyp rebuild",
     "build:runtime": "tsc -p tsconfig.runtime.json",
-    "runtime:dev": "yarn build:runtime && node out/runtime-node/runtime/index.js"
+    "runtime:dev": "yarn build:runtime && node scripts/run-runtime.cjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.21.0",

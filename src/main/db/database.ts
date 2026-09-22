@@ -1,6 +1,5 @@
-import { deleteAttachment } from '../services/attachment-storage'
 import Database from 'better-sqlite3'
-import { app } from 'electron'
+import { homedir } from 'os'
 import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { randomUUID } from 'crypto'
@@ -33,6 +32,9 @@ import type {
   ConnectionMember,
   ConnectionMemberCreate,
   ConnectionWithMembers,
+  DiffComment,
+  DiffCommentCreate,
+  DiffCommentUpdate
 } from './types'
 
 export class DatabaseService {
@@ -43,7 +45,7 @@ export class DatabaseService {
     if (dbPath) {
       this.dbPath = dbPath
     } else {
-      const octobDir = join(app.getPath('home'), '.octob')
+      const octobDir = join(homedir(), '.octob')
       if (!existsSync(octobDir)) {
         mkdirSync(octobDir, { recursive: true })
       }
@@ -289,6 +291,7 @@ export class DatabaseService {
       tags: data.tags ? JSON.stringify(data.tags) : null,
       language: null,
       custom_icon: null,
+      detected_icon: null,
       setup_script: data.setup_script ?? null,
       run_script: data.run_script ?? null,
       archive_script: data.archive_script ?? null,

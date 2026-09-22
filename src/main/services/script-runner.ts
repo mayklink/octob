@@ -1,5 +1,5 @@
 import { spawn, ChildProcess } from 'child_process'
-import { BrowserWindow } from 'electron'
+import type { BrowserWindow } from 'electron'
 import { createLogger } from './logger'
 
 const log = createLogger({ component: 'ScriptRunner' })

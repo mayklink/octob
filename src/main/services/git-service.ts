@@ -1,5 +1,5 @@
 import simpleGit, { SimpleGit, BranchSummary, StatusResult } from 'simple-git'
-import { app } from 'electron'
+import { homedir } from 'os'
 import { join, basename, dirname, normalize, resolve } from 'path'
 import {
   existsSync,
@@ -15,7 +15,7 @@ import { rm } from 'fs/promises'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { platform, tmpdir } from 'os'
-import { getImageMimeType } from '@shared/types/file-utils'
+import { getImageMimeType } from '../../shared/types/file-utils'
 import {
   selectUniqueBreedName,
   ALL_BREED_NAMES,
@@ -318,7 +318,7 @@ export class GitService {
    * Get the base directory for all Octob worktrees
    */
   static getWorktreesBaseDir(): string {
-    return join(app.getPath('home'), '.octob-worktrees')
+    return join(homedir(), '.octob-worktrees')
   }
 
   /**
@@ -1898,7 +1898,7 @@ export class GitService {
 
       // Pull branch if not creating from PR (PR fetch happens separately)
       const autoPull = options?.autoPull !== false // Default true
-      let pullResult = { success: true, updated: false }
+      let pullResult: GitPullResult = { success: true, updated: false }
       if (prNumber != null) {
         // Fetch the PR ref once — FETCH_HEAD stays valid for subsequent retries
         await this.git.raw(['fetch', 'origin', `pull/${prNumber}/head`])
@@ -2463,7 +2463,7 @@ export function canonicalizeBranchName(title: string): string {
 }
 
 // Re-export from shared so backend callers can still import from git-service
-export { canonicalizeTicketTitle } from '@shared/types/branch-utils'
+export { canonicalizeTicketTitle } from '../../shared/types/branch-utils'
 
 /**
  * Check if a branch name is an auto-generated name (breed or legacy city name).

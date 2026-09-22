@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync, unlinkSync } from 'fs'
 import { dirname, isAbsolute, relative, resolve } from 'path'
-import { getImageMimeType } from '@shared/types/file-utils'
+import { getImageMimeType } from '../../shared/types/file-utils'
 
 const MAX_FILE_SIZE = 1024 * 1024 // 1MB
 const MAX_IMAGE_FILE_SIZE = 20 * 1024 * 1024 // 20MB

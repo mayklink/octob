@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { homedir } from 'os'
 import { join } from 'path'
 import { existsSync, mkdirSync, appendFileSync, readdirSync, statSync, unlinkSync } from 'fs'
 
@@ -47,7 +47,7 @@ class LoggerService {
 
   private constructor() {
     // Use ~/.octob/logs/ for logs
-    const homeDir = app.getPath('home')
+    const homeDir = homedir()
     this.logDir = join(homeDir, '.octob', LOG_DIR_NAME)
     this.ensureLogDir()
     this.currentLogFile = this.getLogFileName()

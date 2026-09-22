@@ -49,6 +49,7 @@ scripts/*
 !scripts/ensure-electron-native-modules.cjs
 !scripts/electron-native-fingerprint.cjs
 !scripts/prepare-whisper-sidecar.cjs
+!scripts/run-runtime.cjs
 
 # Claude worktrees
 .claude/worktrees/

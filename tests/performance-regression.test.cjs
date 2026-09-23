@@ -316,6 +316,15 @@ test('agent prompts are accepted without holding the HTTP response open', async 
   assert.equal(response.result.body.operationId, 'op-1')
 })
 
+test('terminal stream is retried after the PTY is created', () => {
+  const source = readFileSync(
+    resolve(__dirname, '..', 'src/renderer/src/runtime/web-bridge.ts'),
+    'utf8'
+  )
+  assert.match(source, /onError:\s*\(\) => \{[\s\S]*terminalStreams\.delete\(terminalId\)/)
+  assert.match(source, /const result = await octobRuntime\.createTerminal\(id, cwd, shell\)[\s\S]*ensureTerminalStream\(id\)/)
+})
+
 test('stale terminal lifecycle calls settle after a runtime restart', async () => {
   const ptyService = { has: () => false }
   const { handleTerminalRoute } = load('src/runtime/routes/terminal.ts', {

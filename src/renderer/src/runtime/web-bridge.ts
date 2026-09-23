@@ -424,6 +424,14 @@ function ensureTerminalStream(terminalId: string): void {
       for (const listener of terminalExit.get(terminalId) ?? []) listener(code)
       terminalStreams.get(terminalId)?.()
       terminalStreams.delete(terminalId)
+    },
+    onError: () => {
+      // The listener is registered before the PTY is created. A first stream
+      // attempt can therefore receive terminal_not_found; let create() retry
+      // instead of leaving a dead stream marked as active forever.
+      if (terminalStreams.get(terminalId) === dispose) {
+        terminalStreams.delete(terminalId)
+      }
     }
   })
   terminalStreams.set(terminalId, dispose)
@@ -453,8 +461,11 @@ function addTerminalListener(
 
 function installTerminalBridge(target: any): void {
   target.terminalOps = {
-    create: (id: string, cwd: string, shell?: string) =>
-      octobRuntime.createTerminal(id, cwd, shell),
+    create: async (id: string, cwd: string, shell?: string) => {
+      const result = await octobRuntime.createTerminal(id, cwd, shell)
+      if (result.success) ensureTerminalStream(id)
+      return result
+    },
     write: (id: string, data: string) => {
       void octobRuntime.writeTerminal(id, data)
     },

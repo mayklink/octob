@@ -36,28 +36,42 @@ const CODEX_LUNA_EFFORT_VARIANTS: Record<string, Record<string, never>> = {
 export const CODEX_MODELS: CodexModelInfo[] = [
   {
     id: 'gpt-6-astra',
-    name: 'GPT-6 Astra',
+    name: 'GPT-6-Astra',
     limit: { context: 272000, output: 128000 },
     variants: CODEX_SOL_EFFORT_VARIANTS,
     defaultVariant: 'medium'
   },
   {
+    id: 'gpt-6-sol',
+    name: 'GPT-6-Sol',
+    limit: { context: 272000, output: 128000 },
+    variants: CODEX_SOL_EFFORT_VARIANTS,
+    defaultVariant: 'medium'
+  },
+  {
+    id: 'gpt-6-luna',
+    name: 'GPT-6-Luna',
+    limit: { context: 272000, output: 128000 },
+    variants: CODEX_LUNA_EFFORT_VARIANTS,
+    defaultVariant: 'medium'
+  },
+  {
     id: 'gpt-5.6-sol',
-    name: 'GPT-5.6 Sol',
+    name: 'GPT-5.6-Sol',
     limit: { context: 272000, output: 128000 },
     variants: CODEX_SOL_EFFORT_VARIANTS,
     defaultVariant: 'low'
   },
   {
     id: 'gpt-5.6-terra',
-    name: 'GPT-5.6 Terra',
+    name: 'GPT-5.6-Terra',
     limit: { context: 272000, output: 128000 },
     variants: CODEX_SOL_EFFORT_VARIANTS,
     defaultVariant: 'medium'
   },
   {
     id: 'gpt-5.6-luna',
-    name: 'GPT-5.6 Luna',
+    name: 'GPT-5.6-Luna',
     limit: { context: 272000, output: 128000 },
     variants: CODEX_LUNA_EFFORT_VARIANTS,
     defaultVariant: 'medium'
@@ -68,31 +82,10 @@ export const CODEX_MODELS: CodexModelInfo[] = [
     limit: { context: 272000, output: 128000 },
     variants: CODEX_EFFORT_VARIANTS,
     defaultVariant: 'medium'
-  },
-  {
-    id: 'gpt-5.4',
-    name: 'GPT-5.4',
-    limit: { context: 272000, output: 128000 },
-    variants: CODEX_EFFORT_VARIANTS,
-    defaultVariant: 'medium'
-  },
-  {
-    id: 'gpt-5.4-mini',
-    name: 'GPT-5.4 Mini',
-    limit: { context: 272000, output: 128000 },
-    variants: CODEX_EFFORT_VARIANTS,
-    defaultVariant: 'medium'
-  },
-  {
-    id: 'gpt-5.3-codex-spark',
-    name: 'GPT-5.3 Codex Spark',
-    limit: { context: 128000, output: 128000 },
-    variants: CODEX_EFFORT_VARIANTS,
-    defaultVariant: 'high'
   }
 ]
 
-export const CODEX_DEFAULT_MODEL = 'gpt-5.6-sol'
+export const CODEX_DEFAULT_MODEL = 'gpt-6-astra'
 
 /**
  * Returns all available Codex models in the format expected by the renderer.
@@ -145,6 +138,10 @@ export const CODEX_MODEL_ALIASES: Record<string, string> = {
   'gpt-6': 'gpt-6-astra',
   astra: 'gpt-6-astra',
   '6-astra': 'gpt-6-astra',
+  sol: 'gpt-6-sol',
+  '6-sol': 'gpt-6-sol',
+  luna: 'gpt-6-luna',
+  '6-luna': 'gpt-6-luna',
   '5.6': 'gpt-5.6-sol',
   'gpt-5.6': 'gpt-5.6-sol',
   '5.6-sol': 'gpt-5.6-sol',

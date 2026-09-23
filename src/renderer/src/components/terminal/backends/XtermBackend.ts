@@ -267,7 +267,7 @@ export class XtermBackend implements TerminalBackend {
 
     // Create the PTY
     callbacks.onStatusChange('creating')
-    window.terminalOps.create(this.terminalId, opts.cwd, opts.shell).then((result) => {
+    window.terminalOps.create(this.terminalId, opts.cwd, opts.shell, opts.command).then((result) => {
       if (result.success) {
         callbacks.onStatusChange('running')
 

@@ -45,6 +45,7 @@ interface PtyInstance {
   cwd: string
   backend: TerminalBackend
   dataListeners: Array<(data: string) => void>
+  outputBuffer: string
   exitListeners: Array<(code: number, signal: number) => void>
   lastActivityAt: number
   focused: boolean
@@ -57,10 +58,12 @@ interface PtyInstance {
 // terminals around.
 const PTY_IDLE_TIMEOUT_MS = Number(process.env.OCTOB_TERMINAL_IDLE_TIMEOUT_MS ?? 15 * 60 * 1000)
 const PTY_IDLE_SWEEP_MS = 30_000
+const PTY_OUTPUT_BUFFER_MAX_CHARS = 64 * 1024
 
 export interface PtyCreateOpts {
   cwd: string
   shell?: string
+  command?: { file: string; args: string[] }
   env?: Record<string, string>
   cols?: number
   rows?: number
@@ -137,7 +140,7 @@ class PtyService {
 
     log.info('Creating PTY', { id, shell, cwd: opts.cwd, cols, rows })
 
-    const ptyProcess = loadNodePty().spawn(shell, [], {
+    const ptyProcess = loadNodePty().spawn(opts.command?.file ?? shell, opts.command?.args ?? [], {
       name: 'xterm-256color',
       cols,
       rows,
@@ -150,6 +153,7 @@ class PtyService {
       cwd: opts.cwd,
       backend: opts.backend || 'node-pty',
       dataListeners: [],
+      outputBuffer: '',
       exitListeners: [],
       lastActivityAt: Date.now(),
       focused: true,
@@ -158,6 +162,7 @@ class PtyService {
 
     // Wire up data events
     ptyProcess.onData((data) => {
+      instance.outputBuffer = (instance.outputBuffer + data).slice(-PTY_OUTPUT_BUFFER_MAX_CHARS)
       for (const listener of instance.dataListeners) {
         try {
           listener(data)
@@ -269,6 +274,9 @@ class PtyService {
       return () => {}
     }
     instance.dataListeners.push(callback)
+    if (instance.outputBuffer) {
+      callback(instance.outputBuffer)
+    }
     return () => {
       const idx = instance.dataListeners.indexOf(callback)
       if (idx !== -1) {

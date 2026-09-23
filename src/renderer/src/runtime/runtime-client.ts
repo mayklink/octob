@@ -276,11 +276,12 @@ export class OctobRuntimeClient {
   createTerminal(
     terminalId: string,
     cwd: string,
-    shell?: string
+    shell?: string,
+    command?: { file: string; args: string[] }
   ): Promise<{ success: boolean; cols?: number; rows?: number; error?: string }> {
     return this.request('/v1/terminal/create', {
       method: 'POST',
-      body: { terminalId, cwd, shell }
+      body: { terminalId, cwd, shell, command }
     })
   }
 

@@ -47,7 +47,7 @@ const port = Number.parseInt(process.env.OCTOB_RUNTIME_PORT ?? '47821', 10)
 const allowedOrigins = new Set(
   (
     process.env.OCTOB_ALLOWED_ORIGINS ??
-    'http://localhost:5173,http://127.0.0.1:5173,http://localhost:47821,http://127.0.0.1:47821'
+    `http://localhost:5173,http://127.0.0.1:5173,http://localhost:${port},http://127.0.0.1:${port}`
   )
     .split(',')
     .map((origin) => origin.trim())

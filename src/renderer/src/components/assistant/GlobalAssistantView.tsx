@@ -147,20 +147,11 @@ async function createAssistantSession(projectId: string) {
   }
   if ((window as typeof window & { __OCTOB_WEB_RUNTIME__?: boolean }).__OCTOB_WEB_RUNTIME__ && window.assistantOps.createSession) {
     const id = crypto.randomUUID()
-    void window.assistantOps.createSession({ ...data, id }).catch((cause) => {
+    const persistedSession = await window.assistantOps.createSession({ ...data, id }).catch((cause) => {
       console.warn('Falha ao persistir a sessão do assistente no runtime:', cause)
     })
-    return {
-      id,
-      ...data,
-      connection_id: null,
-      status: 'active',
-      opencode_session_id: null,
-      mode: 'build',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      completed_at: null
-    } as Awaited<ReturnType<typeof window.db.session.create>>
+    if (!persistedSession) throw new Error('Não foi possível salvar a sessão do assistente.')
+    return persistedSession as Awaited<ReturnType<typeof window.db.session.create>>
   }
   return window.db.session.create(data)
 }
@@ -232,18 +223,15 @@ export function GlobalAssistantView(): React.JSX.Element {
         if (!projectId) {
           throw new Error('Adicione pelo menos um projeto para habilitar as ferramentas do agente.')
         }
-        const isWebRuntime = Boolean((window as typeof window & { __OCTOB_WEB_RUNTIME__?: boolean }).__OCTOB_WEB_RUNTIME__)
-        const rawWorkspacePath = isWebRuntime
-          ? projects[0]?.path
-          : await withAssistantTimeout(
-              window.assistantOps.getWorkspacePath(),
-              'preparar o workspace do assistente'
-            )
+        const rawWorkspacePath = await withAssistantTimeout(
+          window.assistantOps.getWorkspacePath(),
+          'preparar o workspace do assistente'
+        )
         if (!rawWorkspacePath) throw new Error('Nenhum workspace disponível para o assistente.')
         if (cancelled) return
 
         const storedSessionId = useGlobalAssistantStore.getState().assistantSessionId
-        let session = !isWebRuntime && storedSessionId
+        let session = storedSessionId
           ? await withAssistantTimeout(window.db.session.get(storedSessionId), 'carregar a sessão do assistente')
           : null
         if (cancelled) return

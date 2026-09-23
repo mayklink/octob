@@ -63,7 +63,6 @@ export async function handleTerminalRoute(
       removeData()
       removeExit()
     }
-    request.once('close', cleanup)
     response.once('close', cleanup)
     return true
   }
@@ -74,6 +73,20 @@ export async function handleTerminalRoute(
   if (request.method === 'POST' && url.pathname === '/v1/terminal/create') {
     const cwd = typeof body.cwd === 'string' ? body.cwd : null
     const shell = typeof body.shell === 'string' ? body.shell : undefined
+    const commandRecord =
+      typeof body.command === 'object' && body.command !== null && !Array.isArray(body.command)
+        ? (body.command as JsonRecord)
+        : null
+    const command =
+      typeof commandRecord?.file === 'string' &&
+      Array.isArray(commandRecord.args) &&
+      commandRecord.args.every((arg) => typeof arg === 'string')
+        ? { file: commandRecord.file, args: commandRecord.args as string[] }
+        : undefined
+    if (body.command !== undefined && !command) {
+      writeJson(request, response, context.allowedOrigins, 400, { error: 'invalid_command' })
+      return true
+    }
     if (!terminalId || !cwd) {
       writeJson(request, response, context.allowedOrigins, 400, { error: 'invalid_request' })
       return true
@@ -83,7 +96,7 @@ export async function handleTerminalRoute(
       return true
     }
     try {
-      const size = ptyService.create(terminalId, { cwd, shell })
+      const size = ptyService.create(terminalId, { cwd, shell, command })
       writeJson(request, response, context.allowedOrigins, 200, { success: true, ...size })
     } catch (error) {
       writeJson(request, response, context.allowedOrigins, 500, {

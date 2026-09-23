@@ -17,6 +17,7 @@ import { resolveClaudeBinaryPath } from '../main/services/claude-binary-resolver
 import {
   resolveCodexBinaryPath,
   resolveConfiguredCodexBinaryPath,
+  resolveCodexVoiceResumeCommand,
   setConfiguredCodexBinaryPath,
   supportsCodexAppServer
 } from '../main/services/codex-binary-resolver'
@@ -146,6 +147,18 @@ export class RuntimeAgentService {
       success: Boolean(selectedPath),
       path: selectedPath,
       ...(selectedPath ? {} : { error: 'Codex app-server was not found.' })
+    }
+  }
+
+  codexVoiceResumeCommand(threadId: string): {
+    success: boolean
+    command?: { file: string; args: string[] }
+    error?: string
+  } {
+    try {
+      return { success: true, command: resolveCodexVoiceResumeCommand(threadId) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
   }
 
@@ -290,6 +303,14 @@ export class RuntimeAgentService {
         ? false
         : await this.getImplementer(sdk)!.abort(worktreePath, backendSessionId)
     return { success: value }
+  }
+
+  async startCodexVoice(sessionId: string, sdp: string) {
+    return this.codex.startVoice(sessionId, sdp)
+  }
+
+  async stopCodexVoice(sessionId: string) {
+    return this.codex.stopVoice(sessionId)
   }
 
   async disconnect(worktreePath: string, backendSessionId: string) {

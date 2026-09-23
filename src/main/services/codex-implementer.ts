@@ -66,6 +66,9 @@ export interface CodexSessionState {
   titleGenerated: boolean
   titleGenerationStarted: boolean
   persistDebounceTimer: ReturnType<typeof setTimeout> | null
+  realtimeMessageId?: string | null
+  realtimeMessageRole?: 'user' | 'assistant' | null
+  realtimeActive?: boolean
 }
 
 interface CodexLiveToolPart {
@@ -329,6 +332,41 @@ export class CodexImplementer implements AgentSdkImplementer {
       this.persistActivity(targetSession, event)
     }
 
+    if (event.kind === 'notification' && event.method.startsWith('thread/realtime/')) {
+      if (targetSession) {
+        if (event.method === 'thread/realtime/started') {
+          targetSession.realtimeActive = true
+        }
+        const isTranscriptEvent = event.method === 'thread/realtime/transcriptUpdated' ||
+          event.method === 'thread/realtime/transcript/delta' ||
+          event.method === 'thread/realtime/transcript/done'
+        const message = isTranscriptEvent
+          ? this.appendRealtimeTranscript(targetSession, event.method, event.payload)
+          : null
+        if (event.method === 'thread/realtime/closed') {
+          targetSession.realtimeActive = false
+          targetSession.realtimeMessageId = null
+          targetSession.realtimeMessageRole = null
+          this.flushPendingPersist(targetSession)
+        }
+        this.sendToRenderer('opencode:stream', {
+          type: 'codex.voice',
+          sessionId: targetSession.octobSessionId,
+          data: { method: event.method, payload: event.payload, ...(message ? { message } : {}) }
+        })
+      }
+      return
+    }
+
+    // Realtime voice can start agent turns without going through prompt(),
+    // whose per-call listener normally forwards Codex tool activity to the UI.
+    // Forward those mapped events from the manager listener while voice is active.
+    if (targetSession?.realtimeActive && event.kind === 'notification') {
+      for (const streamEvent of mapCodexEventToStreamEvents(event, targetSession.octobSessionId)) {
+        this.sendToRenderer('opencode:stream', streamEvent)
+      }
+    }
+
     // Clean up stale pending entries when a session closes
     if (
       event.kind === 'session' &&
@@ -464,6 +502,37 @@ export class CodexImplementer implements AgentSdkImplementer {
     }
   }
 
+  private appendRealtimeTranscript(
+    session: CodexSessionState,
+    method: string,
+    payload: unknown
+  ): { id: string; role: 'user' | 'assistant'; content: string; timestamp: string } | null {
+    const data = asObject(payload)
+    const role = data?.role === 'user' ? 'user' : data?.role === 'assistant' ? 'assistant' : null
+    const isDone = method === 'thread/realtime/transcript/done'
+    const text = asString(isDone ? data?.text : method === 'thread/realtime/transcript/delta' ? data?.delta : data?.text)
+    if (!role || !text) return null
+
+    const previous = session.messages.find((entry) =>
+      asObject(entry)?.id === session.realtimeMessageId
+    ) as { id: string; role: 'user' | 'assistant'; parts: Array<{ type: string; text: string; timestamp: string }>; timestamp: string } | undefined
+    const continuing = previous && session.realtimeMessageRole === role && previous.role === role
+    const timestamp = continuing ? previous.timestamp : new Date().toISOString()
+    const content = isDone ? text : continuing ? `${previous.parts[0]?.text ?? ''}${text}` : text
+    const message = continuing ? previous : {
+      id: `realtime-${randomUUID()}`,
+      role,
+      parts: [{ type: 'text', text: '', timestamp }],
+      timestamp
+    }
+    message.parts[0].text = content
+    if (!continuing) session.messages.push(message)
+    session.realtimeMessageId = isDone ? null : message.id
+    session.realtimeMessageRole = isDone ? null : role
+    this.persistCanonicalMessagesDebounced(session)
+    return { id: message.id, role, content, timestamp }
+  }
+
   private async handleProviderTitleUpdate(event: CodexManagerEvent): Promise<void> {
     const payload = asObject(event.payload)
     const typed = event.payload as ThreadNameUpdatedNotification | undefined
@@ -596,7 +665,10 @@ export class CodexImplementer implements AgentSdkImplementer {
     success: boolean
     sessionStatus?: 'idle' | 'busy' | 'retry'
     revertMessageID?: string | null
+    error?: string
   }> {
+    // Keep the provider error so the UI can distinguish an authentication,
+    // missing-thread, or runtime failure instead of showing a generic retry.
     const key = this.getSessionKey(worktreePath, agentSessionId)
 
     // The implementer state can outlive the app-server process. This happens
@@ -681,7 +753,10 @@ export class CodexImplementer implements AgentSdkImplementer {
         worktreePath,
         agentSessionId
       })
-      return { success: false }
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      }
     }
   }
 
@@ -1235,6 +1310,24 @@ export class CodexImplementer implements AgentSdkImplementer {
 
   async getAvailableModels(): Promise<unknown> {
     return getAvailableCodexModels()
+  }
+
+  async startVoice(agentSessionId: string, sdp: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.manager.startRealtimeWebrtc(agentSessionId, sdp)
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  async stopVoice(agentSessionId: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      await this.manager.stopRealtime(agentSessionId)
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   async getModelInfo(

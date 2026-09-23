@@ -11,7 +11,9 @@ import {
   Github,
   Minimize2,
   Terminal,
-  Mic
+  Mic,
+  MicOff,
+  AudioLines
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -32,6 +34,7 @@ import { VirtualizedMessageList, type VirtualizedMessageListHandle } from './Vir
 import { ContextIndicator } from './ContextIndicator'
 import { AttachmentButton } from './AttachmentButton'
 import { AttachmentPreview } from './AttachmentPreview'
+import { TerminalView } from '@/components/terminal/TerminalView'
 import { DiffCommentAttachments } from './DiffCommentAttachments'
 import { CodexFastToggle } from './CodexFastToggle'
 import type { Attachment } from './AttachmentPreview'
@@ -82,7 +85,7 @@ import { mapOpencodeMessagesToSessionViewMessages } from '@/lib/opencode-transcr
 import { appendStreamedAssistantFallback } from '@/lib/transcript-refresh'
 import { deriveCodexTimelineMessages, mergeCodexActivityMessages } from '@/lib/codex-timeline'
 import { correlateSubtasksIntoTaskTools } from '@/lib/codex-subtask-correlation'
-import { COMPLETION_WORDS } from '@/lib/format-utils'
+import { COMPLETION_WORDS, formatCompletionDuration } from '@/lib/format-utils'
 import { messageSendTimes, lastSendMode, userExplicitSendTimes } from '@/lib/message-send-times'
 import { snapshotTokenBaseline, computeTokenDelta } from '@/lib/token-baselines'
 import { isComposingKeyboardEvent } from '@/lib/message-composer-shortcuts'
@@ -131,6 +134,7 @@ function getBrowserSpeechRecognition(): BrowserSpeechRecognitionConstructor | nu
   }
   return browserWindow.SpeechRecognition ?? browserWindow.webkitSpeechRecognition ?? null
 }
+
 import { QuestionPrompt } from './QuestionPrompt'
 import { PermissionPrompt } from './PermissionPrompt'
 import { CommandApprovalPrompt } from './CommandApprovalPrompt'
@@ -559,6 +563,21 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
   const [isSending, setIsSending] = useState(false)
   const [isRecordingVoice, setIsRecordingVoice] = useState(false)
   const [isTranscribingVoice, setIsTranscribingVoice] = useState(false)
+  const [isCodexRealtimeVoiceActive, setIsCodexRealtimeVoiceActive] = useState(false)
+  const [isCodexRealtimeVoiceStarting, setIsCodexRealtimeVoiceStarting] = useState(false)
+  const [isCodexRealtimeVoiceMuted, setIsCodexRealtimeVoiceMuted] = useState(false)
+  const codexVoiceTaskStartedAtRef = useRef<number | null>(null)
+  const codexVoiceTaskActivitiesRef = useRef<Array<{ title: string; detail: string }>>([])
+  const [nativeCodexVoice, setNativeCodexVoice] = useState<{
+    terminalId: string
+    cwd: string
+    backendSessionId: string
+    command: { file: string; args: string[] }
+  } | null>(null)
+  const [nativeCodexTerminalClosed, setNativeCodexTerminalClosed] = useState(false)
+  const nativeCodexVoiceRef = useRef<typeof nativeCodexVoice>(null)
+  nativeCodexVoiceRef.current = nativeCodexVoice
+  const [isSwitchingCodexVoice, setIsSwitchingCodexVoice] = useState(false)
   const [queuedMessages, setQueuedMessages] = useState<
     Array<{
       id: string
@@ -780,7 +799,117 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
   // Refs
   const virtualizedListRef = useRef<VirtualizedMessageListHandle>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const voiceLiveRef = useRef<{ stop: () => void } | null>(null)
+  const voiceLiveRef = useRef<{ stop: () => void; resume?: () => void } | null>(null)
+  const voicePauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const voiceResumeAfterReplyRef = useRef(false)
+  const codexPeerRef = useRef<RTCPeerConnection | null>(null)
+  const codexMicRef = useRef<MediaStream | null>(null)
+  const codexAudioRef = useRef<HTMLAudioElement | null>(null)
+  const codexSdpResolverRef = useRef<((sdp: string) => void) | null>(null)
+  const codexBackendSessionRef = useRef<string | null>(opencodeSessionId)
+  codexBackendSessionRef.current = opencodeSessionId
+
+  useEffect(() => {
+    if (sessionAgentSdk !== 'codex') return
+    return window.opencodeOps?.onStream((event) => {
+      if (event.sessionId !== sessionId || event.type !== 'codex.voice') return
+      const data = event.data as {
+        method?: string
+        payload?: Record<string, unknown>
+        message?: OpenCodeMessage
+      } | undefined
+      const payload = data?.payload ?? {}
+      if (data?.method === 'thread/realtime/itemAdded') {
+        const item = payload.item
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          const record = item as Record<string, unknown>
+          const title = [record.name, record.toolName, record.type]
+            .find((value): value is string => typeof value === 'string' && value.length > 0) ?? 'Atividade'
+          const changes = Array.isArray(record.changes)
+            ? record.changes.flatMap((change) => {
+                if (!change || typeof change !== 'object') return []
+                const path = (change as Record<string, unknown>).path
+                return typeof path === 'string' ? [path] : []
+              })
+            : []
+          const detail = [
+            ...changes,
+            record.path,
+            record.filePath,
+            record.command,
+            record.query,
+            record.url,
+            record.arguments
+          ].find((value): value is string => typeof value === 'string' && value.length > 0) ?? ''
+          const id = typeof record.id === 'string'
+            ? record.id
+            : `${title}-${Date.now()}`
+          const timestamp = Date.now()
+          if (codexVoiceTaskStartedAtRef.current === null) {
+            codexVoiceTaskStartedAtRef.current = timestamp
+          }
+          codexVoiceTaskActivitiesRef.current.push({ title, detail: detail.slice(0, 180) })
+          setMessagesState((current) => {
+            const messageId = `codex-voice-activity-${id}`
+            if (current.some((message) => message.id === messageId)) return current
+            const activityMessage: OpenCodeMessage = {
+              id: messageId,
+              role: 'assistant',
+              content: '',
+              timestamp: new Date(timestamp).toISOString(),
+              parts: [{
+                type: 'tool_use',
+                toolUse: {
+                  id,
+                  name: title,
+                  input: { ...record, detail: detail.slice(0, 180) },
+                  status: 'success',
+                  startTime: timestamp
+                }
+              }]
+            }
+            return [...current, activityMessage]
+          })
+        }
+      }
+      if (
+        data?.message &&
+        (data.method === 'thread/realtime/transcriptUpdated' ||
+          data.method === 'thread/realtime/transcript/delta' ||
+          data.method === 'thread/realtime/transcript/done')
+      ) {
+        const message = data.message
+        setMessagesState((current) => {
+          const index = current.findIndex((entry) => entry.id === message.id)
+          if (index < 0) return [...current, message]
+          const next = [...current]
+          next[index] = message
+          return next
+        })
+      } else if (data?.method === 'thread/realtime/sdp' && typeof payload.sdp === 'string') {
+        codexSdpResolverRef.current?.(payload.sdp)
+        codexSdpResolverRef.current = null
+      } else if (data?.method === 'thread/realtime/error') {
+        const message = typeof payload.message === 'string' ? payload.message : 'Falha no modo de voz do Codex'
+        toast.error(message)
+        setIsCodexRealtimeVoiceActive(false)
+      } else if (data?.method === 'thread/realtime/closed') {
+        setIsCodexRealtimeVoiceActive(false)
+      }
+    })
+  }, [sessionAgentSdk, sessionId])
+
+  useEffect(() => () => {
+    const sessionBackendId = codexBackendSessionRef.current
+    const hadVoiceSession = codexPeerRef.current !== null
+    codexPeerRef.current?.close()
+    codexPeerRef.current = null
+    codexMicRef.current?.getTracks().forEach((track) => track.stop())
+    codexMicRef.current = null
+    if (sessionBackendId && hadVoiceSession) {
+      void window.opencodeOps.codexVoiceStop(sessionBackendId).catch(() => {})
+    }
+  }, [sessionId])
   const voiceQueueRef = useRef<Promise<void>>(Promise.resolve())
   const voiceTypewriterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const prevFileIndexWorktreeRef = useRef<string | null>(null)
@@ -2983,13 +3112,12 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
         if (sessionRecord?.agent_sdk === 'codex') {
           const codexModels = [
             { id: 'gpt-6-astra', context: 272000 },
+            { id: 'gpt-6-sol', context: 272000 },
+            { id: 'gpt-6-luna', context: 272000 },
             { id: 'gpt-5.6-sol', context: 272000 },
             { id: 'gpt-5.6-terra', context: 272000 },
             { id: 'gpt-5.6-luna', context: 272000 },
-            { id: 'gpt-5.5', context: 272000 },
-            { id: 'gpt-5.4', context: 272000 },
-            { id: 'gpt-5.4-mini', context: 272000 },
-            { id: 'gpt-5.3-codex-spark', context: 128000 }
+            { id: 'gpt-5.5', context: 272000 }
           ]
           for (const m of codexModels) {
             useContextStore.getState().setModelLimit(m.id, m.context, 'codex')
@@ -5213,6 +5341,263 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
     [sessionId, historyIndex, fileMentions]
   )
 
+  const handleCodexRealtimeVoice = useCallback(async () => {
+    if (isCodexRealtimeVoiceActive) {
+      try {
+        await window.opencodeOps.codexVoiceStop(opencodeSessionId!)
+      } finally {
+        codexPeerRef.current?.close()
+        codexPeerRef.current = null
+        codexMicRef.current?.getTracks().forEach((track) => track.stop())
+        codexMicRef.current = null
+        setIsCodexRealtimeVoiceMuted(false)
+        setIsCodexRealtimeVoiceActive(false)
+      }
+      return
+    }
+    if (!opencodeSessionId || sessionAgentSdk !== 'codex' || isStreaming || isSending || activePermission) return
+
+    setIsCodexRealtimeVoiceStarting(true)
+    let peer: RTCPeerConnection | null = null
+    try {
+      const mic = await navigator.mediaDevices.getUserMedia({ audio: true })
+      codexMicRef.current = mic
+      peer = new RTCPeerConnection()
+      codexPeerRef.current = peer
+      peer.ontrack = (event) => {
+        if (codexAudioRef.current) {
+          codexAudioRef.current.srcObject = event.streams[0]
+          void codexAudioRef.current.play().catch(() => {})
+        }
+      }
+      peer.onconnectionstatechange = () => {
+        if (peer?.connectionState === 'failed' || peer?.connectionState === 'closed') {
+          setIsCodexRealtimeVoiceActive(false)
+        }
+      }
+      peer.addTrack(mic.getAudioTracks()[0], mic)
+      peer.createDataChannel('oai-events')
+      const offer = await peer.createOffer()
+      await peer.setLocalDescription(offer)
+      await new Promise<void>((resolve, reject) => {
+        if (peer?.iceGatheringState === 'complete') return resolve()
+        const timeout = window.setTimeout(() => reject(new Error('Timeout aguardando ICE do WebRTC')), 8000)
+        const onState = (): void => {
+          if (peer?.iceGatheringState === 'complete') {
+            window.clearTimeout(timeout)
+            peer.removeEventListener('icegatheringstatechange', onState)
+            resolve()
+          }
+        }
+        peer?.addEventListener('icegatheringstatechange', onState)
+      })
+
+      const remoteSdp = new Promise<string>((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          codexSdpResolverRef.current = null
+          reject(new Error('Timeout aguardando a resposta SDP do Codex'))
+        }, 20_000)
+        codexSdpResolverRef.current = (sdp) => {
+          window.clearTimeout(timeout)
+          resolve(sdp)
+        }
+      })
+      const started = await window.opencodeOps.codexVoiceStart(opencodeSessionId, peer.localDescription?.sdp ?? '')
+      if (!started.success) throw new Error(started.error || 'O app-server não iniciou a voz')
+      const sdp = await remoteSdp
+      await peer.setRemoteDescription({ type: 'answer', sdp })
+      setIsCodexRealtimeVoiceMuted(false)
+      setIsCodexRealtimeVoiceActive(true)
+    } catch (error) {
+      codexSdpResolverRef.current = null
+      await window.opencodeOps.codexVoiceStop(opencodeSessionId).catch(() => {})
+      peer?.close()
+      codexPeerRef.current = null
+      codexMicRef.current?.getTracks().forEach((track) => track.stop())
+      codexMicRef.current = null
+      setIsCodexRealtimeVoiceMuted(false)
+      toast.error(error instanceof Error ? error.message : 'Não foi possível iniciar a voz do Codex')
+    } finally {
+      setIsCodexRealtimeVoiceStarting(false)
+    }
+  }, [activePermission, isCodexRealtimeVoiceActive, isSending, isStreaming, opencodeSessionId, sessionAgentSdk])
+
+  const handleToggleCodexRealtimeVoiceMute = useCallback(() => {
+    const tracks = codexMicRef.current?.getAudioTracks() ?? []
+    if (tracks.length === 0) return
+    const shouldMute = !isCodexRealtimeVoiceMuted
+    for (const track of tracks) track.enabled = !shouldMute
+    setIsCodexRealtimeVoiceMuted(shouldMute)
+  }, [isCodexRealtimeVoiceMuted])
+
+  const handleNativeCodexVoice = useCallback(async () => {
+    if (nativeCodexVoice || isSwitchingCodexVoice) return
+    if (
+      sessionAgentSdk !== 'codex' ||
+      sessionRecord?.connection_id ||
+      !opencodeSessionId ||
+      !worktreePath ||
+      isOrphanedSession ||
+      isStreaming ||
+      isSending ||
+      activePermission
+    ) {
+      toast.error('A voz nativa do Codex só pode ser aberta quando a sessão estiver ociosa.')
+      return
+    }
+
+    setIsSwitchingCodexVoice(true)
+    try {
+      const commandResult = await window.systemOps.codexVoiceResumeCommand(opencodeSessionId)
+      if (!commandResult.success || !commandResult.command) {
+        throw new Error(commandResult.error || 'Não foi possível localizar a CLI do Codex')
+      }
+
+      const terminalId = `codex-voice-${sessionId}-${Date.now()}`
+      const voiceSession = {
+        terminalId,
+        cwd: worktreePath,
+        backendSessionId: opencodeSessionId,
+        command: commandResult.command
+      }
+      nativeCodexVoiceRef.current = voiceSession
+      setNativeCodexTerminalClosed(false)
+
+      const disconnected = await window.opencodeOps.disconnect(worktreePath, opencodeSessionId)
+      if (!disconnected.success) {
+        nativeCodexVoiceRef.current = null
+        throw new Error(disconnected.error || 'Não foi possível liberar a sessão do app-server')
+      }
+
+      setNativeCodexVoice(voiceSession)
+    } catch (error) {
+      nativeCodexVoiceRef.current = null
+      toast.error(error instanceof Error ? error.message : 'Não foi possível abrir o Codex nativo')
+    } finally {
+      setIsSwitchingCodexVoice(false)
+    }
+  }, [
+    activePermission,
+    isOrphanedSession,
+    isSending,
+    isStreaming,
+    isSwitchingCodexVoice,
+    nativeCodexVoice,
+    opencodeSessionId,
+    sessionAgentSdk,
+    sessionId,
+    sessionRecord?.connection_id,
+    worktreePath
+  ])
+
+  const handleReturnFromNativeCodexVoice = useCallback(async () => {
+    if (!nativeCodexVoice || isSwitchingCodexVoice) return
+    const voiceSession = nativeCodexVoice
+    setIsSwitchingCodexVoice(true)
+    try {
+      // Give the TUI time to handle Ctrl+C and exit before app-server resumes
+      // the same rollout. On Windows the PTY process can take longer than a
+      // single render tick to tear down.
+      if (!nativeCodexTerminalClosed) {
+        await new Promise<void>((resolve) => {
+          let settled = false
+          let unsubscribe = (): void => {}
+          const finish = (): void => {
+            if (settled) return
+            settled = true
+            unsubscribe()
+            resolve()
+          }
+          unsubscribe = window.terminalOps.onExit(voiceSession.terminalId, finish)
+          void window.terminalOps.write(voiceSession.terminalId, '\u0003').catch(finish)
+          window.setTimeout(finish, 1500)
+        })
+        await window.terminalOps.destroy(voiceSession.terminalId)
+        setNativeCodexTerminalClosed(true)
+      }
+
+      let reconnected = false
+      let reconnectError: string | undefined
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (attempt > 0) await delay(700 * attempt)
+        const result = await window.opencodeOps.reconnect(
+          voiceSession.cwd,
+          voiceSession.backendSessionId,
+          sessionId
+        )
+        if (result.success) {
+          reconnected = true
+          break
+        }
+        reconnectError = result.error
+      }
+      if (!reconnected) {
+        throw new Error(
+          reconnectError
+            ? `Falha ao reconectar o Codex: ${reconnectError}`
+            : 'Não foi possível reconectar a conversa ao app-server. Tente “Voltar ao chat” novamente.'
+        )
+      }
+
+      setOpencodeSessionId(voiceSession.backendSessionId)
+      useSessionStore.getState().setOpenCodeSessionId(sessionId, voiceSession.backendSessionId)
+      transcriptSourceRef.current = {
+        worktreePath: voiceSession.cwd,
+        opencodeSessionId: voiceSession.backendSessionId
+      }
+
+      // Reattach the chat immediately. Codex thread/read can take many seconds
+      // (or be unsupported by a CLI version); history refresh must not keep the
+      // user trapped behind the voice panel after the app-server is ready.
+      setViewState({ status: 'connected' })
+      nativeCodexVoiceRef.current = null
+      setNativeCodexVoice(null)
+      setNativeCodexTerminalClosed(false)
+
+      const returnGeneration = streamGenerationRef.current
+      void (async () => {
+        const transcript = await window.opencodeOps.getMessages(
+          voiceSession.cwd,
+          voiceSession.backendSessionId
+        )
+        if (!transcript.success || streamGenerationRef.current !== returnGeneration) return
+
+        const source = transcriptSourceRef.current
+        if (
+          source.worktreePath !== voiceSession.cwd ||
+          source.opencodeSessionId !== voiceSession.backendSessionId
+        ) return
+
+        const rawMessages = Array.isArray(transcript.messages) ? transcript.messages : []
+        let loadedMessages = mapOpencodeMessagesToSessionViewMessages(rawMessages)
+        if (sessionAgentSdk === 'codex') {
+          const durableState = await loadCodexDurableState(sessionId)
+          if (streamGenerationRef.current !== returnGeneration) return
+          loadedMessages = mergeCodexActivityMessages(loadedMessages, durableState.activities, true)
+        }
+        setMessages(loadedMessages)
+      })().catch((error) => console.warn('Could not refresh Codex transcript after voice mode', error))
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Falha ao voltar para o chat')
+    } finally {
+      setIsSwitchingCodexVoice(false)
+    }
+  }, [isSwitchingCodexVoice, nativeCodexTerminalClosed, nativeCodexVoice, sessionAgentSdk, sessionId, setMessages])
+
+  useEffect(() => () => {
+    const voiceSession = nativeCodexVoiceRef.current
+    if (!voiceSession) return
+    window.terminalOps.write(voiceSession.terminalId, '\u0003')
+    void delay(250)
+      .then(() => window.terminalOps.destroy(voiceSession.terminalId))
+      .then(() => window.opencodeOps.reconnect(
+        voiceSession.cwd,
+        voiceSession.backendSessionId,
+        sessionId
+      ))
+      .catch((error) => console.warn('Could not restore Codex session after leaving voice mode', error))
+  }, [sessionId])
+
   const handleVoiceTranscription = useCallback(async () => {
     if (isRecordingVoice) return voiceLiveRef.current?.stop()
     if (isTranscribingVoice || isOrphanedSession || activePermission) return
@@ -5227,6 +5612,16 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
         const recognition = new BrowserRecognition()
         let stopped = false
         let prefix = inputValueRef.current.trimEnd()
+        const schedulePauseSend = () => {
+          if (voicePauseTimerRef.current) clearTimeout(voicePauseTimerRef.current)
+          voicePauseTimerRef.current = setTimeout(() => {
+            voicePauseTimerRef.current = null
+            if (stopped || !inputValueRef.current.trim()) return
+            voiceResumeAfterReplyRef.current = true
+            try { recognition.stop() } catch { /* Recognition may already have ended. */ }
+            void handleSend()
+          }, 1200)
+        }
 
         recognition.continuous = true
         recognition.interimResults = true
@@ -5239,6 +5634,7 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
           if (!transcript) return
           const value = `${prefix}${prefix && transcript ? ' ' : ''}${transcript}`
           handleInputChange(value, value.length)
+          schedulePauseSend()
         }
         recognition.onerror = (event) => {
           if (stopped || event.error === 'aborted' || event.error === 'no-speech') return
@@ -5252,6 +5648,7 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
         }
         recognition.onend = () => {
           if (stopped) return
+          if (voiceResumeAfterReplyRef.current) return
           // Chrome can end recognition after a pause even with continuous=true.
           // Preserve the text already inserted and reopen the same recognition
           // session so the dictation button remains active.
@@ -5265,8 +5662,16 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
 
         recognition.start()
         voiceLiveRef.current = {
+          resume: () => {
+            if (stopped) return
+            prefix = inputValueRef.current.trimEnd()
+            try { recognition.start() } catch { /* Recognition may still be stopping. */ }
+          },
           stop: () => {
             stopped = true
+            voiceResumeAfterReplyRef.current = false
+            if (voicePauseTimerRef.current) clearTimeout(voicePauseTimerRef.current)
+            voicePauseTimerRef.current = null
             try {
               recognition.stop()
             } catch {
@@ -5331,7 +5736,13 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
       voiceLiveRef.current = { stop: () => { processor.disconnect(); source.disconnect(); silent.disconnect(); stream.getTracks().forEach((track) => track.stop()); flush(true); void context.close(); voiceLiveRef.current = null; setIsRecordingVoice(false) } }
       setIsRecordingVoice(true)
     } catch (error) { toast.error(error instanceof Error ? error.message : 'Não foi possível acessar o microfone') }
-  }, [activePermission, handleInputChange, isOrphanedSession, isRecordingVoice, isTranscribingVoice])
+  }, [activePermission, handleInputChange, handleSend, isOrphanedSession, isRecordingVoice, isTranscribingVoice])
+
+  useEffect(() => {
+    if (!voiceResumeAfterReplyRef.current || isSending || isStreaming) return
+    voiceResumeAfterReplyRef.current = false
+    voiceLiveRef.current?.resume?.()
+  }, [isSending, isStreaming])
 
   useEffect(() => () => {
     voiceLiveRef.current?.stop()
@@ -5630,40 +6041,44 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
     currentTurnMessages,
     streamingMessage
   )
-  const taskListTopOffsetPx = usePRStackTopOffset()
 
-  const handleRedoRevert = useCallback(() => {
-    setInputValue('/redo')
-    inputValueRef.current = '/redo'
-    textareaRef.current?.focus()
-  }, [])
-
-  // The StreamingCursor (blinking cursor) only renders after text or tool_use parts.
-  // Parts like reasoning, step_start, step_finish, compaction don't show it.
-  // When those are the only parts, we still need the 3-dot loading indicator.
-  const codexHasWritingCursor = useMemo(() => {
-    if (sessionRecord?.agent_sdk !== 'codex' || !isStreaming) return false
-    for (let i = visibleMessages.length - 1; i >= 0; i--) {
-      if (visibleMessages[i].role === 'assistant') {
-        const msg = visibleMessages[i]
-        const lastPart = msg.parts?.[msg.parts.length - 1]
-        if (lastPart?.type === 'tool_use') return true
-        return Boolean(msg.content.trim())
+  useEffect(() => {
+    if (isCodexRealtimeVoiceActive && (isStreaming || isSending)) {
+      if (codexVoiceTaskStartedAtRef.current === null) {
+        codexVoiceTaskStartedAtRef.current = Date.now()
       }
+      return
     }
-    return false
-  }, [visibleMessages, isStreaming, sessionRecord?.agent_sdk])
 
-  const hasVisibleWritingCursor =
-    sessionRecord?.agent_sdk === 'codex'
-      ? codexHasWritingCursor
-      : hasStreamingContent &&
-        isStreaming &&
-        (streamingContent.length > 0 ||
-          (streamingParts.length > 0 &&
-            (streamingParts[streamingParts.length - 1].type === 'text' ||
-              streamingParts[streamingParts.length - 1].type === 'tool_use')))
+    const startedAt = codexVoiceTaskStartedAtRef.current
+    const activities = codexVoiceTaskActivitiesRef.current
+    if (startedAt === null || activities.length === 0 || isStreaming || isSending) return
 
+    const uniqueActivities = activities.filter(
+      (activity, index) => activities.findIndex((candidate) =>
+        candidate.title === activity.title && candidate.detail === activity.detail
+      ) === index
+    )
+    const duration = formatCompletionDuration(Date.now() - startedAt)
+    const actionLines = uniqueActivities.map(({ title, detail }) =>
+      `- ${title}${detail ? `: ${detail}` : ''}`
+    )
+    const summaryMessage = createLocalMessage(
+      'assistant',
+      `Tarefa concluída em ${duration}.\n\nAções realizadas:\n${actionLines.join('\n')}`,
+      { id: `codex-voice-task-summary-${startedAt}` }
+    )
+    setMessagesState((current) => current.some((message) => message.id === summaryMessage.id)
+      ? current
+      : [...current, summaryMessage])
+    codexVoiceTaskStartedAtRef.current = null
+    codexVoiceTaskActivitiesRef.current = []
+  }, [isCodexRealtimeVoiceActive, isSending, isStreaming])
+
+  useEffect(() => {
+    codexVoiceTaskStartedAtRef.current = null
+    codexVoiceTaskActivitiesRef.current = []
+  }, [sessionId])
   const codexPlanCandidate = useMemo(() => {
     const pendingPlanText = pendingPlan?.planContent?.trim()
     if (pendingPlanText) return pendingPlanText
@@ -5700,6 +6115,40 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
 
   const hasCodexProposedPlan =
     sessionRecord?.agent_sdk === 'codex' && looksLikeCodexProposedPlan(codexPlanCandidate)
+
+  const taskListTopOffsetPx = usePRStackTopOffset()
+
+  const handleRedoRevert = useCallback(() => {
+    setInputValue('/redo')
+    inputValueRef.current = '/redo'
+    textareaRef.current?.focus()
+  }, [])
+
+  // The StreamingCursor (blinking cursor) only renders after text or tool_use parts.
+  // Parts like reasoning, step_start, step_finish, compaction don't show it.
+  // When those are the only parts, we still need the 3-dot loading indicator.
+  const codexHasWritingCursor = useMemo(() => {
+    if (sessionRecord?.agent_sdk !== 'codex' || !isStreaming) return false
+    for (let i = visibleMessages.length - 1; i >= 0; i--) {
+      if (visibleMessages[i].role === 'assistant') {
+        const msg = visibleMessages[i]
+        const lastPart = msg.parts?.[msg.parts.length - 1]
+        if (lastPart?.type === 'tool_use') return true
+        return Boolean(msg.content.trim())
+      }
+    }
+    return false
+  }, [visibleMessages, isStreaming, sessionRecord?.agent_sdk])
+
+  const hasVisibleWritingCursor =
+    sessionRecord?.agent_sdk === 'codex'
+      ? codexHasWritingCursor
+      : hasStreamingContent &&
+        isStreaming &&
+        (streamingContent.length > 0 ||
+          (streamingParts.length > 0 &&
+            (streamingParts[streamingParts.length - 1].type === 'text' ||
+              streamingParts[streamingParts.length - 1].type === 'tool_use')))
 
   // Show the floating Implement FAB when:
   // 1. Claude Code sessions: ExitPlanMode is pending approval.
@@ -5754,10 +6203,44 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
 
   return (
     <div
-      className="flex-1 flex flex-col min-h-0"
+      className="relative flex-1 flex flex-col min-h-0"
       data-testid="session-view"
       data-session-id={sessionId}
     >
+      <audio ref={codexAudioRef} autoPlay className="hidden" />
+      {nativeCodexVoice && (
+        <section className="absolute inset-0 z-40 flex flex-col bg-background" data-testid="codex-native-voice-panel">
+          <header className="flex items-center justify-between border-b px-4 py-2">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Codex nativo — mesma conversa</p>
+              <p className="text-xs text-muted-foreground">No terminal, use /voice para iniciar ou parar a conversa por voz.</p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void handleReturnFromNativeCodexVoice()}
+              disabled={isSwitchingCodexVoice}
+              data-testid="codex-native-voice-return"
+            >
+              {isSwitchingCodexVoice ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+          {nativeCodexTerminalClosed ? 'Tentar reconectar' : 'Voltar ao chat'}
+          </Button>
+        </header>
+        <div className="min-h-0 flex-1">
+            {nativeCodexTerminalClosed ? (
+              <div className="p-4 text-sm text-muted-foreground">Terminal encerrado. Reconectando à conversa…</div>
+            ) : (
+              <TerminalView
+                terminalId={nativeCodexVoice.terminalId}
+                cwd={nativeCodexVoice.cwd}
+                command={nativeCodexVoice.command}
+                forceXterm
+                isVisible
+              />
+            )}
+          </div>
+        </section>
+      )}
       {/* Message list with scroll tracking */}
       <div className="relative flex-1 min-h-0">
         <div
@@ -6013,7 +6496,7 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
             <div className="flex items-center justify-between px-3 pb-2.5 @container">
               <div className="flex items-center gap-2 min-w-0 overflow-hidden">
                 <ModelSelector sessionId={sessionId} />
-                {sessionAgentSdk === 'codex' && (
+                {sessionAgentSdk === 'codex' && !sessionRecord?.connection_id && (
                   <CodexFastToggle
                     enabled={codexFastMode}
                     accepted={codexFastModeAccepted}
@@ -6025,9 +6508,57 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
                   onAttach={handleAttach}
                   disabled={isOrphanedSession}
                 />
-                <Button onClick={() => void handleVoiceTranscription()} disabled={!!activePermission || isOrphanedSession || (!isRecordingVoice && isTranscribingVoice)} size="sm" variant={isRecordingVoice ? 'destructive' : 'ghost'} className="h-7 w-7 p-0" aria-label={isRecordingVoice ? 'Parar ditado' : 'Iniciar ditado por voz'} title={isRecordingVoice ? 'Parar ditado' : 'Iniciar ditado por voz'} data-testid="voice-transcription-button">
-                  {isRecordingVoice ? <Mic className="h-3.5 w-3.5 animate-pulse" /> : isTranscribingVoice ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mic className="h-3.5 w-3.5" />}
-                </Button>
+                {sessionAgentSdk === 'codex' && (
+                <Button
+                  onClick={() => void handleCodexRealtimeVoice()}
+                    disabled={
+                      isCodexRealtimeVoiceStarting ||
+                      (!isCodexRealtimeVoiceActive && (
+                        !!activePermission ||
+                        isOrphanedSession ||
+                        isStreaming ||
+                        isSending ||
+                        !opencodeSessionId ||
+                        !worktreePath
+                      ))
+                    }
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 w-7 p-0"
+                    aria-label={isCodexRealtimeVoiceActive ? 'Parar voz do Codex' : 'Iniciar voz do Codex'}
+                    title={isCodexRealtimeVoiceActive ? 'Parar conversa por voz' : 'Conversa por voz do Codex'}
+                    data-testid="codex-realtime-voice-button"
+                  >
+                    {isCodexRealtimeVoiceStarting ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <AudioLines className={cn('h-3.5 w-3.5', isCodexRealtimeVoiceActive && 'animate-pulse text-primary')} />
+                    )}
+                  </Button>
+                )}
+                {sessionAgentSdk === 'codex' && isCodexRealtimeVoiceActive && (
+                  <Button
+                    onClick={handleToggleCodexRealtimeVoiceMute}
+                    size="sm"
+                    variant={isCodexRealtimeVoiceMuted ? 'secondary' : 'ghost'}
+                    className="h-7 w-7 p-0"
+                    aria-label={isCodexRealtimeVoiceMuted ? 'Ativar microfone' : 'Mutar microfone'}
+                    aria-pressed={isCodexRealtimeVoiceMuted}
+                    title={isCodexRealtimeVoiceMuted ? 'Ativar microfone' : 'Mutar microfone'}
+                    data-testid="codex-realtime-voice-mute-button"
+                  >
+                    {isCodexRealtimeVoiceMuted ? (
+                      <MicOff className="h-3.5 w-3.5 text-destructive" />
+                    ) : (
+                      <Mic className="h-3.5 w-3.5" />
+                    )}
+                  </Button>
+                )}
+                {!isCodexRealtimeVoiceActive && (
+                  <Button onClick={() => void handleVoiceTranscription()} disabled={!!activePermission || isOrphanedSession || (!isRecordingVoice && isTranscribingVoice)} size="sm" variant={isRecordingVoice ? 'destructive' : 'ghost'} className="h-7 w-7 p-0" aria-label={isRecordingVoice ? 'Parar ditado' : 'Iniciar ditado por voz'} title={isRecordingVoice ? 'Parar ditado' : 'Iniciar ditado por voz'} data-testid="voice-transcription-button">
+                    {isRecordingVoice ? <Mic className="h-3.5 w-3.5 animate-pulse" /> : isTranscribingVoice ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Mic className="h-3.5 w-3.5" />}
+                  </Button>
+                )}
                 <PromptTemplateMenu
                   onSelect={handlePromptTemplateSelect}
                   disabled={isOrphanedSession}

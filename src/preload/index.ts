@@ -481,6 +481,10 @@ const systemOps = {
     binaryPath: string
   ): Promise<{ success: boolean; path: string | null; error?: string }> =>
     ipcRenderer.invoke('system:configureCodexBinaryPath', binaryPath),
+  codexVoiceResumeCommand: (
+    threadId: string
+  ): Promise<{ success: boolean; command?: { file: string; args: string[] }; error?: string }> =>
+    ipcRenderer.invoke('system:codexVoiceResumeCommand', threadId),
 
   // Quit the app (needed for macOS where window.close() doesn't quit)
   quitApp: (): Promise<void> => ipcRenderer.invoke('system:quitApp'),
@@ -1337,6 +1341,10 @@ const opencodeOps = {
   ): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('opencode:disconnect', worktreePath, opencodeSessionId),
 
+  codexVoiceStart: (sessionId: string, sdp: string) =>
+    ipcRenderer.invoke('codex:voice:start', sessionId, sdp),
+  codexVoiceStop: (sessionId: string) => ipcRenderer.invoke('codex:voice:stop', sessionId),
+
   // Get messages from an OpenCode session
   getMessages: (
     worktreePath: string,
@@ -1721,9 +1729,10 @@ const terminalOps = {
   create: (
     terminalId: string,
     cwd: string,
-    shell?: string
+    shell?: string,
+    command?: { file: string; args: string[] }
   ): Promise<{ success: boolean; cols?: number; rows?: number; error?: string }> =>
-    ipcRenderer.invoke('terminal:create', terminalId, cwd, shell),
+    ipcRenderer.invoke('terminal:create', terminalId, cwd, shell, command),
 
   write: (terminalId: string, data: string): void =>
     ipcRenderer.send('terminal:write', terminalId, data),

@@ -414,7 +414,10 @@ function installWorktreeBridge(target: any): void {
 const terminalData = new Map<string, Set<AnyFn>>()
 const terminalExit = new Map<string, Set<AnyFn>>()
 const terminalStreams = new Map<string, () => void>()
-const terminalConfigs = new Map<string, { cwd: string; shell?: string }>()
+const terminalConfigs = new Map<
+  string,
+  { cwd: string; shell?: string; command?: { file: string; args: string[] } }
+>()
 const terminalRecreates = new Map<string, Promise<boolean>>()
 
 function isMissingTerminalError(error: unknown): boolean {
@@ -429,7 +432,7 @@ async function recreateTerminal(terminalId: string): Promise<boolean> {
   if (existing) return existing
 
   const recreate = octobRuntime
-    .createTerminal(terminalId, config.cwd, config.shell)
+    .createTerminal(terminalId, config.cwd, config.shell, config.command)
     .then((result) => {
       if (result.success) ensureTerminalStream(terminalId)
       return result.success
@@ -487,9 +490,14 @@ function addTerminalListener(
 
 function installTerminalBridge(target: any): void {
   target.terminalOps = {
-    create: async (id: string, cwd: string, shell?: string) => {
-      terminalConfigs.set(id, { cwd, shell })
-      const result = await octobRuntime.createTerminal(id, cwd, shell)
+    create: async (
+      id: string,
+      cwd: string,
+      shell?: string,
+      command?: { file: string; args: string[] }
+    ) => {
+      terminalConfigs.set(id, { cwd, shell, command })
+      const result = await octobRuntime.createTerminal(id, cwd, shell, command)
       if (result.success) ensureTerminalStream(id)
       return result
     },
@@ -623,6 +631,8 @@ function installSystemBridge(target: any): void {
     detectAgentSdks: () => octobRuntime.detectAgents(),
     configureCodexBinaryPath: (binaryPath: string) =>
       octobRuntime.api('/v1/system/configure-codex', 'POST', { binaryPath }),
+    codexVoiceResumeCommand: (threadId: string) =>
+      octobRuntime.api('/v1/system/codex-voice-resume-command', 'POST', { threadId }),
     quitApp: async () => {},
     openInApp: (appName: string, path: string) => {
       if (appName === 'ghostty') {
@@ -778,8 +788,8 @@ function installAuxiliaryBridge(target: any): void {
       return octobRuntime.api(`/v1/assistant/session?${params.toString()}`)
     },
     getWorkspacePath: async () => {
-      const result = await octobRuntime.api<any>('/v1/assistant/status')
-      return result.workspacePath
+      const result = await octobRuntime.api<any>('/v1/assistant/workspace')
+      return result.path
     },
     listTasks: () => octobRuntime.api('/v1/assistant/tasks'),
     removeTask: (sessionId: string) =>
@@ -934,6 +944,9 @@ function createAgentBridge(): any {
       agentCall('steer', { worktreePath, sessionId, message }),
     disconnect: (worktreePath: string, sessionId: string) =>
       agentCall('disconnect', { worktreePath, sessionId }),
+    codexVoiceStart: (sessionId: string, sdp: string) =>
+      agentCall('codex-voice-start', { sessionId, sdp }),
+    codexVoiceStop: (sessionId: string) => agentCall('codex-voice-stop', { sessionId }),
     getMessages: (worktreePath: string, sessionId: string) =>
       agentCall('messages', { worktreePath, sessionId }),
     listModels: (opts?: { agentSdk?: string }) =>

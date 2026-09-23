@@ -588,6 +588,9 @@ declare global {
       configureCodexBinaryPath: (
         binaryPath: string
       ) => Promise<{ success: boolean; path: string | null; error?: string }>
+      codexVoiceResumeCommand: (
+        threadId: string
+      ) => Promise<{ success: boolean; command?: { file: string; args: string[] }; error?: string }>
       quitApp: () => Promise<void>
       openInApp: (appName: string, path: string) => Promise<{ success: boolean; error?: string }>
       openInChrome: (
@@ -666,6 +669,8 @@ declare global {
         worktreePath: string,
         opencodeSessionId: string
       ) => Promise<{ success: boolean; error?: string }>
+      codexVoiceStart: (sessionId: string, sdp: string) => Promise<{ success: boolean; error?: string }>
+      codexVoiceStop: (sessionId: string) => Promise<{ success: boolean; error?: string }>
       // Get messages from an OpenCode session
       getMessages: (
         worktreePath: string,
@@ -967,7 +972,8 @@ declare global {
       create: (
         terminalId: string,
         cwd: string,
-        shell?: string
+        shell?: string,
+        command?: { file: string; args: string[] }
       ) => Promise<{ success: boolean; cols?: number; rows?: number; error?: string }>
       write: (terminalId: string, data: string) => void
       resize: (terminalId: string, cols: number, rows: number) => Promise<void>

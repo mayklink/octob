@@ -129,6 +129,10 @@ async function dispatchAgentOperation(
       return agents.getMessages(worktreePath, sessionId)
     case 'models':
       return agents.listModels((body.agentSdk as AgentSdkId | undefined) ?? 'opencode')
+    case 'codex-voice-start':
+      return agents.startCodexVoice(sessionId, String(body.sdp ?? ''))
+    case 'codex-voice-stop':
+      return agents.stopCodexVoice(sessionId)
     case 'set-model':
       return agents.setModel((body.model ?? null) as never)
     case 'model-info':

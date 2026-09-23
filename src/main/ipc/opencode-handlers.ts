@@ -357,6 +357,30 @@ Never claim that a source was searched unless you actually used the correspondin
     }
   )
 
+  ipcMain.handle('codex:voice:start', async (_event, sessionId: string, sdp: string) => {
+    try {
+      if (!sdkManager || !dbService || dbService.getAgentSdkForSession(sessionId) !== 'codex') {
+        return { success: false, error: 'Codex voice is only available for Codex sessions' }
+      }
+      const impl = sdkManager.getImplementer('codex') as CodexImplementer
+      return await impl.startVoice(sessionId, sdp)
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  ipcMain.handle('codex:voice:stop', async (_event, sessionId: string) => {
+    try {
+      if (!sdkManager || !dbService || dbService.getAgentSdkForSession(sessionId) !== 'codex') {
+        return { success: false, error: 'Codex voice is only available for Codex sessions' }
+      }
+      const impl = sdkManager.getImplementer('codex') as CodexImplementer
+      return await impl.stopVoice(sessionId)
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
   // Get available models from all configured providers
   ipcMain.handle(
     'opencode:models',

@@ -14,6 +14,7 @@ export interface TerminalOpts {
   scrollback?: number
   theme?: Record<string, string>
   shell?: string
+  command?: { file: string; args: string[] }
   /**
    * Whether the terminal is visible at the moment of mount.
    *

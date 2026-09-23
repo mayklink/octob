@@ -107,6 +107,36 @@ export function resolveCodexBinaryPath(): string | null {
   }
 }
 
+export function resolveCodexVoiceResumeCommand(threadId: string): {
+  file: string
+  args: string[]
+} {
+  if (!/^[0-9a-f-]{36}$/i.test(threadId)) {
+    throw new Error('Invalid Codex thread id')
+  }
+  const binaryPath = resolveCodexBinaryPath()
+  if (!binaryPath) throw new Error('Codex CLI was not found')
+
+  if (process.platform === 'win32') {
+    const quotePowerShell = (value: string): string => `'${value.replace(/'/g, "''")}'`
+    return {
+      file: 'powershell.exe',
+      args: [
+        '-NoLogo',
+        '-NoExit',
+        '-Command',
+        `& ${quotePowerShell(binaryPath)} resume --include-non-interactive ${quotePowerShell(threadId)}`
+      ]
+    }
+  }
+
+  const quoteShell = (value: string): string => `'${value.replace(/'/g, "'\\''")}'`
+  return {
+    file: process.env.SHELL || '/bin/bash',
+    args: ['-lc', `exec ${quoteShell(binaryPath)} resume --include-non-interactive ${quoteShell(threadId)}`]
+  }
+}
+
 export function supportsCodexAppServer(binaryPath: string): boolean {
   const cached = codexAppServerSupportCache.get(binaryPath)
   if (cached !== undefined) {

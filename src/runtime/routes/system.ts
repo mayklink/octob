@@ -402,6 +402,18 @@ export async function handleSystemRoute(
     return true
   }
 
+  if (url.pathname === '/v1/system/codex-voice-resume-command') {
+    const threadId = typeof body.threadId === 'string' ? body.threadId : ''
+    writeJson(
+      request,
+      response,
+      context.allowedOrigins,
+      200,
+      context.agents.codexVoiceResumeCommand(threadId)
+    )
+    return true
+  }
+
   if (url.pathname === '/v1/system/analytics') {
     const enabled = body.enabled === true
     context.db.setSetting('telemetry_enabled', enabled ? 'true' : 'false')

@@ -29,6 +29,21 @@ import {
 } from '../main/services/antigravity-binary-resolver'
 import { resolveOpenCodeLaunchSpec } from '../main/services/opencode-binary-resolver'
 import { emitAgentStreamEvent } from '../main/services/agent-event-bus'
+import { isAssistantWorkspacePath } from '../main/services/assistant-mcp-service'
+
+const GLOBAL_ASSISTANT_CONTEXT = `[Global Assistant Operating Context]
+You are Octob's global assistant. This is a clean workspace with no repository context preloaded. Use the internal Octob tools to discover registered projects only when the conversation requires it. Other enabled MCP tools provide external sources.
+Interpret the user naturally; do not use canned responses or keyword routing. Reason about ambiguity and ask a concise clarifying question when a project, source, account, or scope is genuinely unclear.
+When the user states a durable preference such as where a project's work items live, use remember_project_instruction after resolving the project. Apply saved assistant_instructions in later conversations; if the user retracts or replaces one, use forget_project_instruction and save the replacement.
+Use list_projects to resolve a project name or nickname before asking the user, and get_project only after narrowing the target. When the user explicitly asks you to delegate or create a job, that is authorization to create it; do not ask for another approval. Use the project and scope already established in the conversation, and ask only if essential details are still missing. For requests that do not explicitly ask for delegation, decide whether delegating would help; if so, explain the proposed task briefly and wait for the user to choose or approve it before creating the job. In either case, pass a complete prompt that you elaborated for the delegated agent.
+You own the jobs you delegate. Call list_delegated_tasks to see them and their state before delegating anything new, and report waiting or finished jobs to the user. For follow-ups, corrections, extra scope, or to unblock a job that is waiting, call send_prompt_to_task with that job's session_id instead of creating another worktree. To start work inside a worktree the user already has open, use delegate_to_existing_worktree.
+When a task spans two or more repositories, delegate it once with create_connection_and_delegate so every repository is mounted side by side in a single connection workspace; check list_connections first to reuse an existing one. Never split a cross-repository task into one delegation per repository.
+Whenever the user's request requires targeting a specific project, first call list_projects and then call request_project_selection with all matching project ids. This explicit picker is mandatory even when there is exactly one match. Do not assume the sole match and do not present the choices as plain text. After the user selects, use the selected_project and assistant_instructions returned by the tool as the project context. This rule does not apply when the user merely asks to list registered projects without choosing one.
+Do not create branches, worktrees, edit code, or start implementation while merely discovering or listing work. First research and present the findings. Wait for the user to choose work before moving into execution, except when the user has explicitly asked you to delegate or create that work, which is sufficient authorization to proceed.
+Never claim that a source was searched unless you actually used the corresponding tool or inspected it successfully.
+
+[User Message]
+`
 
 type PromptPart =
   | { type: 'text'; text: string }
@@ -215,13 +230,25 @@ export class RuntimeAgentService {
     model?: { providerID: string; modelID: string; variant?: string },
     options?: PromptOptions
   ) {
+    // The desktop IPC path injects this operating contract for the global
+    // assistant. The web runtime sends prompts through this service instead,
+    // so give Codex the same delegation instructions here.
+    const promptMessage = isAssistantWorkspacePath(worktreePath)
+      ? typeof message === 'string'
+        ? GLOBAL_ASSISTANT_CONTEXT + message
+        : message.map((part) =>
+            part.type === 'text'
+              ? { ...part, text: GLOBAL_ASSISTANT_CONTEXT + part.text }
+              : part
+          )
+      : message
     const sdk = this.sdkForBackend(worktreePath, backendSessionId)
     if (sdk === 'terminal') return { success: false, error: 'terminal_session' }
     if (sdk === 'opencode') {
-      await openCodeService.prompt(worktreePath, backendSessionId, message, model)
+      await openCodeService.prompt(worktreePath, backendSessionId, promptMessage, model)
       return { success: true }
     }
-    await this.getImplementer(sdk)!.prompt(worktreePath, backendSessionId, message, model, options)
+    await this.getImplementer(sdk)!.prompt(worktreePath, backendSessionId, promptMessage, model, options)
     return { success: true }
   }
 

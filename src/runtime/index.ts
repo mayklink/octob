@@ -35,13 +35,18 @@ import { bashService } from '../main/services/bash-service'
 import { scriptRunner } from '../main/services/script-runner'
 import { loadShellEnv } from '../main/services/shell-env'
 import { startAssistantMcpService } from '../main/services/assistant-mcp-service'
+import { serveStaticWeb } from './static-web'
+import { openRuntimeBrowser } from './open-browser'
 
 loadShellEnv()
 
 const host = process.env.OCTOB_RUNTIME_HOST ?? '127.0.0.1'
 const port = Number.parseInt(process.env.OCTOB_RUNTIME_PORT ?? '47821', 10)
 const allowedOrigins = new Set(
-  (process.env.OCTOB_ALLOWED_ORIGINS ?? 'http://localhost:5173,http://127.0.0.1:5173')
+  (
+    process.env.OCTOB_ALLOWED_ORIGINS ??
+    'http://localhost:5173,http://127.0.0.1:5173,http://localhost:47821,http://127.0.0.1:47821'
+  )
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean)
@@ -94,6 +99,8 @@ async function handleRequest(
   }
 
   const url = getRequestUrl(request)
+  if (serveStaticWeb(request, response, url)) return
+
   if (request.method === 'GET' && url.pathname === '/v1/health') {
     writeJson(request, response, allowedOrigins, 200, health())
     return
@@ -162,7 +169,11 @@ async function startRuntime(): Promise<void> {
   }
 
   server.listen(port, host, () => {
-    console.log(`Octob Runtime listening on http://${host}:${port}`)
+    const runtimeUrl = `http://${host}:${port}`
+    console.log(`Octob Runtime listening on ${runtimeUrl}`)
+    if (process.env.OCTOB_OPEN_BROWSER === '1') {
+      openRuntimeBrowser(`${runtimeUrl}/`)
+    }
   })
 }
 

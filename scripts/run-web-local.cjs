@@ -4,8 +4,6 @@ const path = require('node:path')
 
 const root = path.resolve(__dirname, '..')
 const runtimePort = 47821
-const webPort = 5173
-const previewMode = process.argv.includes('--preview')
 const noOpen = process.argv.includes('--no-open')
 const children = []
 
@@ -24,15 +22,21 @@ function portOpen(port) {
   })
 }
 
-function start(command, args, env = {}) {
-  const child = spawn(command, args, {
-    cwd: root,
-    stdio: 'inherit',
-    env: { ...process.env, ...env },
-    windowsHide: false
-  })
+function startRuntime() {
+  const child = spawn(
+    process.execPath,
+    [path.join(root, 'scripts', 'run-runtime.cjs')],
+    {
+      cwd: root,
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        OCTOB_OPEN_BROWSER: '0'
+      },
+      windowsHide: false
+    }
+  )
   children.push(child)
-  return child
 }
 
 function openBrowser(url) {
@@ -45,8 +49,12 @@ function openBrowser(url) {
     child.unref()
     return
   }
+
   const command = process.platform === 'darwin' ? 'open' : 'xdg-open'
-  const child = spawn(command, [url], { detached: true, stdio: 'ignore' })
+  const child = spawn(command, [url], {
+    detached: true,
+    stdio: 'ignore'
+  })
   child.unref()
 }
 
@@ -65,7 +73,7 @@ async function waitForPort(port, timeoutMs = 15000) {
 
 async function main() {
   if (!(await portOpen(runtimePort))) {
-    start(process.execPath, [path.join(root, 'scripts', 'run-runtime.cjs')])
+    startRuntime()
     if (!(await waitForPort(runtimePort))) {
       throw new Error('Octob Runtime did not start on port 47821')
     }
@@ -73,28 +81,7 @@ async function main() {
     console.log('[octob] Reusing runtime on http://127.0.0.1:47821')
   }
 
-  if (!(await portOpen(webPort))) {
-    const viteArgs = [
-      path.join(root, 'node_modules', 'vite', 'bin', 'vite.js')
-    ]
-    if (previewMode) viteArgs.push('preview')
-    viteArgs.push(
-      '--config',
-      path.join(root, 'vite.web.config.ts'),
-      '--host',
-      '127.0.0.1',
-      '--port',
-      String(webPort)
-    )
-    start(process.execPath, viteArgs)
-    if (!(await waitForPort(webPort))) {
-      throw new Error('Octob Web did not start on port 5173')
-    }
-  } else {
-    console.log('[octob] Reusing web server on http://127.0.0.1:5173')
-  }
-
-  const url = 'http://127.0.0.1:5173/web.html'
+  const url = 'http://127.0.0.1:47821/'
   console.log(`[octob] Browser mode ready: ${url}`)
   if (!noOpen) openBrowser(url)
 }

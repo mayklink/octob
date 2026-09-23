@@ -54,8 +54,13 @@ export function writeCorsPreflight(
     return
   }
   const origin = getAllowedOrigin(request, allowedOrigins)
+  const privateNetworkRequested =
+    request.headers['access-control-request-private-network'] === 'true'
   response.writeHead(204, {
     ...(origin ? { 'access-control-allow-origin': origin, vary: 'Origin' } : {}),
+    ...(privateNetworkRequested
+      ? { 'access-control-allow-private-network': 'true' }
+      : {}),
     'access-control-allow-headers': 'authorization, content-type',
     'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'access-control-max-age': '600'

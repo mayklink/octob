@@ -5611,15 +5611,17 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
       try {
         const recognition = new BrowserRecognition()
         let stopped = false
+        let sendAfterRecognitionEnds = false
+        let finalTranscript = ''
         let prefix = inputValueRef.current.trimEnd()
         const schedulePauseSend = () => {
           if (voicePauseTimerRef.current) clearTimeout(voicePauseTimerRef.current)
           voicePauseTimerRef.current = setTimeout(() => {
             voicePauseTimerRef.current = null
-            if (stopped || !inputValueRef.current.trim()) return
+            if (stopped || !finalTranscript.trim()) return
             voiceResumeAfterReplyRef.current = true
+            sendAfterRecognitionEnds = true
             try { recognition.stop() } catch { /* Recognition may already have ended. */ }
-            void handleSend()
           }, 1200)
         }
 
@@ -5627,10 +5629,14 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
         recognition.interimResults = true
         recognition.lang = 'pt-BR'
         recognition.onresult = (event) => {
-          let transcript = ''
-          for (let index = 0; index < event.results.length; index += 1) {
-            transcript += event.results[index]?.[0]?.transcript ?? ''
+          let interimTranscript = ''
+          for (let index = event.resultIndex; index < event.results.length; index += 1) {
+            const result = event.results[index]
+            const transcript = result?.[0]?.transcript ?? ''
+            if (result?.isFinal) finalTranscript += transcript
+            else interimTranscript += transcript
           }
+          const transcript = `${finalTranscript}${interimTranscript}`.trim()
           if (!transcript) return
           const value = `${prefix}${prefix && transcript ? ' ' : ''}${transcript}`
           handleInputChange(value, value.length)
@@ -5648,11 +5654,19 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
         }
         recognition.onend = () => {
           if (stopped) return
+          if (sendAfterRecognitionEnds) {
+            sendAfterRecognitionEnds = false
+            finalTranscript = ''
+            prefix = ''
+            void handleSend()
+            return
+          }
           if (voiceResumeAfterReplyRef.current) return
           // Chrome can end recognition after a pause even with continuous=true.
           // Preserve the text already inserted and reopen the same recognition
           // session so the dictation button remains active.
           prefix = inputValueRef.current.trimEnd()
+          finalTranscript = ''
           try {
             recognition.start()
           } catch {
@@ -5664,7 +5678,8 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
         voiceLiveRef.current = {
           resume: () => {
             if (stopped) return
-            prefix = inputValueRef.current.trimEnd()
+            prefix = ''
+            finalTranscript = ''
             try { recognition.start() } catch { /* Recognition may still be stopping. */ }
           },
           stop: () => {

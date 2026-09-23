@@ -241,6 +241,16 @@ export const useSessionStore = create<SessionState>()(
         // skip the indicator to avoid unmounting active SessionViews mid-init.
         const hasCached = get().sessionsByWorktree.has(worktreeId)
         set({ isLoading: !hasCached, error: null })
+        if (!hasCached) {
+          // Mark the scope as hydrated before the async read starts. An empty
+          // worktree is a valid result and must not leave MainPane blocked on
+          // the global loading flag while the request is in flight.
+          set((state) => {
+            const sessionsByWorktree = new Map(state.sessionsByWorktree)
+            sessionsByWorktree.set(worktreeId, [])
+            return { sessionsByWorktree }
+          })
+        }
         try {
           // Only load active sessions - completed sessions appear in history only
           const sessions = await window.db.session.getActiveByWorktree(worktreeId)
@@ -322,6 +332,10 @@ export const useSessionStore = create<SessionState>()(
               activeSessionId
             }
           })
+          // Keep the loading flag independent from the map update. The browser
+          // runtime can hydrate an empty worktree while another store update is
+          // still reconciling the persisted session state.
+          set({ isLoading: false })
         } catch (error) {
           set({
             error: error instanceof Error ? error.message : 'Failed to load sessions',
@@ -825,6 +839,10 @@ export const useSessionStore = create<SessionState>()(
         const state = get()
 
         if (worktreeId === state.activeWorktreeId) return
+
+        if (state.activeWorktreeId) {
+          window.db.cancelPending?.(`session-worktree:${state.activeWorktreeId}`)
+        }
 
         set({
           activeWorktreeId: worktreeId,

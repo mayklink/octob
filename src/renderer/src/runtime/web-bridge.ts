@@ -9,6 +9,27 @@ const unsupported = async (name: string): Promise<{ success: false; error: strin
   error: `${name} is not available in browser mode yet`
 })
 
+let browserWakeLock: { release: () => Promise<void> } | null = null
+
+async function setBrowserKeepAwake(active: boolean): Promise<void> {
+  if (!active) {
+    await browserWakeLock?.release().catch(() => {})
+    browserWakeLock = null
+    return
+  }
+
+  const wakeLock = (navigator as Navigator & {
+    wakeLock?: { request: (type: 'screen') => Promise<{ release: () => Promise<void> }> }
+  }).wakeLock
+  if (!wakeLock || browserWakeLock) return
+
+  try {
+    browserWakeLock = await wakeLock.request('screen')
+  } catch {
+    // Browsers can deny the lock when the tab is hidden or the API is absent.
+  }
+}
+
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer)
   let binary = ''
@@ -22,6 +43,10 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 
 function dbCall<T>(method: string, ...args: unknown[]): Promise<T> {
   return octobRuntime.dbCall<T>(method, args)
+}
+
+function scopedDbCall<T>(scope: string, method: string, ...args: unknown[]): Promise<T> {
+  return octobRuntime.dbCall<T>(method, args, `db:${scope}`)
 }
 
 const fileTreeChangeListeners = new Set<AnyFn>()
@@ -137,7 +162,8 @@ function installDatabaseBridge(target: any): void {
       get: (id: string) => dbCall('getSession', id),
       getByWorktree: (id: string) => dbCall('getSessionsByWorktree', id),
       getByProject: (id: string) => dbCall('getSessionsByProject', id),
-      getActiveByWorktree: (id: string) => dbCall('getActiveSessionsByWorktree', id),
+      getActiveByWorktree: (id: string) =>
+        scopedDbCall(`session-worktree:${id}`, 'getActiveSessionsByWorktree', id),
       update: (id: string, data: unknown) => dbCall('updateSession', id, data),
       delete: (id: string) => dbCall('deleteSession', id),
       search: (options: unknown) => dbCall('searchSessions', options),
@@ -183,7 +209,8 @@ function installDatabaseBridge(target: any): void {
     },
     schemaVersion: () => dbCall('getSchemaVersion'),
     tableExists: (name: string) => dbCall('tableExists', name),
-    getIndexes: () => dbCall('getIndexes')
+    getIndexes: () => dbCall('getIndexes'),
+    cancelPending: (scope: string) => octobRuntime.cancelScope(`db:${scope}`)
   }
 }
 
@@ -201,14 +228,32 @@ function installFileBridge(target: any): void {
   }
 }
 
-function gitPost(path: string, body: Record<string, unknown>): Promise<any> {
-  return octobRuntime.api(`/v1/git/${path}`, 'POST', body)
+function gitScope(worktreePath: string): string {
+  return `git:${worktreePath}`
+}
+
+function gitPost(
+  path: string,
+  body: Record<string, unknown>,
+  scope?: string
+): Promise<any> {
+  return octobRuntime.api(`/v1/git/${path}`, 'POST', body, scope)
+}
+
+function gitReadPost(path: string, body: Record<string, unknown>): Promise<any> {
+  const worktreePath =
+    typeof body.worktreePath === 'string'
+      ? body.worktreePath
+      : typeof body.projectPath === 'string'
+        ? body.projectPath
+        : null
+  return gitPost(path, body, worktreePath ? gitScope(worktreePath) : undefined)
 }
 
 function installGitBridge(target: any): void {
   target.gitOps = {
-    getFileStatuses: (worktreePath: string) => gitPost('status', { worktreePath }),
-    getBranchInfo: (worktreePath: string) => gitPost('branch', { worktreePath }),
+    getFileStatuses: (worktreePath: string) => gitReadPost('status', { worktreePath }),
+    getBranchInfo: (worktreePath: string) => gitReadPost('branch', { worktreePath }),
     stageFile: (worktreePath: string, filePath: string) =>
       gitPost('stage', { worktreePath, filePath }),
     unstageFile: (worktreePath: string, filePath: string) =>
@@ -223,22 +268,88 @@ function installGitBridge(target: any): void {
       gitPost('push', { worktreePath, remote, branch }),
     pull: (worktreePath: string, remote?: string, branch?: string, rebase?: boolean) =>
       gitPost('pull', { worktreePath, remote, branch, rebase }),
-    getDiffStat: (worktreePath: string) => gitPost('diff-stat', { worktreePath }),
+    getDiffStat: (worktreePath: string) => gitReadPost('diff-stat', { worktreePath }),
     hasUncommittedChanges: async (worktreePath: string) => {
-      const result = await gitPost('has-changes', { worktreePath })
+      const result = await gitReadPost('has-changes', { worktreePath })
       return result.hasChanges === true
     },
     getRemoteUrl: (worktreePath: string, remote?: string) =>
-      gitPost('remote-url', { worktreePath, remote }),
+      gitReadPost('remote-url', { worktreePath, remote }),
     addToGitignore: (worktreePath: string, pattern: string) =>
       gitPost('add-gitignore', { worktreePath, pattern }),
+    syncPullRequestBranch: (worktreePath: string, options: unknown) =>
+      gitPost('sync-pull-request-branch', { worktreePath, options }),
+    getDiff: (
+      worktreePath: string,
+      filePath: string,
+      staged: boolean,
+      isUntracked: boolean,
+      contextLines?: number
+    ) => gitPost('diff', { worktreePath, filePath, staged, isUntracked, contextLines }),
+    listBranchesWithStatus: (projectPath: string) =>
+      gitReadPost('list-branches-with-status', { projectPath }),
+    checkoutBranch: (worktreePath: string, branch: string) =>
+      gitPost('checkout', { worktreePath, branch }),
+    merge: (worktreePath: string, sourceBranch: string) =>
+      gitPost('merge', { worktreePath, branch: sourceBranch }),
+    mergeAbort: (worktreePath: string) => gitPost('merge-abort', { worktreePath }),
+    branchDiffShortStat: (worktreePath: string, baseBranch: string) =>
+      gitReadPost('branch-diff-stat', { worktreePath, baseBranch }),
+    getFileContent: (worktreePath: string, filePath: string) =>
+      gitPost('file-content', { worktreePath, filePath }),
+    getFileContentBase64: (worktreePath: string, filePath: string) =>
+      gitPost('file-content-base64', { worktreePath, filePath }),
+    getRefContent: (worktreePath: string, ref: string, filePath: string) =>
+      gitPost('ref-content', { worktreePath, ref, filePath }),
+    getRefContentBase64: (worktreePath: string, ref: string, filePath: string) =>
+      gitPost('ref-content-base64', { worktreePath, ref, filePath }),
+    stageHunk: (worktreePath: string, patch: string) =>
+      gitPost('stage-hunk', { worktreePath, patch }),
+    unstageHunk: (worktreePath: string, patch: string) =>
+      gitPost('unstage-hunk', { worktreePath, patch }),
+    revertHunk: (worktreePath: string, patch: string) =>
+      gitPost('revert-hunk', { worktreePath, patch }),
+    prMerge: (worktreePath: string, prNumber: number) =>
+      gitPost('pr-merge', { worktreePath, prNumber }),
+    isBranchMerged: (worktreePath: string, branch: string) =>
+      gitPost('is-branch-merged', { worktreePath, branch }),
+    deleteBranch: (worktreePath: string, branchName: string) =>
+      gitPost('delete-branch', { worktreePath, branchName }),
+    listPRs: (projectPath: string) => gitPost('list-prs', { projectPath }),
+    getPRState: (projectPath: string, prNumber: number) =>
+      gitPost('pr-state', { projectPath, prNumber }),
+    getPRReviewComments: (projectPath: string, prNumber: number) =>
+      gitPost('pr-review-comments', { projectPath, prNumber }),
+    getRangeDiff: (worktreePath: string, baseBranch: string) =>
+      gitReadPost('range-diff', { worktreePath, baseBranch }),
+    needsPush: async (worktreePath: string) => {
+      const result = await gitReadPost('needs-push', { worktreePath })
+      return result === true
+    },
+    getBranchDiffFiles: (worktreePath: string, branch: string) =>
+      gitPost('branch-diff-files', { worktreePath, branch }),
+    getBranchBaseContent: (worktreePath: string, branch: string, filePath: string) =>
+      gitPost('branch-base-content', { worktreePath, branch, filePath }),
+    getBranchBaseContentBase64: (
+      worktreePath: string,
+      branch: string,
+      filePath: string
+    ) => gitPost('branch-base-content-base64', { worktreePath, branch, filePath }),
+    getBranchFileDiff: (worktreePath: string, branch: string, filePath: string) =>
+      gitPost('branch-file-diff', { worktreePath, branch, filePath }),
+    createPR: (worktreePath: string, baseBranch: string, title: string, body: string) =>
+      gitPost('create-pr', { worktreePath, baseBranch, title, body }),
+    generatePRContent: (worktreePath: string, baseBranch: string, provider: string) =>
+      gitPost('generate-pr-content', { worktreePath, baseBranch, provider }),
     openInEditor: (path: string) =>
       octobRuntime.api('/v1/system/open-editor', 'POST', { path }),
-    showInFinder: async () => ({ success: true }),
+    showInFinder: (path: string) =>
+      octobRuntime.api('/v1/system/show-in-folder', 'POST', { path }),
     watchWorktree: (path: string) => watcherPost('git/watch', path),
     unwatchWorktree: (path: string) => watcherPost('git/unwatch', path),
     watchBranch: (path: string) => watcherPost('branch/watch', path),
     unwatchBranch: (path: string) => watcherPost('branch/unwatch', path),
+    cancelPending: (worktreePath: string) => octobRuntime.cancelScope(gitScope(worktreePath)),
     onStatusChanged: (callback: AnyFn) => addWatcherListener(gitStatusListeners, callback),
     onBranchChanged: (callback: AnyFn) => addWatcherListener(gitBranchListeners, callback)
   }
@@ -327,7 +438,17 @@ function addTerminalListener(
   listeners.add(callback)
   map.set(terminalId, listeners)
   ensureTerminalStream(terminalId)
-  return () => listeners.delete(callback)
+  return () => {
+    listeners.delete(callback)
+    const hasDataListeners = (terminalData.get(terminalId)?.size ?? 0) > 0
+    const hasExitListeners = (terminalExit.get(terminalId)?.size ?? 0) > 0
+    if (!hasDataListeners && !hasExitListeners) {
+      terminalData.delete(terminalId)
+      terminalExit.delete(terminalId)
+      terminalStreams.get(terminalId)?.()
+      terminalStreams.delete(terminalId)
+    }
+  }
 }
 
 function installTerminalBridge(target: any): void {
@@ -451,12 +572,13 @@ function installProjectBridge(target: any): void {
 }
 function installSystemBridge(target: any): void {
   target.systemOps = {
-    getLogDir: async () => '',
-    getAppVersion: async () => 'web-runtime',
-    getAppPaths: async () => ({ userData: '', home: '', logs: '' }),
-    isLogMode: async () => false,
+    getLogDir: async () => (await octobRuntime.api<any>('/v1/system/log-dir')).path,
+    getAppVersion: async () => (await octobRuntime.api<{ version: string }>('/v1/system/version')).version,
+    getAppPaths: () => octobRuntime.api('/v1/system/app-paths'),
+    isLogMode: async () => (await octobRuntime.api<any>('/v1/system/log-mode')).enabled === true,
     detectAgentSdks: () => octobRuntime.detectAgents(),
-    configureCodexBinaryPath: async () => ({ success: false, path: null }),
+    configureCodexBinaryPath: (binaryPath: string) =>
+      octobRuntime.api('/v1/system/configure-codex', 'POST', { binaryPath }),
     quitApp: async () => {},
     openInApp: (appName: string, path: string) => {
       if (appName === 'ghostty') {
@@ -485,7 +607,7 @@ function installSystemBridge(target: any): void {
     },
     getPlatform: async () => (await octobRuntime.health()).platform,
     isPackaged: async () => false,
-    setKeepAwake: async () => {},
+    setKeepAwake: setBrowserKeepAwake,
     setSessionQueuedState: async () => {},
     updateMenuState: async () => {},
     onNewSessionShortcut: noopSubscription,
@@ -501,19 +623,30 @@ function installSystemBridge(target: any): void {
   }
 
   target.loggingOps = {
-    createResponseLog: async () => '',
-    appendResponseLog: async () => {}
+    createResponseLog: async (sessionId: string) =>
+      (await octobRuntime.api<any>('/v1/logging/create', 'POST', { sessionId })).path,
+    appendResponseLog: async (filePath: string, data: unknown) => {
+      await octobRuntime.api('/v1/logging/append', 'POST', { filePath, data })
+    }
   }
   target.analyticsOps = {
-    track: async () => {},
-    setEnabled: async () => {},
-    isEnabled: async () => false
+    track: (event: string, properties?: Record<string, unknown>) =>
+      octobRuntime.api('/v1/system/analytics/track', 'POST', { event, properties }),
+    setEnabled: async (enabled: boolean) => {
+      await octobRuntime.api('/v1/system/analytics', 'POST', { enabled })
+    },
+    isEnabled: async () => (await octobRuntime.api<{ enabled: boolean }>('/v1/system/analytics')).enabled
   }
   target.perfDiagnosticsOps = {
-    enable: async () => {},
-    getSnapshot: async () => ({})
+    enable: async (enabled: boolean) => {
+      await octobRuntime.api('/v1/system/perf-enable', 'POST', { enabled })
+    },
+    getSnapshot: async () => (await octobRuntime.api<{ snapshot: unknown }>('/v1/system/perf-snapshot')).snapshot
   }
-  target.codexDebugLoggerOps = { configure: async () => {} }
+  target.codexDebugLoggerOps = {
+    configure: (enabled: boolean, resetPerSession: boolean) =>
+      octobRuntime.api('/v1/system/codex-debug', 'POST', { enabled, resetPerSession })
+  }
 }
 function connectionPost(path: string, body: Record<string, unknown>): Promise<any> {
   return octobRuntime.api(`/v1/connections/${path}`, 'POST', body)
@@ -586,11 +719,23 @@ function addAssistantListener(
 
 function installAuxiliaryBridge(target: any): void {
   target.assistantOps = {
-    show: async () => {},
-    hide: async () => {},
+    show: async () => window.dispatchEvent(new Event('octob:assistant-show')),
+    hide: async () => window.dispatchEvent(new Event('octob:assistant-hide')),
+    createSession: async (data: any) => {
+      const params = new URLSearchParams({
+        projectId: String(data.project_id ?? ''),
+        name: String(data.name ?? 'Assistente Global'),
+        agentSdk: String(data.agent_sdk ?? 'opencode'),
+        id: String(data.id ?? '')
+      })
+      if (data.model_provider_id) params.set('modelProviderId', String(data.model_provider_id))
+      if (data.model_id) params.set('modelId', String(data.model_id))
+      if (data.model_variant) params.set('modelVariant', String(data.model_variant))
+      return octobRuntime.api(`/v1/assistant/session?${params.toString()}`)
+    },
     getWorkspacePath: async () => {
-      const result = await octobRuntime.api<any>('/v1/assistant/workspace')
-      return result.path
+      const result = await octobRuntime.api<any>('/v1/assistant/status')
+      return result.workspacePath
     },
     listTasks: () => octobRuntime.api('/v1/assistant/tasks'),
     removeTask: (sessionId: string) =>
@@ -649,35 +794,23 @@ function installAuxiliaryBridge(target: any): void {
   }
 
   target.usageOps = {
-    fetch: async () => null,
-    fetchOpenai: async () => null,
-    fetchAntigravity: async () => null
+    fetch: () => octobRuntime.api('/v1/usage/claude'),
+    fetchOpenai: () => octobRuntime.api('/v1/usage/openai'),
+    fetchAntigravity: () => octobRuntime.api('/v1/usage/antigravity')
   }
   target.accountOps = {
-    getClaudeEmail: async () => null,
-    getOpenAIEmail: async () => null
+    getClaudeEmail: () => octobRuntime.api('/v1/account/claude-email'),
+    getOpenAIEmail: () => octobRuntime.api('/v1/account/openai-email')
   }
 
   target.updates = {
-    getState: async () => ({
-      status: 'not-available',
-      version: null,
-      error: null,
-      percent: null
-    }),
-    check: async () => ({
-      status: 'not-available',
-      version: null,
-      error: null,
-      percent: null
-    }),
-    download: async () => ({
-      status: 'not-available',
-      version: null,
-      error: null,
-      percent: null
-    }),
-    install: async () => {},
+    getState: () => octobRuntime.api('/v1/system/updates/state'),
+    check: () => octobRuntime.api('/v1/system/updates/check', 'POST', {}),
+    download: () => octobRuntime.api('/v1/system/updates/download', 'POST', {}),
+    install: async () => {
+      await octobRuntime.api('/v1/system/updates/install', 'POST', {})
+      window.location.reload()
+    },
     onState: noopSubscription,
     onAvailable: noopSubscription,
     onDownloaded: noopSubscription,
@@ -732,8 +865,8 @@ function agentCall<T = any>(operation: string, body: unknown = {}): Promise<T> {
 
 function createAgentBridge(): any {
   return {
-    connect: (worktreePath: string, octobSessionId: string) =>
-      agentCall('connect', { worktreePath, octobSessionId }),
+    connect: (worktreePath: string, octobSessionId: string, agentSdk?: string) =>
+      agentCall('connect', { worktreePath, octobSessionId, agentSdk }),
     reconnect: (worktreePath: string, sessionId: string, octobSessionId: string) =>
       agentCall('reconnect', { worktreePath, sessionId, octobSessionId }),
     prompt: (
@@ -839,11 +972,20 @@ function createAgentBridge(): any {
 
 function installExecutionFallbacks(target: any): void {
   const scriptListeners = new Map<string, Set<AnyFn>>()
-  const disposeScriptStream = octobRuntime.streamScripts((payload: any) => {
-    const listeners = scriptListeners.get(payload.eventKey)
-    if (!listeners) return
-    for (const listener of listeners) listener(payload.event)
-  })
+  let disposeScriptStream: (() => void) | null = null
+  const ensureScriptStream = (): void => {
+    if (disposeScriptStream) return
+    disposeScriptStream = octobRuntime.streamScripts((payload: any) => {
+      const listeners = scriptListeners.get(payload.eventKey)
+      if (!listeners) return
+      for (const listener of listeners) listener(payload.event)
+    })
+  }
+  const disposeUnusedScriptStream = (): void => {
+    if (scriptListeners.size !== 0) return
+    disposeScriptStream?.()
+    disposeScriptStream = null
+  }
 
   target.scriptOps = {
     runSetup: (commands: string[], cwd: string, worktreeId: string) =>
@@ -860,17 +1002,35 @@ function installExecutionFallbacks(target: any): void {
       const listeners = scriptListeners.get(channel) ?? new Set<AnyFn>()
       listeners.add(callback)
       scriptListeners.set(channel, listeners)
-      return () => listeners.delete(callback)
+      ensureScriptStream()
+      return () => {
+        listeners.delete(callback)
+        if (listeners.size === 0) scriptListeners.delete(channel)
+        disposeUnusedScriptStream()
+      }
     },
-    offOutput: (channel: string) => scriptListeners.delete(channel),
+    offOutput: (channel: string) => {
+      const deleted = scriptListeners.delete(channel)
+      disposeUnusedScriptStream()
+      return deleted
+    },
     getPort: (cwd: string) =>
       octobRuntime.api('/v1/scripts/port', 'POST', { cwd })
   }
 
   const bashListeners = new Set<AnyFn>()
-  const disposeBashStream = octobRuntime.streamBash((event) => {
-    for (const listener of bashListeners) listener(event)
-  })
+  let disposeBashStream: (() => void) | null = null
+  const ensureBashStream = (): void => {
+    if (disposeBashStream) return
+    disposeBashStream = octobRuntime.streamBash((event) => {
+      for (const listener of bashListeners) listener(event)
+    })
+  }
+  const disposeUnusedBashStream = (): void => {
+    if (bashListeners.size !== 0) return
+    disposeBashStream?.()
+    disposeBashStream = null
+  }
 
   target.bash = {
     run: (sessionId: string, command: string, cwd: string) =>
@@ -883,13 +1043,17 @@ function installExecutionFallbacks(target: any): void {
       octobRuntime.api('/v1/bash/get', 'POST', { sessionId }),
     onStream: (callback: AnyFn) => {
       bashListeners.add(callback)
-      return () => bashListeners.delete(callback)
+      ensureBashStream()
+      return () => {
+        bashListeners.delete(callback)
+        disposeUnusedBashStream()
+      }
     }
   }
 
   window.addEventListener('beforeunload', () => {
-    disposeScriptStream()
-    disposeBashStream()
+    disposeScriptStream?.()
+    disposeBashStream?.()
   }, { once: true })
 
   target.opencodeOps = createAgentBridge()
@@ -897,6 +1061,8 @@ function installExecutionFallbacks(target: any): void {
 export async function installWebRuntimeBridge(): Promise<void> {
   const target = window as any
   if (target.db) return
+
+  target.__OCTOB_WEB_RUNTIME__ = true
 
   await octobRuntime.ensureConnected()
   installDatabaseBridge(target)

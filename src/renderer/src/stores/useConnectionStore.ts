@@ -80,6 +80,9 @@ export const useConnectionStore = create<ConnectionState>()(
       connectionModeSubmitting: false,
 
       loadConnections: async () => {
+        // The sidebar and dashboard both hydrate connections. The loading
+        // guard coalesces their startup request without caching stale data.
+        if (get().isLoading) return
         set({ isLoading: true, error: null })
         try {
           const result = await window.connectionOps.getAll()

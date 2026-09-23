@@ -59,6 +59,17 @@ export async function handleAgentRoute(
     return true
   }
 
+  if (request.method === 'GET' && url.pathname.startsWith('/v1/agents/operations/')) {
+    const operationId = url.pathname.slice('/v1/agents/operations/'.length)
+    const operation = context.agents.getPromptOperation(operationId)
+    if (!operation) {
+      writeJson(request, response, context.allowedOrigins, 404, { error: 'operation_not_found' })
+      return true
+    }
+    writeJson(request, response, context.allowedOrigins, 200, operation)
+    return true
+  }
+
   if (request.method !== 'POST') return false
   const body = await readJsonBody<JsonRecord>(request)
   const operation = url.pathname.slice('/v1/agents/'.length)
@@ -74,7 +85,7 @@ export async function handleAgentRoute(
 
   try {
     const result = await dispatchAgentOperation(context.agents, operation, body)
-    writeJson(request, response, context.allowedOrigins, 200, result)
+    writeJson(request, response, context.allowedOrigins, operation === 'prompt' && result.accepted === true ? 202 : 200, result)
   } catch (error) {
     writeJson(request, response, context.allowedOrigins, 200, {
       success: false,
@@ -93,16 +104,19 @@ async function dispatchAgentOperation(
   const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
   const octobSessionId =
     typeof body.octobSessionId === 'string' ? body.octobSessionId : sessionId
+  const requestedAgentSdk =
+    typeof body.agentSdk === 'string' ? body.agentSdk as AgentSdkId : undefined
 
   switch (operation) {
     case 'connect':
-      return agents.connect(worktreePath, octobSessionId)
+      return agents.connect(worktreePath, octobSessionId, requestedAgentSdk)
     case 'reconnect':
       return agents.reconnect(worktreePath, sessionId, octobSessionId)
     case 'prompt':
-      return agents.prompt(
+      return agents.startPrompt(
         worktreePath,
         sessionId,
+        octobSessionId,
         (body.parts ?? body.message ?? '') as never,
         body.model as never,
         body.options as never

@@ -158,11 +158,22 @@ export class RuntimeWatcherService {
       existing.refs += 1
       return
     }
-    const watcher = chokidar.watch(worktreePath, {
-      ignored: IGNORE,
+    const gitDir = resolveGitDir(worktreePath)
+    if (!gitDir) return
+
+    // Do not recursively watch the worktree here. On Windows chokidar opens a
+    // native handle for each directory, so a single large repository can
+    // exhaust the process and starve every HTTP request. File-tree watching is
+    // owned separately by watchFiles; this watcher only needs Git metadata to
+    // refresh status after staging, commits, checkouts, and ref updates.
+    const watcher = chokidar.watch([
+      join(gitDir, 'HEAD'),
+      join(gitDir, 'index'),
+      join(gitDir, 'refs')
+    ], {
       persistent: true,
       ignoreInitial: true,
-      depth: 10,
+      depth: 4,
       followSymlinks: false,
       ignorePermissionErrors: true
     })

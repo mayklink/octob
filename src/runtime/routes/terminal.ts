@@ -94,7 +94,24 @@ export async function handleTerminalRoute(
     return true
   }
 
+  // A browser can retain a terminal tab across a runtime restart, while PTYs
+  // only live in memory. Focus/liveness cleanup is advisory in that state:
+  // acknowledge it so React does not retry an already-dead terminal forever.
+  // Commands that mutate a terminal still fail below, so we never hide lost
+  // input or a failed resize.
+  const isLifecycleOperation =
+    (request.method === 'POST' &&
+      (url.pathname === '/v1/terminal/focus' || url.pathname === '/v1/terminal/keep-alive')) ||
+    (request.method === 'DELETE' && url.pathname === '/v1/terminal')
+
   if (!terminalId || !ptyService.has(terminalId)) {
+    if (terminalId && isLifecycleOperation) {
+      writeJson(request, response, context.allowedOrigins, 200, {
+        success: true,
+        terminalMissing: true
+      })
+      return true
+    }
     writeJson(request, response, context.allowedOrigins, 404, { error: 'terminal_not_found' })
     return true
   }

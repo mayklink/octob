@@ -127,7 +127,9 @@ export function WorktreeItem({
   )
   const isRunProcessAlive = useScriptStore((s) => s.scriptStates[worktree.id]?.runRunning ?? false)
   const liveBranch = useGitStore((s) => s.branchInfoByWorktree.get(worktree.path))
-  const displayName = liveBranch?.name ?? worktree.name
+  // The DB row already contains the branch name. Use it immediately and let
+  // the lightweight HEAD watcher replace it if the branch changes externally.
+  const displayName = liveBranch?.name ?? (worktree.branch_name || worktree.name)
   const branchNameForCopy = liveBranch?.name ?? worktree.branch_name
   const isSelected = selectedWorktreeId === worktree.id
 

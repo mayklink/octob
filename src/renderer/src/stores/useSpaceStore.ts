@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 
+let spacesLoadPromise: Promise<void> | null = null
+
 interface SpaceState {
   spaces: Space[]
   activeSpaceId: string | null // null = "All"
@@ -29,24 +31,34 @@ export const useSpaceStore = create<SpaceState>()(
       projectSpaceMap: {},
 
       loadSpaces: async () => {
-        try {
-          const [spaces, assignments] = await Promise.all([
-            window.db.space.list(),
-            window.db.space.getAllAssignments()
-          ])
+        if (spacesLoadPromise) return spacesLoadPromise
 
-          // Build projectSpaceMap from assignments
-          const projectSpaceMap: Record<string, string[]> = {}
-          for (const a of assignments) {
-            if (!projectSpaceMap[a.project_id]) {
-              projectSpaceMap[a.project_id] = []
+        spacesLoadPromise = (async () => {
+          try {
+            const [spaces, assignments] = await Promise.all([
+              window.db.space.list(),
+              window.db.space.getAllAssignments()
+            ])
+
+            // Build projectSpaceMap from assignments
+            const projectSpaceMap: Record<string, string[]> = {}
+            for (const a of assignments) {
+              if (!projectSpaceMap[a.project_id]) {
+                projectSpaceMap[a.project_id] = []
+              }
+              projectSpaceMap[a.project_id].push(a.space_id)
             }
-            projectSpaceMap[a.project_id].push(a.space_id)
-          }
 
-          set({ spaces, projectSpaceMap })
-        } catch {
-          // Silently fail — spaces are non-critical
+            set({ spaces, projectSpaceMap })
+          } catch {
+            // Silently fail — spaces are non-critical
+          }
+        })()
+
+        try {
+          await spacesLoadPromise
+        } finally {
+          spacesLoadPromise = null
         }
       },
 

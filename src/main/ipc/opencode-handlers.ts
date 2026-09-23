@@ -82,7 +82,7 @@ export function registerOpenCodeHandlers(
   // Connect to OpenCode for a worktree (lazy starts server if needed)
   ipcMain.handle(
     'opencode:connect',
-    async (_event, worktreePath: string, octobSessionId: string) => {
+    async (_event, worktreePath: string, octobSessionId: string, requestedAgentSdk?: AgentSdkId) => {
       log.info('IPC: opencode:connect', { worktreePath, octobSessionId })
       // New session on this worktree — allow context injection for the first prompt
       injectedSessions.delete(sessionInjectionKey(worktreePath, octobSessionId))
@@ -91,13 +91,14 @@ export function registerOpenCodeHandlers(
         if (sdkManager && dbService) {
           const session = dbService.getSession(octobSessionId)
           // Terminal sessions have no AI backend — short-circuit
-          if (session?.agent_sdk === 'terminal') {
+          const agentSdk = requestedAgentSdk ?? session?.agent_sdk
+          if (agentSdk === 'terminal') {
             return { success: true, sessionId: octobSessionId }
           }
-          if (session?.agent_sdk && session.agent_sdk !== 'opencode') {
-            const impl = sdkManager.getImplementer(session.agent_sdk)
+          if (agentSdk && agentSdk !== 'opencode') {
+            const impl = sdkManager.getImplementer(agentSdk)
             const result = await impl.connect(worktreePath, octobSessionId)
-            telemetryService.track('session_started', { agent_sdk: session.agent_sdk })
+            telemetryService.track('session_started', { agent_sdk: agentSdk })
             return { success: true, ...result }
           }
         }

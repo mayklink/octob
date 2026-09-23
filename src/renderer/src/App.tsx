@@ -36,7 +36,18 @@ function App(): React.JSX.Element {
       await sessions.createSession(worktree.id, worktree.project_id)
     }
 
-    return window.assistantOps.onOpen(() => void openAssistant())
+    const removeNativeListener = window.assistantOps.onOpen(() => void openAssistant())
+    const onBrowserShow = (): void => void openAssistant()
+    const onBrowserHide = (): void => useGlobalAssistantStore.getState().close()
+
+    window.addEventListener('octob:assistant-show', onBrowserShow)
+    window.addEventListener('octob:assistant-hide', onBrowserHide)
+
+    return () => {
+      removeNativeListener()
+      window.removeEventListener('octob:assistant-show', onBrowserShow)
+      window.removeEventListener('octob:assistant-hide', onBrowserHide)
+    }
   }, [])
 
   if (!ready) return <div />

@@ -790,7 +790,7 @@ export class DatabaseService {
     const db = this.getDb()
     const now = new Date().toISOString()
     const session: Session = {
-      id: randomUUID(),
+      id: data.id ?? randomUUID(),
       worktree_id: data.worktree_id,
       project_id: data.project_id,
       connection_id: data.connection_id ?? null,

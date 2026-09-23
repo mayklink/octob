@@ -1,18 +1,168 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { spawn } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { homedir } from 'node:os'
 import type { DatabaseService } from '../../main/db/database'
 import { detectEditors, detectTerminals } from '../../main/services/settings-detection'
 import { testMcpServer } from '../../main/services/mcp-test-service'
+import { configure as configureCodexDebugLogger } from '../../main/services/codex-debug-logger'
 import { APP_SETTINGS_DB_KEY } from '../../shared/types/settings'
 import type { McpServerConfig } from '../../shared/types/mcp'
 import { readJsonBody, writeJson, type JsonRecord } from '../http'
 import { isPathAllowed } from '../path-guard'
+import type { RuntimeAgentService } from '../agent-runtime'
+import { appendFileSync, mkdirSync } from 'node:fs'
+import * as v8 from 'node:v8'
 
 interface SystemRouteContext {
   db: DatabaseService
+  agents: RuntimeAgentService
   allowedOrigins: Set<string>
+}
+
+let perfDiagnosticsEnabled = false
+let perfDiagnosticsInterval: NodeJS.Timeout | null = null
+let previousCpuUsage: NodeJS.CpuUsage | null = null
+let previousCpuTimestamp = 0
+
+type WebUpdateState = {
+  status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
+  version: string | null
+  error: string | null
+  percent: number | null
+  url?: string | null
+}
+
+let webUpdateState: WebUpdateState = {
+  status: 'idle',
+  version: null,
+  error: null,
+  percent: null,
+  url: null
+}
+
+function webVersion(): string {
+  return process.env.OCTOB_WEB_VERSION?.trim() || 'web-runtime'
+}
+
+function compareVersions(left: string, right: string): number {
+  const parse = (value: string): number[] => value.replace(/^v/i, '').split('.').map((part) => Number.parseInt(part, 10) || 0)
+  const a = parse(left)
+  const b = parse(right)
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    if ((a[index] ?? 0) !== (b[index] ?? 0)) return (a[index] ?? 0) > (b[index] ?? 0) ? 1 : -1
+  }
+  return 0
+}
+
+async function checkWebUpdates(): Promise<WebUpdateState> {
+  const manifestUrl = process.env.OCTOB_WEB_UPDATE_URL?.trim()
+  if (!manifestUrl) {
+    webUpdateState = {
+      status: 'not-available',
+      version: webVersion(),
+      error: 'Web update manifest is not configured.',
+      percent: null,
+      url: null
+    }
+    return webUpdateState
+  }
+
+  webUpdateState = { ...webUpdateState, status: 'checking', error: null, percent: null }
+  try {
+    const result = await fetch(manifestUrl)
+    if (!result.ok) throw new Error(`Update manifest returned ${result.status}.`)
+    const manifest = await result.json() as { version?: string; url?: string }
+    const availableVersion = typeof manifest.version === 'string' ? manifest.version : null
+    const available = Boolean(availableVersion && compareVersions(availableVersion, webVersion()) > 0)
+    webUpdateState = {
+      status: available ? 'available' : 'not-available',
+      version: availableVersion ?? webVersion(),
+      error: null,
+      percent: null,
+      url: manifest.url ?? null
+    }
+  } catch (error) {
+    webUpdateState = {
+      status: 'error',
+      version: null,
+      error: error instanceof Error ? error.message : String(error),
+      percent: null,
+      url: null
+    }
+  }
+  return webUpdateState
+}
+
+function performanceSnapshot(): Record<string, unknown> {
+  const now = Date.now()
+  const memory = process.memoryUsage()
+  const cpu = process.cpuUsage()
+  const elapsedMicros = previousCpuTimestamp ? Math.max(1, (now - previousCpuTimestamp) * 1000) : 0
+  const cpuPercent = elapsedMicros
+    ? ((cpu.user - (previousCpuUsage?.user ?? cpu.user) + cpu.system - (previousCpuUsage?.system ?? cpu.system)) / elapsedMicros) * 100
+    : 0
+  previousCpuUsage = cpu
+  previousCpuTimestamp = now
+  const handles = (process as NodeJS.Process & { _getActiveHandles?: () => unknown[] })
+    ._getActiveHandles?.() ?? []
+  const byType: Record<string, number> = {}
+  for (const handle of handles) {
+    const type = (handle as { constructor?: { name?: string } })?.constructor?.name ?? 'Unknown'
+    byType[type] = (byType[type] ?? 0) + 1
+  }
+  const heap = v8.getHeapStatistics()
+  return {
+    perfVersion: 'v6',
+    timestamp: new Date(now).toISOString(),
+    uptimeMs: process.uptime() * 1000,
+    cpu: {
+      userMs: Math.round(cpu.user / 1000),
+      systemMs: Math.round(cpu.system / 1000),
+      percentSinceLastSample: Math.round(cpuPercent * 100) / 100
+    },
+    memory: {
+      rss: memory.rss,
+      heapUsed: memory.heapUsed,
+      heapTotal: memory.heapTotal,
+      external: memory.external,
+      arrayBuffers: memory.arrayBuffers,
+      nativeEstimate: Math.max(0, memory.rss - memory.heapTotal - memory.external)
+    },
+    heap: {
+      sizeLimit: heap.heap_size_limit,
+      totalPhysical: heap.total_physical_size,
+      mallocedMemory: heap.malloced_memory,
+      numberOfGcContexts: heap.number_of_native_contexts
+    },
+    processes: { ptyActive: -1, scriptsActive: -1, scriptsTotalOpened: -1, scriptsTotalClosed: -1 },
+    watchers: { fileTree: -1, worktree: -1, branch: -1 },
+    sessions: { active: -1 },
+    handles: { active: handles.length, requests: -1, byType },
+    electron: { windows: -1, webContents: -1 },
+    eventLoopLagMs: -1
+  }
+}
+
+function writePerformanceSnapshot(): void {
+  try {
+    const logDir = join(homedir(), '.octob', 'logs')
+    mkdirSync(logDir, { recursive: true })
+    appendFileSync(join(logDir, 'perf-diagnostics.jsonl'), `${JSON.stringify(performanceSnapshot())}\n`)
+  } catch {
+    // Diagnostics must never affect the application.
+  }
+}
+
+function setPerformanceDiagnostics(enabled: boolean): void {
+  perfDiagnosticsEnabled = enabled
+  if (perfDiagnosticsInterval) clearInterval(perfDiagnosticsInterval)
+  perfDiagnosticsInterval = null
+  if (enabled) {
+    writePerformanceSnapshot()
+    perfDiagnosticsInterval = setInterval(writePerformanceSnapshot, 30_000)
+  }
 }
 
 function spawnDetached(command: string, args: string[], cwd?: string): void {
@@ -181,6 +331,50 @@ export async function handleSystemRoute(
     return true
   }
 
+  const userData = join(homedir(), '.octob')
+  const logs = join(userData, 'logs')
+  if (request.method === 'GET' && url.pathname === '/v1/system/log-dir') {
+    writeJson(request, response, context.allowedOrigins, 200, { path: logs })
+    return true
+  }
+  if (request.method === 'GET' && url.pathname === '/v1/system/app-paths') {
+    writeJson(request, response, context.allowedOrigins, 200, {
+      userData,
+      home: homedir(),
+      logs
+    })
+    return true
+  }
+  if (request.method === 'GET' && url.pathname === '/v1/system/log-mode') {
+    writeJson(request, response, context.allowedOrigins, 200, {
+      enabled: process.argv.includes('--log')
+    })
+    return true
+  }
+  if (request.method === 'GET' && url.pathname === '/v1/system/version') {
+    writeJson(request, response, context.allowedOrigins, 200, { version: webVersion() })
+    return true
+  }
+  if (request.method === 'GET' && url.pathname === '/v1/system/updates/state') {
+    writeJson(request, response, context.allowedOrigins, 200, webUpdateState)
+    return true
+  }
+
+  if (request.method === 'GET' && url.pathname === '/v1/system/analytics') {
+    writeJson(request, response, context.allowedOrigins, 200, {
+      enabled: context.db.getSetting('telemetry_enabled') !== 'false'
+    })
+    return true
+  }
+
+  if (request.method === 'GET' && url.pathname === '/v1/system/perf-snapshot') {
+    writeJson(request, response, context.allowedOrigins, 200, {
+      enabled: perfDiagnosticsEnabled,
+      snapshot: performanceSnapshot()
+    })
+    return true
+  }
+
   if (request.method !== 'POST') return false
 
   const body = await readJsonBody<JsonRecord>(request)
@@ -193,6 +387,72 @@ export async function handleSystemRoute(
     }
     const result = await testMcpServer(server as unknown as McpServerConfig)
     writeJson(request, response, context.allowedOrigins, 200, result)
+    return true
+  }
+
+  if (url.pathname === '/v1/system/configure-codex') {
+    const binaryPath = typeof body.binaryPath === 'string' ? body.binaryPath : ''
+    writeJson(
+      request,
+      response,
+      context.allowedOrigins,
+      200,
+      context.agents.configureCodexBinaryPath(binaryPath)
+    )
+    return true
+  }
+
+  if (url.pathname === '/v1/system/analytics') {
+    const enabled = body.enabled === true
+    context.db.setSetting('telemetry_enabled', enabled ? 'true' : 'false')
+    writeJson(request, response, context.allowedOrigins, 200, { success: true, enabled })
+    return true
+  }
+
+  if (url.pathname === '/v1/system/analytics/track') {
+    writeJson(request, response, context.allowedOrigins, 200, {
+      success: true,
+      sent: false,
+      reason: 'browser_runtime_local_only'
+    })
+    return true
+  }
+
+  if (url.pathname === '/v1/system/perf-enable') {
+    setPerformanceDiagnostics(body.enabled === true)
+    writeJson(request, response, context.allowedOrigins, 200, {
+      success: true,
+      enabled: perfDiagnosticsEnabled
+    })
+    return true
+  }
+
+  if (url.pathname === '/v1/system/codex-debug') {
+    configureCodexDebugLogger({
+      enabled: body.enabled === true,
+      resetPerSession: body.resetPerSession !== false
+    })
+    writeJson(request, response, context.allowedOrigins, 200, { success: true })
+    return true
+  }
+
+  if (url.pathname === '/v1/system/updates/check') {
+    writeJson(request, response, context.allowedOrigins, 200, await checkWebUpdates())
+    return true
+  }
+
+  if (url.pathname === '/v1/system/updates/download') {
+    if (webUpdateState.status !== 'available') {
+      writeJson(request, response, context.allowedOrigins, 200, webUpdateState)
+      return true
+    }
+    webUpdateState = { ...webUpdateState, status: 'downloaded', percent: 100 }
+    writeJson(request, response, context.allowedOrigins, 200, webUpdateState)
+    return true
+  }
+
+  if (url.pathname === '/v1/system/updates/install') {
+    writeJson(request, response, context.allowedOrigins, 200, { success: true, action: 'reload' })
     return true
   }
 

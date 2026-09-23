@@ -30,6 +30,20 @@ import type {
 } from '@shared/types/assistant'
 
 const GLOBAL_SCOPE_ID = '__octob_global_assistant__'
+const ASSISTANT_PREPARE_TIMEOUT_MS = 10_000
+
+async function withAssistantTimeout<T>(promise: Promise<T>, operation: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`Tempo esgotado ao ${operation}.`)), ASSISTANT_PREPARE_TIMEOUT_MS)
+  })
+
+  try {
+    return await Promise.race([promise, timeout])
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId)
+  }
+}
 
 const assistantActions = [
   { label: 'Listar tarefas pendentes', prompt: 'Mostre as tarefas pendentes atribuídas a mim.', icon: CircleCheckBig },
@@ -118,7 +132,7 @@ function taskLocationLabel(task: AssistantTask): string {
 async function createAssistantSession(projectId: string) {
   const settings = useSettingsStore.getState()
   const model = settings.selectedModelByProvider[settings.defaultAgentSdk] ?? settings.selectedModel
-  return window.db.session.create({
+  const data = {
     worktree_id: null,
     project_id: projectId,
     name: 'Assistente Global',
@@ -130,7 +144,25 @@ async function createAssistantSession(projectId: string) {
           model_variant: model.variant ?? null
         }
       : {})
-  })
+  }
+  if ((window as typeof window & { __OCTOB_WEB_RUNTIME__?: boolean }).__OCTOB_WEB_RUNTIME__ && window.assistantOps.createSession) {
+    const id = crypto.randomUUID()
+    void window.assistantOps.createSession({ ...data, id }).catch((cause) => {
+      console.warn('Falha ao persistir a sessão do assistente no runtime:', cause)
+    })
+    return {
+      id,
+      ...data,
+      connection_id: null,
+      status: 'active',
+      opencode_session_id: null,
+      mode: 'build',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      completed_at: null
+    } as Awaited<ReturnType<typeof window.db.session.create>>
+  }
+  return window.db.session.create(data)
 }
 
 function activateAssistantSession(
@@ -170,6 +202,7 @@ export function GlobalAssistantView(): React.JSX.Element {
   // Delegated jobs are synced app-wide by useAssistantTasksSync.
 
   useEffect(() => {
+    if (!workspacePath) return
     let cancelled = false
     const unsubscribe = window.assistantOps.onProjectSelectionRequested((request) => {
       setProjectSelectionRequests((current) => [
@@ -188,7 +221,7 @@ export function GlobalAssistantView(): React.JSX.Element {
       cancelled = true
       unsubscribe()
     }
-  }, [])
+  }, [workspacePath])
 
   useEffect(() => {
     let cancelled = false
@@ -199,12 +232,19 @@ export function GlobalAssistantView(): React.JSX.Element {
         if (!projectId) {
           throw new Error('Adicione pelo menos um projeto para habilitar as ferramentas do agente.')
         }
-        const rawWorkspacePath = await window.assistantOps.getWorkspacePath()
+        const isWebRuntime = Boolean((window as typeof window & { __OCTOB_WEB_RUNTIME__?: boolean }).__OCTOB_WEB_RUNTIME__)
+        const rawWorkspacePath = isWebRuntime
+          ? projects[0]?.path
+          : await withAssistantTimeout(
+              window.assistantOps.getWorkspacePath(),
+              'preparar o workspace do assistente'
+            )
+        if (!rawWorkspacePath) throw new Error('Nenhum workspace disponível para o assistente.')
         if (cancelled) return
 
         const storedSessionId = useGlobalAssistantStore.getState().assistantSessionId
-        let session = storedSessionId
-          ? await window.db.session.get(storedSessionId)
+        let session = !isWebRuntime && storedSessionId
+          ? await withAssistantTimeout(window.db.session.get(storedSessionId), 'carregar a sessão do assistente')
           : null
         if (cancelled) return
         if (session?.worktree_id || session?.connection_id) {
@@ -212,14 +252,18 @@ export function GlobalAssistantView(): React.JSX.Element {
         }
 
         if (!session) {
-          session = await createAssistantSession(projectId)
+          session = await withAssistantTimeout(
+            createAssistantSession(projectId),
+            'criar a sessão do assistente'
+          )
           if (cancelled) return
           useGlobalAssistantStore.getState().setAssistantSessionId(session.id)
         }
 
-        activateAssistantSession(session)
-
-        if (!cancelled) setWorkspacePath(rawWorkspacePath)
+        if (!cancelled) {
+          setWorkspacePath(rawWorkspacePath)
+          activateAssistantSession(session)
+        }
       } catch (cause) {
         if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause))
       }

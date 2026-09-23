@@ -3,7 +3,7 @@ const net = require('node:net')
 const path = require('node:path')
 
 const root = path.resolve(__dirname, '..')
-const runtimePort = 47821
+const runtimePort = Number.parseInt(process.env.OCTOB_RUNTIME_PORT ?? '47821', 10)
 const noOpen = process.argv.includes('--no-open')
 const children = []
 
@@ -75,13 +75,13 @@ async function main() {
   if (!(await portOpen(runtimePort))) {
     startRuntime()
     if (!(await waitForPort(runtimePort))) {
-      throw new Error('Octob Runtime did not start on port 47821')
+      throw new Error(`Octob Runtime did not start on port ${runtimePort}`)
     }
   } else {
-    console.log('[octob] Reusing runtime on http://127.0.0.1:47821')
+    console.log(`[octob] Reusing runtime on http://127.0.0.1:${runtimePort}`)
   }
 
-  const url = 'http://127.0.0.1:47821/'
+  const url = `http://127.0.0.1:${runtimePort}/`
   console.log(`[octob] Browser mode ready: ${url}`)
   if (!noOpen) openBrowser(url)
 }

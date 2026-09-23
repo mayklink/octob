@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { DatabaseService } from '../main/db/database'
 import type {
   AgentSdkCapabilities,
@@ -13,7 +14,12 @@ import { CursorCliImplementer } from '../main/services/cursor-cli-implementer'
 import { AntigravityImplementer } from '../main/services/antigravity-implementer'
 import { openCodeService } from '../main/services/opencode-service'
 import { resolveClaudeBinaryPath } from '../main/services/claude-binary-resolver'
-import { resolveCodexBinaryPath } from '../main/services/codex-binary-resolver'
+import {
+  resolveCodexBinaryPath,
+  resolveConfiguredCodexBinaryPath,
+  setConfiguredCodexBinaryPath,
+  supportsCodexAppServer
+} from '../main/services/codex-binary-resolver'
 import { resolveMistralVibeAcpBinaryPath } from '../main/services/mistral-vibe-binary-resolver'
 import { resolveCursorCliAgentBinaryPath } from '../main/services/cursor-cli-binary-resolver'
 import {
@@ -21,10 +27,22 @@ import {
   resolveAntigravityBinaryPath
 } from '../main/services/antigravity-binary-resolver'
 import { resolveOpenCodeLaunchSpec } from '../main/services/opencode-binary-resolver'
+import { emitAgentStreamEvent } from '../main/services/agent-event-bus'
 
 type PromptPart =
   | { type: 'text'; text: string }
   | { type: 'file'; mime: string; url: string; filename?: string }
+
+interface PromptOperation {
+  operationId: string
+  worktreePath: string
+  backendSessionId: string
+  octobSessionId: string
+  state: 'running' | 'completed' | 'failed'
+  startedAt: number
+  completedAt?: number
+  error?: string
+}
 
 const PROBE_ORDER: Exclude<AgentSdkId, 'opencode' | 'terminal'>[] = [
   'antigravity',
@@ -36,6 +54,7 @@ const PROBE_ORDER: Exclude<AgentSdkId, 'opencode' | 'terminal'>[] = [
 
 export class RuntimeAgentService {
   private readonly implementers = new Map<AgentSdkId, AgentSdkImplementer>()
+  private readonly promptOperations = new Map<string, PromptOperation>()
   private readonly claude: ClaudeCodeImplementer
   private readonly codex: CodexImplementer
   private readonly mistral: MistralVibeImplementer
@@ -94,8 +113,47 @@ export class RuntimeAgentService {
     return { ...this.availability }
   }
 
-  private sdkForOctobSession(octobSessionId: string): AgentSdkId {
-    return this.db.getSession(octobSessionId)?.agent_sdk ?? 'opencode'
+  configureCodexBinaryPath(binaryPath: string): {
+    success: boolean
+    path: string | null
+    error?: string
+  } {
+    const requestedPath = binaryPath.trim()
+    setConfiguredCodexBinaryPath(requestedPath || null)
+
+    const configuredPath = requestedPath
+      ? resolveConfiguredCodexBinaryPath(requestedPath)
+      : null
+    const resolvedPath = resolveCodexBinaryPath()
+    const resolvedSupportsAppServer = resolvedPath ? supportsCodexAppServer(resolvedPath) : false
+    const selectedPath = resolvedSupportsAppServer ? resolvedPath : null
+    const configuredIsUsable = Boolean(configuredPath && selectedPath === configuredPath)
+
+    this.codex.setCodexBinaryPath(selectedPath)
+    this.availability.codex = Boolean(selectedPath)
+
+    if (requestedPath && !configuredIsUsable) {
+      return {
+        success: false,
+        path: null,
+        error: configuredPath
+          ? 'The selected Codex binary does not support app-server.'
+          : 'The selected Codex binary was not found.'
+      }
+    }
+
+    return {
+      success: Boolean(selectedPath),
+      path: selectedPath,
+      ...(selectedPath ? {} : { error: 'Codex app-server was not found.' })
+    }
+  }
+
+  private sdkForOctobSession(
+    octobSessionId: string,
+    requestedSdk?: AgentSdkId
+  ): AgentSdkId {
+    return requestedSdk ?? this.db.getSession(octobSessionId)?.agent_sdk ?? 'opencode'
   }
 
   private sdkForBackend(worktreePath: string, backendSessionId: string): AgentSdkId {
@@ -117,8 +175,8 @@ export class RuntimeAgentService {
     return implementer
   }
 
-  async connect(worktreePath: string, octobSessionId: string) {
-    const sdk = this.sdkForOctobSession(octobSessionId)
+  async connect(worktreePath: string, octobSessionId: string, requestedSdk?: AgentSdkId) {
+    const sdk = this.sdkForOctobSession(octobSessionId, requestedSdk)
     if (sdk === 'terminal') return { success: true, sessionId: octobSessionId }
     if (sdk === 'opencode') {
       const result = await openCodeService.connect(worktreePath, octobSessionId)
@@ -152,6 +210,76 @@ export class RuntimeAgentService {
     }
     await this.getImplementer(sdk)!.prompt(worktreePath, backendSessionId, message, model, options)
     return { success: true }
+  }
+
+  /**
+   * Start a prompt without holding the browser's HTTP connection until the
+   * provider finishes. Provider events and approval requests continue through
+   * the agent stream while this operation runs.
+   */
+  startPrompt(
+    worktreePath: string,
+    backendSessionId: string,
+    octobSessionId: string,
+    message: string | PromptPart[],
+    model?: { providerID: string; modelID: string; variant?: string },
+    options?: PromptOptions
+  ): { success: boolean; accepted: boolean; operationId?: string; error?: string } {
+    const active = [...this.promptOperations.values()].find(
+      (operation) =>
+        operation.state === 'running' &&
+        operation.worktreePath === worktreePath &&
+        operation.backendSessionId === backendSessionId
+    )
+    if (active) {
+      return {
+        success: false,
+        accepted: false,
+        operationId: active.operationId,
+        error: 'prompt_in_progress'
+      }
+    }
+
+    const operation: PromptOperation = {
+      operationId: randomUUID(),
+      worktreePath,
+      backendSessionId,
+      octobSessionId,
+      state: 'running',
+      startedAt: Date.now()
+    }
+    this.promptOperations.set(operation.operationId, operation)
+
+    void this.prompt(worktreePath, backendSessionId, message, model, options)
+      .then(() => {
+        operation.state = 'completed'
+        operation.completedAt = Date.now()
+      })
+      .catch((error) => {
+        const messageText = error instanceof Error ? error.message : String(error)
+        operation.state = 'failed'
+        operation.completedAt = Date.now()
+        operation.error = messageText
+        emitAgentStreamEvent({
+          type: 'session.error',
+          sessionId: octobSessionId,
+          data: { error: messageText, operationId: operation.operationId }
+        })
+      })
+      .finally(() => {
+        const cleanup = setTimeout(() => this.promptOperations.delete(operation.operationId), 10 * 60_000)
+        cleanup.unref?.()
+      })
+
+    return {
+      success: true,
+      accepted: true,
+      operationId: operation.operationId
+    }
+  }
+
+  getPromptOperation(operationId: string): PromptOperation | null {
+    return this.promptOperations.get(operationId) ?? null
   }
 
   async abort(worktreePath: string, backendSessionId: string) {

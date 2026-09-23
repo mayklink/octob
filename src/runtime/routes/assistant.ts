@@ -75,6 +75,26 @@ export async function handleAssistantRoute(
     return true
   }
 
+  if (request.method === 'GET' && url.pathname === '/v1/assistant/session') {
+    const projectId = url.searchParams.get('projectId')
+    if (!projectId) {
+      writeJson(request, response, context.allowedOrigins, 400, { error: 'projectId_required' })
+      return true
+    }
+    const session = context.db.createSession({
+      id: url.searchParams.get('id') || undefined,
+      worktree_id: null,
+      project_id: projectId,
+      name: url.searchParams.get('name') ?? 'Assistente Global',
+      agent_sdk: (url.searchParams.get('agentSdk') ?? 'opencode') as never,
+      model_provider_id: url.searchParams.get('modelProviderId') || null,
+      model_id: url.searchParams.get('modelId') || null,
+      model_variant: url.searchParams.get('modelVariant') || null
+    })
+    writeJson(request, response, context.allowedOrigins, 200, session)
+    return true
+  }
+
   if (request.method === 'GET' && url.pathname === '/v1/assistant/tasks') {
     writeJson(request, response, context.allowedOrigins, 200, getAssistantTasks(context.db))
     return true

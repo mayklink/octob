@@ -9,7 +9,8 @@ import { useGitStore } from '@/stores/useGitStore'
  * so it's cheap to watch many worktrees simultaneously.
  *
  * Lifecycle:
- * - On mount / path change: starts watchers + loads initial branch info
+ * - On mount / path change: starts lightweight HEAD watchers
+ * - Initial branch names come from the worktree rows already loaded from DB
  * - On git:branchChanged event: refreshes branch info for matching path
  * - On unmount / path removal: stops watchers
  */
@@ -32,6 +33,8 @@ export function useSidebarBranchWatcher(worktreePaths: string[]): void {
     // Stop watching removed paths
     for (const path of prevPaths) {
       if (!newSet.has(path)) {
+        window.gitOps.cancelPending?.(path)
+        useGitStore.getState().clearStatuses?.(path)
         window.gitOps.unwatchBranch(path).catch(() => {
           // Non-critical
         })
@@ -45,14 +48,6 @@ export function useSidebarBranchWatcher(worktreePaths: string[]): void {
           // Non-critical
         })
       }
-    }
-
-    // Load branch info only for newly added paths. Existing paths already have
-    // cached branch data and a watcher that will refresh on HEAD changes.
-    const { loadBranchInfo } = useGitStore.getState()
-    for (const path of worktreePaths) {
-      if (prevSet.has(path)) continue
-      loadBranchInfo(path)
     }
 
     previousPathsRef.current = worktreePaths
@@ -80,6 +75,8 @@ export function useSidebarBranchWatcher(worktreePaths: string[]): void {
   useEffect(() => {
     return () => {
       for (const path of previousPathsRef.current) {
+        window.gitOps.cancelPending?.(path)
+        useGitStore.getState().clearStatuses?.(path)
         window.gitOps.unwatchBranch(path).catch(() => {
           // Non-critical
         })

@@ -84,6 +84,10 @@ export const useProjectStore = create<ProjectState>()(
 
       // Load all projects from database (already ordered by sort_order ASC)
       loadProjects: async () => {
+        // ProjectList and ProjectDashboard can mount together during layout
+        // restoration. Share the first in-flight load instead of issuing a
+        // duplicate database request.
+        if (get().isLoading) return
         set({ isLoading: true, error: null })
         try {
           const projects = await window.db.project.getAll()

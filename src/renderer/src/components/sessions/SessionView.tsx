@@ -2768,12 +2768,14 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
 
       try {
         // 1. Resolve session/worktree metadata so transcript loading can prefer OpenCode
-        const session = (await window.db.session.get(sessionId)) as DbSession | null
+        const localSession = sessionRecord?.id === sessionId
+          ? (sessionRecord as unknown as DbSession)
+          : null
+        const session = localSession ?? (await window.db.session.get(sessionId)) as DbSession | null
         if (shouldAbortInit()) return
         if (!session) {
           throw new Error('Session not found')
         }
-
         if (session.model_provider_id && session.model_id) {
           sessionModelHydratedRef.current = true
           const hydrateSdk = session.agent_sdk ?? 'opencode'
@@ -2790,7 +2792,6 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
               console.error('Failed to hydrate session model from database:', error)
             })
         }
-
         let wtPath: string | null = workspacePathOverride ?? null
         if (wtPath) {
           setWorktreePath(wtPath)
@@ -3220,7 +3221,11 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
         }
 
         // Create new OpenCode session
-        const connectResult = await window.opencodeOps.connect(wtPath, sessionId)
+        const connectResult = await window.opencodeOps.connect(
+          wtPath,
+          sessionId,
+          session.agent_sdk ?? 'opencode'
+        )
         if (shouldAbortInit()) return
         if (connectResult.success && connectResult.sessionId) {
           setOpencodeSessionId(connectResult.sessionId)
@@ -3363,7 +3368,11 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
       }
 
       if (!activeOpcSessionId) {
-        const connectResult = await window.opencodeOps.connect(worktree.path, sessionId)
+        const connectResult = await window.opencodeOps.connect(
+          worktree.path,
+          sessionId,
+          session.agent_sdk ?? 'opencode'
+        )
         if (!connectResult.success || !connectResult.sessionId) {
           throw new Error(connectResult.error || 'Failed to connect')
         }

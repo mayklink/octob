@@ -24,6 +24,7 @@ import {
 } from './breed-names'
 import { createLogger } from './logger'
 import { normalizeWorktreePath } from './path-utils'
+import { githubRequest, parseGitHubRemote } from './github-api'
 
 const execFileAsync = promisify(execFile)
 const log = createLogger({ component: 'GitService' })
@@ -190,7 +191,14 @@ export class GitService {
     this.repoPath = repoPath
     this.git = simpleGit(repoPath)
     // Background status must not rewrite the index and trigger our own watcher.
-    this.statusGit = simpleGit(repoPath).env({ ...process.env, GIT_OPTIONAL_LOCKS: '0' })
+    // Do not pass pager variables through simple-git's explicit environment
+    // overlay. Recent Git versions reject GIT_PAGER/PAGER in that mode unless
+    // unsafe pager execution is enabled, which makes status/branch fail even
+    // though the same commands work normally from the shell.
+    const statusEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
+    delete statusEnv.GIT_PAGER
+    delete statusEnv.PAGER
+    this.statusGit = simpleGit(repoPath).env(statusEnv)
   }
 
   private readStatus(): Promise<StatusResult> {
@@ -2329,18 +2337,17 @@ export class GitService {
     }
     // Strip remote prefix (e.g. "origin/main" → "main") — gh expects a bare branch name
     const baseBranch = options.baseBranch.replace(/^[^/]+\//, '')
-    const tempFile = join(tmpdir(), `octob-pr-body-${Date.now()}.md`)
     try {
-      writeFileSync(tempFile, options.body, 'utf-8')
-      const { stdout } = await execFileAsync(
-        'gh',
-        ['pr', 'create', '--base', baseBranch, '--title', options.title, '--body-file', tempFile],
-        { cwd: this.repoPath }
-      )
-      const url = stdout.trim()
-      const match = url.match(/\/pull\/(\d+)/)
-      const number = match ? parseInt(match[1], 10) : undefined
-      return { success: true, url, number }
+      const remote = await this.getRemoteUrl()
+      const repository = remote.url ? parseGitHubRemote(remote.url) : null
+      if (!repository) return { success: false, error: 'The origin remote is not a GitHub repository.' }
+      const headBranch = await this.getCurrentBranch()
+      const result = await githubRequest<{ html_url: string; number: number }>(repository, '/pulls', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title: options.title, body: options.body, head: headBranch, base: baseBranch })
+      })
+      return { success: true, url: result.html_url, number: result.number }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
 
@@ -2359,12 +2366,6 @@ export class GitService {
         repoPath: this.repoPath
       })
       return { success: false, error: message }
-    } finally {
-      try {
-        unlinkSync(tempFile)
-      } catch {
-        // ignore cleanup errors
-      }
     }
   }
 

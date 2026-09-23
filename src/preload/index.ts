@@ -200,7 +200,9 @@ const db = {
   // Utility
   schemaVersion: () => ipcRenderer.invoke('db:schemaVersion'),
   tableExists: (tableName: string) => ipcRenderer.invoke('db:tableExists', tableName),
-  getIndexes: () => ipcRenderer.invoke('db:getIndexes')
+  getIndexes: () => ipcRenderer.invoke('db:getIndexes'),
+  // Browser runtime only; native IPC requests are cancelled by their caller lifecycle.
+  cancelPending: (_scope: string): void => {}
 }
 
 // Project operations API (dialog, shell, clipboard)
@@ -830,6 +832,9 @@ const gitOps = {
     error?: string
   }> => ipcRenderer.invoke('git:unwatchWorktree', worktreePath),
 
+  // Browser runtime only; native IPC requests are cancelled by their caller lifecycle.
+  cancelPending: (_worktreePath: string): void => {},
+
   // Start watching a worktree's .git/HEAD for branch changes (lightweight, sidebar use)
   watchBranch: (
     worktreePath: string
@@ -1257,9 +1262,10 @@ const opencodeOps = {
   // Connect to OpenCode for a worktree (lazy starts server if needed)
   connect: (
     worktreePath: string,
-    octobSessionId: string
+    octobSessionId: string,
+    agentSdk?: string
   ): Promise<{ success: boolean; sessionId?: string; error?: string }> =>
-    ipcRenderer.invoke('opencode:connect', worktreePath, octobSessionId),
+    ipcRenderer.invoke('opencode:connect', worktreePath, octobSessionId, agentSdk),
 
   // Reconnect to existing OpenCode session
   reconnect: (

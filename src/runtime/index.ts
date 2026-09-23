@@ -27,6 +27,8 @@ import { handleAttachmentRoute } from './routes/attachments'
 import { handleWatcherRoute } from './routes/watchers'
 import { handleVoiceRoute } from './routes/voice'
 import { handleAssistantRoute } from './routes/assistant'
+import { handleUsageRoute } from './routes/usage'
+import { handleLoggingRoute } from './routes/logging'
 import { runtimeWatchers } from './watcher-runtime'
 import { runtimeAssistantWindow } from './assistant-runtime'
 import { RuntimeAgentService } from './agent-runtime'
@@ -55,6 +57,7 @@ const allowedOrigins = new Set(
 const db = getDatabase()
 const sessions = new RuntimeSessionManager()
 const agents = new RuntimeAgentService(db)
+const debugRequests = process.env.OCTOB_RUNTIME_DEBUG_REQUESTS === '1'
 
 function health(): RuntimeHealth {
   return {
@@ -146,11 +149,37 @@ async function handleRequest(
   if (await handleWatcherRoute(request, response, url, context)) return
   if (await handleVoiceRoute(request, response, url, context)) return
   if (await handleAssistantRoute(request, response, url, context)) return
+  if (await handleLoggingRoute(request, response, url, context)) return
+  if (await handleUsageRoute(request, response, url, context)) return
 
   writeJson(request, response, allowedOrigins, 404, { error: 'not_found' })
 }
 
 const server = createServer((request, response) => {
+  const startedAt = Date.now()
+  const requestPath = request.url?.split('?')[0] ?? '/'
+  if (debugRequests) {
+    console.log('[runtime:req:start]', request.method ?? 'GET', requestPath)
+    response.once('finish', () => {
+      console.log(
+        '[runtime:req:finish]',
+        request.method ?? 'GET',
+        requestPath,
+        response.statusCode,
+        `${Date.now() - startedAt}ms`
+      )
+    })
+    response.once('close', () => {
+      if (!response.writableEnded) {
+        console.log(
+          '[runtime:req:close]',
+          request.method ?? 'GET',
+          requestPath,
+          `${Date.now() - startedAt}ms`
+        )
+      }
+    })
+  }
   void handleRequest(request, response).catch((error) => {
     const message = error instanceof Error ? error.message : String(error)
     const status = message === 'request_body_too_large' ? 413 : 500

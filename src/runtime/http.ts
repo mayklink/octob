@@ -31,17 +31,20 @@ export function writeJson(
 ): void {
   const headers: Record<string, string> = {
     'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store'
+    'cache-control': 'no-store',
+    connection: 'close'
   }
   const origin = getAllowedOrigin(request, allowedOrigins)
   if (origin) {
     headers['access-control-allow-origin'] = origin
-    headers['access-control-allow-headers'] = 'authorization, content-type'
+    headers['access-control-allow-headers'] = 'accept, authorization, content-type'
     headers['access-control-allow-methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS'
     headers.vary = 'Origin'
   }
+  const payload = JSON.stringify(body)
+  headers['content-length'] = String(Buffer.byteLength(payload, 'utf8'))
   response.writeHead(status, headers)
-  response.end(JSON.stringify(body))
+  response.end(payload)
 }
 
 export function writeCorsPreflight(
@@ -61,7 +64,7 @@ export function writeCorsPreflight(
     ...(privateNetworkRequested
       ? { 'access-control-allow-private-network': 'true' }
       : {}),
-    'access-control-allow-headers': 'authorization, content-type',
+    'access-control-allow-headers': 'accept, authorization, content-type',
     'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'access-control-max-age': '600'
   })

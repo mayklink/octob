@@ -94,6 +94,43 @@ import type { HandoffSelectionOverride } from '@/lib/handoffSelection'
 const EMPTY_FILE_INDEX: FlatFile[] = []
 const EMPTY_STRING_ARRAY: string[] = []
 const EMPTY_MESSAGE_ARRAY: OpenCodeMessage[] = []
+
+interface BrowserSpeechRecognitionResult {
+  isFinal: boolean
+  0: { transcript: string }
+}
+
+interface BrowserSpeechRecognitionEvent {
+  results: {
+    length: number
+    [index: number]: BrowserSpeechRecognitionResult
+  }
+}
+
+interface BrowserSpeechRecognition {
+  continuous: boolean
+  interimResults: boolean
+  lang: string
+  onresult: ((event: BrowserSpeechRecognitionEvent) => void) | null
+  onerror: ((event: { error: string }) => void) | null
+  onend: (() => void) | null
+  start: () => void
+  stop: () => void
+}
+
+type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition
+
+function getBrowserSpeechRecognition(): BrowserSpeechRecognitionConstructor | null {
+  if (typeof window === 'undefined' || !/^https?:$/.test(window.location.protocol)) {
+    return null
+  }
+
+  const browserWindow = window as Window & {
+    SpeechRecognition?: BrowserSpeechRecognitionConstructor
+    webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor
+  }
+  return browserWindow.SpeechRecognition ?? browserWindow.webkitSpeechRecognition ?? null
+}
 import { QuestionPrompt } from './QuestionPrompt'
 import { PermissionPrompt } from './PermissionPrompt'
 import { CommandApprovalPrompt } from './CommandApprovalPrompt'
@@ -5179,6 +5216,73 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
   const handleVoiceTranscription = useCallback(async () => {
     if (isRecordingVoice) return voiceLiveRef.current?.stop()
     if (isTranscribingVoice || isOrphanedSession || activePermission) return
+
+    const BrowserRecognition = getBrowserSpeechRecognition()
+    if (typeof window !== 'undefined' && /^https?:$/.test(window.location.protocol)) {
+      if (!BrowserRecognition) {
+        return toast.error('O reconhecimento de voz nativo não está disponível neste navegador')
+      }
+
+      try {
+        const recognition = new BrowserRecognition()
+        let stopped = false
+        let prefix = inputValueRef.current.trimEnd()
+
+        recognition.continuous = true
+        recognition.interimResults = true
+        recognition.lang = 'pt-BR'
+        recognition.onresult = (event) => {
+          let transcript = ''
+          for (let index = 0; index < event.results.length; index += 1) {
+            transcript += event.results[index]?.[0]?.transcript ?? ''
+          }
+          if (!transcript) return
+          const value = `${prefix}${prefix && transcript ? ' ' : ''}${transcript}`
+          handleInputChange(value, value.length)
+        }
+        recognition.onerror = (event) => {
+          if (stopped || event.error === 'aborted' || event.error === 'no-speech') return
+          stopped = true
+          setIsRecordingVoice(false)
+          toast.error(
+            event.error === 'not-allowed'
+              ? 'Permissão de microfone negada no Chrome'
+              : `Falha no reconhecimento de voz: ${event.error}`
+          )
+        }
+        recognition.onend = () => {
+          if (stopped) return
+          // Chrome can end recognition after a pause even with continuous=true.
+          // Preserve the text already inserted and reopen the same recognition
+          // session so the dictation button remains active.
+          prefix = inputValueRef.current.trimEnd()
+          try {
+            recognition.start()
+          } catch {
+            // A concurrent start is harmless; the next onend will retry.
+          }
+        }
+
+        recognition.start()
+        voiceLiveRef.current = {
+          stop: () => {
+            stopped = true
+            try {
+              recognition.stop()
+            } catch {
+              // Recognition may already have ended.
+            }
+            voiceLiveRef.current = null
+            setIsRecordingVoice(false)
+          }
+        }
+        setIsRecordingVoice(true)
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'Não foi possível iniciar o reconhecimento de voz')
+      }
+      return
+    }
+
     const status = await window.voiceTranscriptionOps.status()
     if (!status.binaryAvailable) return toast.error('O mecanismo local de voz não está disponível nesta instalação')
     if (!status.installed) {

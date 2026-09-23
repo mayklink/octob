@@ -358,6 +358,18 @@ export class CodexImplementer implements AgentSdkImplementer {
       return
     }
 
+    if (
+      targetSession?.realtimeActive &&
+      event.kind === 'notification' &&
+      event.method === 'turn/completed'
+    ) {
+      this.sendToRenderer('opencode:stream', {
+        type: 'codex.voice',
+        sessionId: targetSession.octobSessionId,
+        data: { method: event.method, payload: event.payload }
+      })
+    }
+
     // Realtime voice can start agent turns without going through prompt(),
     // whose per-call listener normally forwards Codex tool activity to the UI.
     // Forward those mapped events from the manager listener while voice is active.

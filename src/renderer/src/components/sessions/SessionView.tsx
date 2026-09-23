@@ -5678,8 +5678,7 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
         voiceLiveRef.current = {
           resume: () => {
             if (stopped) return
-            prefix = ''
-            finalTranscript = ''
+            prefix = inputValueRef.current.trimEnd()
             try { recognition.start() } catch { /* Recognition may still be stopping. */ }
           },
           stop: () => {

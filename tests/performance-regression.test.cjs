@@ -325,6 +325,15 @@ test('terminal stream is retried after the PTY is created', () => {
   assert.match(source, /const result = await octobRuntime\.createTerminal\(id, cwd, shell\)[\s\S]*ensureTerminalStream\(id\)/)
 })
 
+test('terminal writes recreate a PTY after a runtime restart', () => {
+  const source = readFileSync(
+    resolve(__dirname, '..', 'src/renderer/src/runtime/web-bridge.ts'),
+    'utf8'
+  )
+  assert.match(source, /isMissingTerminalError\(error\)/)
+  assert.match(source, /recreateTerminal\(id\)[\s\S]*writeTerminal\(id, data\)/)
+})
+
 test('stale terminal lifecycle calls settle after a runtime restart', async () => {
   const ptyService = { has: () => false }
   const { handleTerminalRoute } = load('src/runtime/routes/terminal.ts', {

@@ -414,6 +414,32 @@ function installWorktreeBridge(target: any): void {
 const terminalData = new Map<string, Set<AnyFn>>()
 const terminalExit = new Map<string, Set<AnyFn>>()
 const terminalStreams = new Map<string, () => void>()
+const terminalConfigs = new Map<string, { cwd: string; shell?: string }>()
+const terminalRecreates = new Map<string, Promise<boolean>>()
+
+function isMissingTerminalError(error: unknown): boolean {
+  return error instanceof Error && /terminal_not_found/i.test(error.message)
+}
+
+async function recreateTerminal(terminalId: string): Promise<boolean> {
+  const config = terminalConfigs.get(terminalId)
+  if (!config) return false
+
+  const existing = terminalRecreates.get(terminalId)
+  if (existing) return existing
+
+  const recreate = octobRuntime
+    .createTerminal(terminalId, config.cwd, config.shell)
+    .then((result) => {
+      if (result.success) ensureTerminalStream(terminalId)
+      return result.success
+    })
+    .catch(() => false)
+    .finally(() => terminalRecreates.delete(terminalId))
+  terminalRecreates.set(terminalId, recreate)
+  return recreate
+}
+
 function ensureTerminalStream(terminalId: string): void {
   if (terminalStreams.has(terminalId)) return
   const dispose = octobRuntime.streamTerminal(terminalId, {
@@ -462,12 +488,18 @@ function addTerminalListener(
 function installTerminalBridge(target: any): void {
   target.terminalOps = {
     create: async (id: string, cwd: string, shell?: string) => {
+      terminalConfigs.set(id, { cwd, shell })
       const result = await octobRuntime.createTerminal(id, cwd, shell)
       if (result.success) ensureTerminalStream(id)
       return result
     },
-    write: (id: string, data: string) => {
-      void octobRuntime.writeTerminal(id, data)
+    write: async (id: string, data: string) => {
+      try {
+        await octobRuntime.writeTerminal(id, data)
+      } catch (error) {
+        if (!isMissingTerminalError(error) || !(await recreateTerminal(id))) throw error
+        await octobRuntime.writeTerminal(id, data)
+      }
     },
     resize: async (id: string, cols: number, rows: number) => {
       await octobRuntime.resizeTerminal(id, cols, rows)
@@ -481,6 +513,7 @@ function installTerminalBridge(target: any): void {
     destroy: async (id: string) => {
       terminalStreams.get(id)?.()
       terminalStreams.delete(id)
+      terminalConfigs.delete(id)
       await octobRuntime.destroyTerminal(id)
     },
     onData: (id: string, cb: AnyFn) => addTerminalListener(terminalData, id, cb),

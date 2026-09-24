@@ -247,6 +247,7 @@ declare global {
     assistantOps: {
       show: () => Promise<void>
       hide: () => Promise<void>
+      createSession?: (data: unknown) => Promise<unknown>
       getWorkspacePath: () => Promise<string>
       listTasks: () => Promise<import('@shared/types/assistant').AssistantTask[]>
       removeTask: (sessionId: string) => Promise<import('@shared/types/assistant').AssistantTask[]>
@@ -395,6 +396,7 @@ declare global {
       sessionActivity: {
         list: (sessionId: string) => Promise<SessionActivity[]>
       }
+      cancelPending: (scope: string) => void
       space: {
         list: () => Promise<Space[]>
         create: (data: { name: string; icon_type?: string; icon_value?: string }) => Promise<Space>
@@ -586,6 +588,9 @@ declare global {
       configureCodexBinaryPath: (
         binaryPath: string
       ) => Promise<{ success: boolean; path: string | null; error?: string }>
+      codexVoiceResumeCommand: (
+        threadId: string
+      ) => Promise<{ success: boolean; command?: { file: string; args: string[] }; error?: string }>
       quitApp: () => Promise<void>
       openInApp: (appName: string, path: string) => Promise<{ success: boolean; error?: string }>
       openInChrome: (
@@ -620,7 +625,8 @@ declare global {
       // Connect to OpenCode for a worktree (lazy starts server if needed)
       connect: (
         worktreePath: string,
-        octobSessionId: string
+        octobSessionId: string,
+        agentSdk?: string
       ) => Promise<{ success: boolean; sessionId?: string; error?: string }>
       // Reconnect to existing OpenCode session
       reconnect: (
@@ -663,6 +669,8 @@ declare global {
         worktreePath: string,
         opencodeSessionId: string
       ) => Promise<{ success: boolean; error?: string }>
+      codexVoiceStart: (sessionId: string, sdp: string) => Promise<{ success: boolean; error?: string }>
+      codexVoiceStop: (sessionId: string) => Promise<{ success: boolean; error?: string }>
       // Get messages from an OpenCode session
       getMessages: (
         worktreePath: string,
@@ -964,7 +972,8 @@ declare global {
       create: (
         terminalId: string,
         cwd: string,
-        shell?: string
+        shell?: string,
+        command?: { file: string; args: string[] }
       ) => Promise<{ success: boolean; cols?: number; rows?: number; error?: string }>
       write: (terminalId: string, data: string) => void
       resize: (terminalId: string, cols: number, rows: number) => Promise<void>
@@ -1083,6 +1092,8 @@ declare global {
         success: boolean
         error?: string
       }>
+      // Cancel pending browser-runtime read requests for a worktree
+      cancelPending: (worktreePath: string) => void
       // Start watching a worktree's .git/HEAD for branch changes (lightweight, sidebar use)
       watchBranch: (worktreePath: string) => Promise<{
         success: boolean

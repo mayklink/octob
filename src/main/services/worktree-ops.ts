@@ -7,7 +7,7 @@ import { scriptRunner } from './script-runner'
 import { assignPort, releasePort } from './port-registry'
 import { createLogger } from './logger'
 import type { DatabaseService } from '../db/database'
-import { APP_SETTINGS_DB_KEY } from '@shared/types/settings'
+import { APP_SETTINGS_DB_KEY } from '../../shared/types/settings'
 
 const log = createLogger({ component: 'WorktreeOps' })
 
@@ -264,10 +264,14 @@ export async function deleteWorktreeOp(
       if (forced.success) {
         primary = { success: true }
       } else {
-        log.error('Forced worktree cleanup did not remove folder; archiving Octob entry anyway', {
-          worktreePath: params.worktreePath,
-          error: forced.error
-        })
+        log.error(
+          'Forced worktree cleanup did not remove folder; archiving Octob entry anyway',
+          undefined,
+          {
+            worktreePath: params.worktreePath,
+            error: forced.error
+          }
+        )
       }
     }
 

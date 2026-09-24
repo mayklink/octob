@@ -29,12 +29,22 @@ export function registerTerminalHandlers(mainWindow: BrowserWindow): void {
   // Create a PTY for a worktree
   ipcMain.handle(
     'terminal:create',
-    async (_event, terminalId: string, cwd: string, shell?: string) => {
+    async (
+      _event,
+      terminalId: string,
+      cwd: string,
+      shell?: string,
+      command?: { file: string; args: string[] }
+    ) => {
       log.info('IPC: terminal:create', { terminalId, cwd, shell })
       try {
         // Check if PTY already exists before creating — if it does, skip listener registration
         const alreadyExists = ptyService.has(terminalId)
-        const { cols, rows } = ptyService.create(terminalId, { cwd, shell: shell || undefined })
+        const { cols, rows } = ptyService.create(terminalId, {
+          cwd,
+          shell: shell || undefined,
+          command
+        })
 
         if (alreadyExists) {
           log.info('PTY already exists, skipping listener registration', { terminalId })

@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "outDir": "out/runtime-node",
+    "rootDir": "src",
+    "strict": true,
+    "noCheck": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["src/shared/*"]
+    }
+  },
+  "include": [
+    "src/runtime/**/*.ts",
+    "src/shared/**/*.ts",
+    "src/main/db/**/*.ts",
+    "src/main/services/**/*.ts"
+  ]
+}

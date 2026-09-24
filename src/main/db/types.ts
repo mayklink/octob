@@ -109,6 +109,7 @@ export interface Session {
 }
 
 export interface SessionCreate {
+  id?: string
   worktree_id: string | null
   project_id: string
   connection_id?: string | null

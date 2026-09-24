@@ -78,14 +78,24 @@ function toolActivityLabel(parts: StreamingPart[]): string {
     inspected: 0,
     other: 0
   }
+  const changedFiles = new Set<string>()
 
   for (const part of parts) {
     if (!part.toolUse) continue
     const name = part.toolUse.name.toLowerCase()
     if (/(bash|shell|command|terminal|exec)/.test(name)) categories.commands += 1
-    else if (/(edit|write|patch|create|delete|move)/.test(name)) categories.changes += 1
+    else if (/(edit|write|patch|create|delete|move|filechange|file_change)/.test(name)) categories.changes += 1
     else if (/(read|search|find|list|glob|grep|inspect)/.test(name)) categories.inspected += 1
     else categories.other += 1
+
+    const changes = part.toolUse.input.changes
+    if (Array.isArray(changes)) {
+      for (const change of changes) {
+        if (!change || typeof change !== 'object') continue
+        const path = (change as { path?: unknown }).path
+        if (typeof path === 'string' && path.trim()) changedFiles.add(path)
+      }
+    }
   }
 
   const labels: string[] = []
@@ -93,6 +103,10 @@ function toolActivityLabel(parts: StreamingPart[]): string {
   if (categories.commands) labels.push(`${categories.commands} ${categories.commands === 1 ? 'command' : 'commands'}`)
   if (categories.inspected) labels.push(`${categories.inspected} ${categories.inspected === 1 ? 'inspection' : 'inspections'}`)
   if (categories.other) labels.push(`${categories.other} other ${categories.other === 1 ? 'action' : 'actions'}`)
+  if (changedFiles.size > 0) {
+    const paths = [...changedFiles]
+    labels.push(`${paths.slice(0, 2).join(', ')}${paths.length > 2 ? ` +${paths.length - 2}` : ''}`)
+  }
   return labels.join(' · ')
 }
 

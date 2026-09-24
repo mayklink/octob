@@ -24,6 +24,8 @@ interface TerminalViewProps {
   terminalId: string
   cwd: string
   isVisible?: boolean
+  command?: { file: string; args: string[] }
+  forceXterm?: boolean
 }
 
 /** Imperative handle exposed to parent (TerminalManager) */
@@ -44,7 +46,7 @@ function createBackend(type: TerminalBackendType): ITerminalBackend {
 }
 
 export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(function TerminalView(
-  { terminalId, cwd, isVisible = true },
+  { terminalId, cwd, isVisible = true, command, forceXterm = false },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -333,6 +335,7 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(fu
           cursorStyle: config.cursorStyle,
           scrollback: config.scrollbackLimit,
           shell: config.shell,
+          command,
           // Seed visibility from the current UI state. Critical when the
           // backend is recreated (e.g. fontSize change, cwd change, StrictMode
           // double-mount) while the bottom panel is collapsed: defaulting to
@@ -353,7 +356,7 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(fu
       backendRef.current = backend
       window.terminalOps.setFocus(terminalId, effectiveVisibleRef.current).catch(() => {})
     },
-    [terminalId, cwd, destroyTerminal]
+    [terminalId, cwd, destroyTerminal, command]
   )
 
   // Handle restart — destroy old PTY and re-create terminal
@@ -377,12 +380,12 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(fu
     }
 
     await restartTerminal(terminalId, cwd, shell)
-    setupTerminal(embeddedTerminalBackend || 'xterm')
-  }, [terminalId, cwd, restartTerminal, setupTerminal, embeddedTerminalBackend])
+    setupTerminal(forceXterm ? 'xterm' : embeddedTerminalBackend || 'xterm')
+  }, [terminalId, cwd, restartTerminal, setupTerminal, embeddedTerminalBackend, forceXterm])
 
   // Initialize terminal on mount, and re-create when backend setting changes
   useEffect(() => {
-    setupTerminal(embeddedTerminalBackend || 'xterm')
+    setupTerminal(forceXterm ? 'xterm' : embeddedTerminalBackend || 'xterm')
 
     return () => {
       // Invalidate the in-flight setupTerminal so its post-await continuation
@@ -399,7 +402,7 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(fu
       initializedRef.current = null
       activeBackendTypeRef.current = null
     }
-  }, [setupTerminal, embeddedTerminalBackend])
+  }, [setupTerminal, embeddedTerminalBackend, forceXterm])
 
   // Restart the Ghostty terminal when font size changes so the new size takes effect.
   // We track the previous value so the effect only fires on actual changes, not on mount.

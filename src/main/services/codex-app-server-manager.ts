@@ -662,6 +662,28 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return Array.from(this.sessions.values(), ({ session }) => ({ ...session }))
   }
 
+  async startRealtimeWebrtc(threadId: string, sdp: string): Promise<void> {
+    const context = this.sessions.get(threadId)
+    if (!context?.session.threadId) throw new Error('No active Codex thread for voice session')
+    if (!sdp.trim()) throw new Error('WebRTC offer SDP is empty')
+    context.lastActivityAt = Date.now()
+    await this.sendRequest(context, 'thread/realtime/start', {
+      threadId: context.session.threadId,
+      // The frameless Codex Live model selects AVAS's Quicksilver v2 contract.
+      // The generic realtime default still takes the legacy V1 signaling path.
+      model: 'gpt-live-1-codex',
+      outputModality: 'audio',
+      version: 'v3',
+      transport: { type: 'webrtc', sdp }
+    }, 30_000)
+  }
+
+  async stopRealtime(threadId: string): Promise<void> {
+    const context = this.sessions.get(threadId)
+    if (!context?.session.threadId) return
+    await this.sendRequest(context, 'thread/realtime/stop', { threadId: context.session.threadId }, 10_000)
+  }
+
   async sendTurn(threadId: string, input: CodexTurnInput): Promise<CodexTurnStartResult> {
     const context = this.sessions.get(threadId)
     if (!context) {

@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "name": "octob-runtime-native-host",
+  "version": "1.0.0",
+  "dependencies": {
+    "better-sqlite3": "12.8.0",
+    "node-pty": "1.1.0"
+  },
+  "devDependencies": {
+    "postject": "^1.0.0-alpha.6"
+  }
+}

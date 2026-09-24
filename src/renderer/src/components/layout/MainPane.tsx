@@ -69,6 +69,8 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
   // Subscribe to session maps so terminal list stays reactive
   const sessionsByWorktree = useSessionStore((state) => state.sessionsByWorktree)
   const sessionsByConnection = useSessionStore((state) => state.sessionsByConnection)
+  const sessionsLoadedForSelection =
+    !selectedWorktreeId || sessionsByWorktree.has(selectedWorktreeId)
 
   // Look up the agent_sdk for a given session ID
   const getAgentSdk = useCallback((sid: string | null): string | null => {
@@ -292,7 +294,7 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
     }
 
     // Loading sessions (including auto-start)
-    if (isLoading) {
+    if (isLoading && !sessionsLoadedForSelection) {
       return (
         <div className="flex-1 flex items-center justify-center" data-testid="session-loading">
           <div className="text-center">

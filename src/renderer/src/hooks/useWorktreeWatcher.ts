@@ -39,6 +39,8 @@ export function useWorktreeWatcher(): void {
 
     // Stop watching the previous worktree
     if (prevPath) {
+      window.gitOps.cancelPending?.(prevPath)
+      useGitStore.getState().clearStatuses?.(prevPath)
       window.gitOps.unwatchWorktree(prevPath).catch(() => {
         // Non-critical - watcher may already be stopped
       })
@@ -80,6 +82,8 @@ export function useWorktreeWatcher(): void {
       const currentPath = previousPathRef.current
       previousPathRef.current = null
       if (currentPath) {
+        window.gitOps.cancelPending?.(currentPath)
+        useGitStore.getState().clearStatuses?.(currentPath)
         window.gitOps.unwatchWorktree(currentPath).catch(() => {
           // Non-critical
         })

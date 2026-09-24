@@ -17,7 +17,20 @@ function load(file, mocks = {}, globals = {}) {
   vm.runInNewContext(code, {
     module, exports: module.exports, console, process, setTimeout, clearTimeout,
     __dirname: dirname(filename),
-    require: (id) => Object.hasOwn(mocks, id) ? mocks[id] : localRequire(id),
+    require: (id) => {
+      if (Object.hasOwn(mocks, id)) return mocks[id]
+      try {
+        return localRequire(id)
+      } catch (error) {
+        // The source tree uses TypeScript extensionless imports. Node's native
+        // CommonJS resolver does not probe .ts files, while the production
+        // bundlers do. Keep this lightweight loader aligned with that behavior.
+        if (error?.code === 'MODULE_NOT_FOUND' && !/[.]\w+$/.test(id)) {
+          return localRequire(`${id}.ts`)
+        }
+        throw error
+      }
+    },
     ...globals
   }, { filename })
   return module.exports
@@ -113,6 +126,7 @@ for (const hook of ['useWorktreeWatcher', 'useConnectionWatcher', 'useSidebarBra
   test(`${hook} reacquires watchers after React effect replay`, () => {
     const effects = []
     let references = 0
+    let branchLoads = 0
     const ops = {
       watchWorktree: async () => { references++ },
       unwatchWorktree: async () => { references-- },
@@ -133,7 +147,7 @@ for (const hook of ['useWorktreeWatcher', 'useConnectionWatcher', 'useSidebarBra
         connections: [{ id: 'connection', members: [{ worktree_path: '/repo' }, { worktree_path: '/repo' }] }]
       }) },
       '@/stores/useGitStore': { useGitStore: { getState: () => ({
-        loadFileStatuses() {}, loadBranchInfo() {}, loadStatusesForPaths() {}
+        loadFileStatuses() {}, loadBranchInfo() { branchLoads++ }, loadStatusesForPaths() {}
       }) } }
     }, { window: { gitOps: ops } })
     hooks[hook](['/repo'])
@@ -145,8 +159,39 @@ for (const hook of ['useWorktreeWatcher', 'useConnectionWatcher', 'useSidebarBra
     assert.equal(references, 1)
     cleanups.forEach((cleanup) => cleanup?.())
     assert.equal(references, 0)
+    if (hook === 'useSidebarBranchWatcher') assert.equal(branchLoads, 0)
   })
 }
+
+test('runtime Git watcher watches metadata instead of recursively scanning the worktree', async () => {
+  const watched = []
+  const watcher = { on() { return this }, close: async () => {} }
+  const { RuntimeWatcherService } = load('src/runtime/watcher-runtime.ts', {
+    chokidar: {
+      watch: (paths, options) => {
+        watched.push({ paths, options })
+        return watcher
+      }
+    },
+    'node:fs': {
+      existsSync: (path) => /[\\/]\.git$/.test(path),
+      statSync: () => ({ isDirectory: () => true }),
+      readFileSync: () => ''
+    },
+    '../main/services/logger': logger
+  })
+  const service = new RuntimeWatcherService()
+  await service.watchGit('/repo')
+
+  assert.equal(watched.length, 1)
+  const gitDir = require('node:path').join('/repo', '.git')
+  assert.equal(JSON.stringify(watched[0].paths), JSON.stringify([
+    require('node:path').join(gitDir, 'HEAD'),
+    require('node:path').join(gitDir, 'index'),
+    require('node:path').join(gitDir, 'refs')
+  ]))
+  assert.equal(watched[0].options.depth, 4)
+})
 
 test('delayed PTY exit preserves its replacement and releases old listeners', () => {
   const processes = []
@@ -198,4 +243,128 @@ test('Git file and branch reads share a process and release failed requests', as
   assert.equal(calls, 3)
   next.resolve({ files: [], conflicted: [] })
   assert.equal((await retry).success, true)
+})
+
+test('runtime requests reject instead of remaining pending when their timeout expires', async () => {
+  let aborted = false
+  const { OctobRuntimeClient } = load('src/renderer/src/runtime/runtime-client.ts', {}, {
+    Headers,
+    AbortController,
+    fetch: (_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        aborted = true
+        const error = new Error('request aborted')
+        error.name = 'AbortError'
+        reject(error)
+      }, { once: true })
+    })
+  })
+  const client = new OctobRuntimeClient('http://runtime.test')
+
+  await assert.rejects(
+    client.request('/stalled', { auth: false, timeoutMs: 20 }),
+    /Octob Runtime request timed out after 20ms: \/stalled/
+  )
+  assert.equal(aborted, true)
+})
+
+test('browser event streams use a separate loopback origin from control requests', () => {
+  const { getStreamRuntimeUrl } = load('src/renderer/src/runtime/runtime-client.ts', {}, {
+    URL,
+    window: { location: { protocol: 'http:' } }
+  })
+  assert.equal(
+    getStreamRuntimeUrl('http://127.0.0.1:47821'),
+    'http://localhost:47821'
+  )
+  assert.equal(
+    getStreamRuntimeUrl('http://localhost:47821'),
+    'http://127.0.0.1:47821'
+  )
+})
+
+test('agent prompts are accepted without holding the HTTP response open', async () => {
+  const { handleAgentRoute } = load('src/runtime/routes/agents.ts', {
+    '../../main/services/agent-event-bus': { onAgentStreamEvent: () => () => {} },
+    '../path-guard': { isPathAllowed: () => true },
+    '../http': {
+      readJsonBody: async () => ({
+        worktreePath: '/repo',
+        sessionId: 'backend-session',
+        message: 'run this'
+      }),
+      getAllowedOrigin: () => null,
+      writeJson: (_request, response, _origins, status, body) => { response.result = { status, body } }
+    }
+  })
+  const context = {
+    db: {},
+    agents: {
+      startPrompt: () => ({ success: true, accepted: true, operationId: 'op-1' })
+    },
+    allowedOrigins: new Set()
+  }
+  const response = {}
+  await handleAgentRoute(
+    { method: 'POST' },
+    response,
+    new URL('http://runtime.test/v1/agents/prompt'),
+    context
+  )
+  assert.equal(response.result.status, 202)
+  assert.equal(response.result.body.accepted, true)
+  assert.equal(response.result.body.operationId, 'op-1')
+})
+
+test('terminal stream is retried after the PTY is created', () => {
+  const source = readFileSync(
+    resolve(__dirname, '..', 'src/renderer/src/runtime/web-bridge.ts'),
+    'utf8'
+  )
+  assert.match(source, /onError:\s*\(\) => \{[\s\S]*terminalStreams\.delete\(terminalId\)/)
+  assert.match(source, /const result = await octobRuntime\.createTerminal\(id, cwd, shell\)[\s\S]*ensureTerminalStream\(id\)/)
+})
+
+test('terminal writes recreate a PTY after a runtime restart', () => {
+  const source = readFileSync(
+    resolve(__dirname, '..', 'src/renderer/src/runtime/web-bridge.ts'),
+    'utf8'
+  )
+  assert.match(source, /isMissingTerminalError\(error\)/)
+  assert.match(source, /recreateTerminal\(id\)[\s\S]*writeTerminal\(id, data\)/)
+})
+
+test('stale terminal lifecycle calls settle after a runtime restart', async () => {
+  const ptyService = { has: () => false }
+  const { handleTerminalRoute } = load('src/runtime/routes/terminal.ts', {
+    '../../main/services/pty-service': { ptyService },
+    '../path-guard': { isPathAllowed: () => true },
+    '../http': {
+      readJsonBody: async () => ({ terminalId: 'stale-terminal', focused: true }),
+      getAllowedOrigin: () => null,
+      writeJson: (_request, response, _origins, status, body) => { response.result = { status, body } }
+    }
+  })
+  const context = { db: {}, allowedOrigins: new Set() }
+
+  const focusResponse = {}
+  await handleTerminalRoute(
+    { method: 'POST' },
+    focusResponse,
+    new URL('http://runtime.test/v1/terminal/focus'),
+    context
+  )
+  assert.equal(focusResponse.result.status, 200)
+  assert.equal(focusResponse.result.body.success, true)
+  assert.equal(focusResponse.result.body.terminalMissing, true)
+
+  const writeResponse = {}
+  await handleTerminalRoute(
+    { method: 'POST' },
+    writeResponse,
+    new URL('http://runtime.test/v1/terminal/write'),
+    context
+  )
+  assert.equal(writeResponse.result.status, 404)
+  assert.equal(writeResponse.result.body.error, 'terminal_not_found')
 })

@@ -39,6 +39,8 @@ export function useConnectionWatcher(): void {
     // Stop watching previous paths
     for (const path of prevPaths) {
       if (memberPaths.includes(path)) continue
+      window.gitOps.cancelPending?.(path)
+      useGitStore.getState().clearStatuses?.(path)
       window.gitOps.unwatchWorktree(path).catch(() => {
         // Non-critical - watcher may already be stopped
       })
@@ -82,6 +84,8 @@ export function useConnectionWatcher(): void {
   useEffect(() => {
     return () => {
       for (const path of previousPathsRef.current) {
+        window.gitOps.cancelPending?.(path)
+        useGitStore.getState().clearStatuses?.(path)
         window.gitOps.unwatchWorktree(path).catch(() => {
           // Non-critical
         })

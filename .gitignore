@@ -49,6 +49,12 @@ scripts/*
 !scripts/ensure-electron-native-modules.cjs
 !scripts/electron-native-fingerprint.cjs
 !scripts/prepare-whisper-sidecar.cjs
+!scripts/run-runtime.cjs
+!scripts/run-web-local.cjs
+!scripts/runtime-require-hook.cjs
+!scripts/ensure-runtime-native-modules.cjs
+!scripts/runtime-sea-bootstrap.cjs
+!scripts/build-runtime-package.cjs
 
 # Claude worktrees
 .claude/worktrees/

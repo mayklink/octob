@@ -1,5 +1,5 @@
 import simpleGit, { SimpleGit, BranchSummary, StatusResult } from 'simple-git'
-import { app } from 'electron'
+import { homedir } from 'os'
 import { join, basename, dirname, normalize, resolve } from 'path'
 import {
   existsSync,
@@ -15,7 +15,7 @@ import { rm } from 'fs/promises'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { platform, tmpdir } from 'os'
-import { getImageMimeType } from '@shared/types/file-utils'
+import { getImageMimeType } from '../../shared/types/file-utils'
 import {
   selectUniqueBreedName,
   ALL_BREED_NAMES,
@@ -24,6 +24,7 @@ import {
 } from './breed-names'
 import { createLogger } from './logger'
 import { normalizeWorktreePath } from './path-utils'
+import { githubRequest, parseGitHubRemote } from './github-api'
 
 const execFileAsync = promisify(execFile)
 const log = createLogger({ component: 'GitService' })
@@ -190,7 +191,14 @@ export class GitService {
     this.repoPath = repoPath
     this.git = simpleGit(repoPath)
     // Background status must not rewrite the index and trigger our own watcher.
-    this.statusGit = simpleGit(repoPath).env({ ...process.env, GIT_OPTIONAL_LOCKS: '0' })
+    // Do not pass pager variables through simple-git's explicit environment
+    // overlay. Recent Git versions reject GIT_PAGER/PAGER in that mode unless
+    // unsafe pager execution is enabled, which makes status/branch fail even
+    // though the same commands work normally from the shell.
+    const statusEnv = { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
+    delete statusEnv.GIT_PAGER
+    delete statusEnv.PAGER
+    this.statusGit = simpleGit(repoPath).env(statusEnv)
   }
 
   private readStatus(): Promise<StatusResult> {
@@ -318,7 +326,7 @@ export class GitService {
    * Get the base directory for all Octob worktrees
    */
   static getWorktreesBaseDir(): string {
-    return join(app.getPath('home'), '.octob-worktrees')
+    return join(homedir(), '.octob-worktrees')
   }
 
   /**
@@ -1898,7 +1906,7 @@ export class GitService {
 
       // Pull branch if not creating from PR (PR fetch happens separately)
       const autoPull = options?.autoPull !== false // Default true
-      let pullResult = { success: true, updated: false }
+      let pullResult: GitPullResult = { success: true, updated: false }
       if (prNumber != null) {
         // Fetch the PR ref once — FETCH_HEAD stays valid for subsequent retries
         await this.git.raw(['fetch', 'origin', `pull/${prNumber}/head`])
@@ -2329,18 +2337,17 @@ export class GitService {
     }
     // Strip remote prefix (e.g. "origin/main" → "main") — gh expects a bare branch name
     const baseBranch = options.baseBranch.replace(/^[^/]+\//, '')
-    const tempFile = join(tmpdir(), `octob-pr-body-${Date.now()}.md`)
     try {
-      writeFileSync(tempFile, options.body, 'utf-8')
-      const { stdout } = await execFileAsync(
-        'gh',
-        ['pr', 'create', '--base', baseBranch, '--title', options.title, '--body-file', tempFile],
-        { cwd: this.repoPath }
-      )
-      const url = stdout.trim()
-      const match = url.match(/\/pull\/(\d+)/)
-      const number = match ? parseInt(match[1], 10) : undefined
-      return { success: true, url, number }
+      const remote = await this.getRemoteUrl()
+      const repository = remote.url ? parseGitHubRemote(remote.url) : null
+      if (!repository) return { success: false, error: 'The origin remote is not a GitHub repository.' }
+      const headBranch = await this.getCurrentBranch()
+      const result = await githubRequest<{ html_url: string; number: number }>(repository, '/pulls', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title: options.title, body: options.body, head: headBranch, base: baseBranch })
+      })
+      return { success: true, url: result.html_url, number: result.number }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
 
@@ -2359,12 +2366,6 @@ export class GitService {
         repoPath: this.repoPath
       })
       return { success: false, error: message }
-    } finally {
-      try {
-        unlinkSync(tempFile)
-      } catch {
-        // ignore cleanup errors
-      }
     }
   }
 
@@ -2463,7 +2464,7 @@ export function canonicalizeBranchName(title: string): string {
 }
 
 // Re-export from shared so backend callers can still import from git-service
-export { canonicalizeTicketTitle } from '@shared/types/branch-utils'
+export { canonicalizeTicketTitle } from '../../shared/types/branch-utils'
 
 /**
  * Check if a branch name is an auto-generated name (breed or legacy city name).

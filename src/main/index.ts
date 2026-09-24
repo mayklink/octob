@@ -47,6 +47,7 @@ import { resolveClaudeBinaryPath } from './services/claude-binary-resolver'
 import {
   resolveCodexBinaryPath,
   resolveConfiguredCodexBinaryPath,
+  resolveCodexVoiceResumeCommand,
   setConfiguredCodexBinaryPath,
   supportsCodexAppServer
 } from './services/codex-binary-resolver'
@@ -466,6 +467,14 @@ function registerSystemHandlers(openCodeLaunchSpec: OpenCodeLaunchSpec | null): 
       error: requestedPath ? configuredAvailable : available
         ? undefined
         : 'Codex executable was not found or does not support app-server.'
+    }
+  })
+
+  ipcMain.handle('system:codexVoiceResumeCommand', (_event, threadId: string) => {
+    try {
+      return { success: true, command: resolveCodexVoiceResumeCommand(threadId) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
 

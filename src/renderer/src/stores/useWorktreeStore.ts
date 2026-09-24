@@ -11,6 +11,9 @@ import { deleteBuffer } from '@/lib/output-ring-buffer'
 import { registerWorktreeClear, clearConnectionSelection } from './store-coordination'
 import { useGlobalAssistantStore } from './useGlobalAssistantStore'
 
+const pendingWorktreeLoads = new Map<string, Promise<void>>()
+const pendingWorktreeSyncs = new Map<string, Promise<void>>()
+
 /** Fire-and-forget: run setup script for a worktree, subscribing to output events
  *  so output is captured even when SetupTab is not mounted. */
 export function fireSetupScript(projectId: string, worktreeId: string, cwd: string): void {
@@ -320,46 +323,59 @@ export const useWorktreeStore = create<WorktreeState>((set, get) => ({
   archivingWorktreeIds: new Set(),
 
   // Load worktrees for a project from database
-  loadWorktrees: async (projectId: string) => {
-    set({ isLoading: true, error: null })
-    try {
-      const worktrees = await window.db.worktree.getActiveByProject(projectId)
-      // Sort: non-default worktrees by last_accessed_at descending, default worktree last
-      const sortedWorktrees = worktrees.sort((a, b) => {
-        if (a.is_default && !b.is_default) return 1
-        if (!a.is_default && b.is_default) return -1
-        return new Date(b.last_accessed_at).getTime() - new Date(a.last_accessed_at).getTime()
-      })
-      set((state) => {
-        const newMap = new Map(state.worktreesByProject)
-        newMap.set(projectId, sortedWorktrees)
-        return { worktreesByProject: newMap, isLoading: false }
-      })
+  loadWorktrees: (projectId: string) => {
+    const existing = pendingWorktreeLoads.get(projectId)
+    if (existing) return existing
 
-      // Hydrate last-message timestamps from DB into the status store
-      const statusStore = useWorktreeStatusStore.getState()
-      for (const wt of sortedWorktrees) {
-        if (wt.last_message_at) {
-          statusStore.setLastMessageTime(wt.id, wt.last_message_at)
-        }
-      }
+    const promise = (async () => {
+      set({ isLoading: true, error: null })
+      try {
+        const worktrees = await window.db.worktree.getActiveByProject(projectId)
+        // Sort: non-default worktrees by last_accessed_at descending, default worktree last
+        const sortedWorktrees = worktrees.sort((a, b) => {
+          if (a.is_default && !b.is_default) return 1
+          if (!a.is_default && b.is_default) return -1
+          return new Date(b.last_accessed_at).getTime() - new Date(a.last_accessed_at).getTime()
+        })
+        set((state) => {
+          const newMap = new Map(state.worktreesByProject)
+          newMap.set(projectId, sortedWorktrees)
+          return { worktreesByProject: newMap, isLoading: false }
+        })
 
-      // Hydrate attached PRs from DB into the git store
-      const gitStore = useGitStore.getState()
-      for (const wt of sortedWorktrees) {
-        if (wt.github_pr_number && wt.github_pr_url) {
-          gitStore.setAttachedPR(wt.id, {
-            number: wt.github_pr_number,
-            url: wt.github_pr_url
-          })
+        // Hydrate last-message timestamps from DB into the status store
+        const statusStore = useWorktreeStatusStore.getState()
+        for (const wt of sortedWorktrees) {
+          if (wt.last_message_at) {
+            statusStore.setLastMessageTime(wt.id, wt.last_message_at)
+          }
         }
+
+        // Hydrate attached PRs from DB into the git store
+        const gitStore = useGitStore.getState()
+        for (const wt of sortedWorktrees) {
+          if (wt.github_pr_number && wt.github_pr_url) {
+            gitStore.setAttachedPR(wt.id, {
+              number: wt.github_pr_number,
+              url: wt.github_pr_url
+            })
+          }
+        }
+      } catch (error) {
+        set({
+          error: error instanceof Error ? error.message : 'Failed to load worktrees',
+          isLoading: false
+        })
       }
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : 'Failed to load worktrees',
-        isLoading: false
-      })
-    }
+    })()
+
+    pendingWorktreeLoads.set(projectId, promise)
+    void promise.finally(() => {
+      if (pendingWorktreeLoads.get(projectId) === promise) {
+        pendingWorktreeLoads.delete(projectId)
+      }
+    })
+    return promise
   },
 
   // Create a new worktree
@@ -728,14 +744,27 @@ export const useWorktreeStore = create<WorktreeState>((set, get) => ({
   },
 
   // Sync worktrees with actual git state
-  syncWorktrees: async (projectId: string, projectPath: string) => {
-    try {
-      await window.worktreeOps.sync({ projectId, projectPath })
-    } catch {
-      // Ignore sync errors
-    } finally {
-      await get().loadWorktrees(projectId)
-    }
+  syncWorktrees: (projectId: string, projectPath: string) => {
+    const existing = pendingWorktreeSyncs.get(projectId)
+    if (existing) return existing
+
+    const promise = (async () => {
+      try {
+        await window.worktreeOps.sync({ projectId, projectPath })
+      } catch {
+        // Ignore sync errors
+      } finally {
+        await get().loadWorktrees(projectId)
+      }
+    })()
+
+    pendingWorktreeSyncs.set(projectId, promise)
+    void promise.finally(() => {
+      if (pendingWorktreeSyncs.get(projectId) === promise) {
+        pendingWorktreeSyncs.delete(projectId)
+      }
+    })
+    return promise
   },
 
   // Get worktrees for a specific project (applies custom order if available)

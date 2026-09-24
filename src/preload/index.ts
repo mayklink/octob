@@ -200,7 +200,9 @@ const db = {
   // Utility
   schemaVersion: () => ipcRenderer.invoke('db:schemaVersion'),
   tableExists: (tableName: string) => ipcRenderer.invoke('db:tableExists', tableName),
-  getIndexes: () => ipcRenderer.invoke('db:getIndexes')
+  getIndexes: () => ipcRenderer.invoke('db:getIndexes'),
+  // Browser runtime only; native IPC requests are cancelled by their caller lifecycle.
+  cancelPending: (_scope: string): void => {}
 }
 
 // Project operations API (dialog, shell, clipboard)
@@ -479,6 +481,10 @@ const systemOps = {
     binaryPath: string
   ): Promise<{ success: boolean; path: string | null; error?: string }> =>
     ipcRenderer.invoke('system:configureCodexBinaryPath', binaryPath),
+  codexVoiceResumeCommand: (
+    threadId: string
+  ): Promise<{ success: boolean; command?: { file: string; args: string[] }; error?: string }> =>
+    ipcRenderer.invoke('system:codexVoiceResumeCommand', threadId),
 
   // Quit the app (needed for macOS where window.close() doesn't quit)
   quitApp: (): Promise<void> => ipcRenderer.invoke('system:quitApp'),
@@ -829,6 +835,9 @@ const gitOps = {
     success: boolean
     error?: string
   }> => ipcRenderer.invoke('git:unwatchWorktree', worktreePath),
+
+  // Browser runtime only; native IPC requests are cancelled by their caller lifecycle.
+  cancelPending: (_worktreePath: string): void => {},
 
   // Start watching a worktree's .git/HEAD for branch changes (lightweight, sidebar use)
   watchBranch: (
@@ -1257,9 +1266,10 @@ const opencodeOps = {
   // Connect to OpenCode for a worktree (lazy starts server if needed)
   connect: (
     worktreePath: string,
-    octobSessionId: string
+    octobSessionId: string,
+    agentSdk?: string
   ): Promise<{ success: boolean; sessionId?: string; error?: string }> =>
-    ipcRenderer.invoke('opencode:connect', worktreePath, octobSessionId),
+    ipcRenderer.invoke('opencode:connect', worktreePath, octobSessionId, agentSdk),
 
   // Reconnect to existing OpenCode session
   reconnect: (
@@ -1330,6 +1340,10 @@ const opencodeOps = {
     opencodeSessionId: string
   ): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('opencode:disconnect', worktreePath, opencodeSessionId),
+
+  codexVoiceStart: (sessionId: string, sdp: string) =>
+    ipcRenderer.invoke('codex:voice:start', sessionId, sdp),
+  codexVoiceStop: (sessionId: string) => ipcRenderer.invoke('codex:voice:stop', sessionId),
 
   // Get messages from an OpenCode session
   getMessages: (
@@ -1715,9 +1729,10 @@ const terminalOps = {
   create: (
     terminalId: string,
     cwd: string,
-    shell?: string
+    shell?: string,
+    command?: { file: string; args: string[] }
   ): Promise<{ success: boolean; cols?: number; rows?: number; error?: string }> =>
-    ipcRenderer.invoke('terminal:create', terminalId, cwd, shell),
+    ipcRenderer.invoke('terminal:create', terminalId, cwd, shell, command),
 
   write: (terminalId: string, data: string): void =>
     ipcRenderer.send('terminal:write', terminalId, data),

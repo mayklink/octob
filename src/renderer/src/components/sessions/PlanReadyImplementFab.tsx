@@ -1,7 +1,10 @@
 import { cn } from '@/lib/utils'
 import { HandoffSplitButton } from './HandoffSplitButton'
 import { PromptTemplateMenu } from './PromptTemplateMenu'
-import type { HandoffSelectionOverride } from '@/lib/handoffSelection'
+import {
+  getEffectiveHandoffSelection,
+  type HandoffSelectionOverride
+} from '@/lib/handoffSelection'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 
 function MnemonicLabel({ letter, label }: { letter: string; label: string }): React.JSX.Element {
@@ -19,7 +22,7 @@ function MnemonicLabel({ letter, label }: { letter: string; label: string }): Re
 }
 
 interface PlanReadyImplementFabProps {
-  onImplement: () => void
+  onImplement: (override: HandoffSelectionOverride) => void
   onImplementWithTemplate?: (templateBody: string) => void
   onHandoff: (override: HandoffSelectionOverride) => void
   onCopyPlan: () => void
@@ -44,6 +47,22 @@ export function PlanReadyImplementFab({
   worktreeId
 }: PlanReadyImplementFabProps): React.JSX.Element {
   const vimModeEnabled = useSettingsStore((s) => s.vimModeEnabled)
+  const availableAgentSdks = useSettingsStore((s) => s.availableAgentSdks)
+  const lastHandoffOverride = useSettingsStore((s) => s.lastHandoffOverride)
+  const defaultAgentSdk = useSettingsStore((s) => s.defaultAgentSdk)
+  const defaultModels = useSettingsStore((s) => s.defaultModels)
+  const selectedModel = useSettingsStore((s) => s.selectedModel)
+  const selectedModelByProvider = useSettingsStore((s) => s.selectedModelByProvider)
+  const effective = getEffectiveHandoffSelection({ worktreeId })
+
+  // Subscribe to the same settings that drive HandoffSplitButton so Implement
+  // always uses the currently selected SDK and model.
+  void availableAgentSdks
+  void lastHandoffOverride
+  void defaultAgentSdk
+  void defaultModels
+  void selectedModel
+  void selectedModelByProvider
 
   return (
     <div
@@ -124,7 +143,7 @@ export function PlanReadyImplementFab({
         </button>
       )}
       <button
-        onClick={onImplement}
+        onClick={() => onImplement({ agentSdk: effective.agentSdk, model: effective.model })}
         className={cn(
           'h-8 rounded-full px-3',
           'text-xs font-medium',

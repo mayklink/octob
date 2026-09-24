@@ -911,6 +911,7 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
     }
   }, [sessionId])
   const voiceQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const voiceTranscriptionPendingCountRef = useRef(0)
   const voiceTypewriterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const prevFileIndexWorktreeRef = useRef<string | null>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -4151,6 +4152,12 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
   // Handle send message
   const handleSend = useCallback(
     async (overrideValue?: string) => {
+      // Stopping local dictation queues one final audio chunk. Wait for that
+      // chunk to finish typing into the composer before reading/sending it.
+      if (voiceTranscriptionPendingCountRef.current > 0) {
+        await voiceQueueRef.current
+      }
+
       // === BASH MODE ===
       if (!overrideValue && inputValueRef.current.startsWith('!')) {
         const command = inputValueRef.current.slice(1).trim()
@@ -4637,102 +4644,6 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
     ]
   )
 
-  const handlePlanReadyImplement = useCallback(async () => {
-    if (pendingPlan && !isClaudeCode) {
-      const pendingBeforeAction = pendingPlan
-      useSessionStore.getState().clearPendingPlan(sessionId)
-      useWorktreeStatusStore.getState().clearSessionStatus(sessionId)
-
-      // Transition ExitPlanMode tool card to "accepted" state
-      if (pendingBeforeAction.toolUseID) {
-        updateStreamingPartsRef((parts) =>
-          parts.map((p) =>
-            p.type === 'tool_use' && p.toolUse?.id === pendingBeforeAction.toolUseID
-              ? { ...p, toolUse: { ...p.toolUse!, status: 'success' as const } }
-              : p
-          )
-        )
-        immediateFlush()
-      }
-
-      await useSessionStore.getState().setSessionMode(sessionId, 'build')
-      lastSendMode.set(sessionId, 'build')
-      await handleSend(
-        buildSdkPlanImplementationPrompt(sessionRecord?.agent_sdk, pendingBeforeAction.planContent)
-      )
-      return
-    }
-
-    // Claude Code sessions must resolve a real pending ExitPlanMode request.
-    if (isClaudeCode) {
-      if (!worktreePath || !pendingPlan) {
-        toast.error('No pending plan approval found')
-        return
-      }
-
-      const pendingBeforeAction = pendingPlan
-      useSessionStore.getState().clearPendingPlan(sessionId)
-      useWorktreeStatusStore.getState().clearSessionStatus(sessionId)
-
-      try {
-        // Approve first (unblocks the SDK), then update frontend state.
-        const result = await window.opencodeOps.planApprove(
-          worktreePath,
-          sessionId,
-          pendingBeforeAction.requestId
-        )
-        if (!result.success) {
-          toast.error(`Plan approve failed: ${result.error ?? 'unknown'}`)
-          // Avoid stale FAB loops if backend no longer has a pending request.
-          if (!(result.error ?? '').toLowerCase().includes('no pending plan')) {
-            useSessionStore.getState().setPendingPlan(sessionId, pendingBeforeAction)
-            useWorktreeStatusStore.getState().setSessionStatus(sessionId, 'plan_ready')
-          }
-          return
-        }
-        await useSessionStore.getState().setSessionMode(sessionId, 'build')
-        lastSendMode.set(sessionId, 'build')
-
-        // The SDK resumes within the same prompt cycle after plan approval —
-        // it won't emit a new session.status:busy event. Set status explicitly.
-        useWorktreeStatusStore.getState().setSessionStatus(sessionId, 'working')
-        setIsStreaming(true)
-        setIsSending(true)
-        userExplicitSendTimes.set(sessionId, Date.now())
-        snapshotTokenBaseline(sessionId)
-
-        // Transition the ExitPlanMode tool card to "accepted" state
-        updateStreamingPartsRef((parts) =>
-          parts.map((p) =>
-            p.type === 'tool_use' && p.toolUse?.id === pendingBeforeAction.toolUseID
-              ? { ...p, toolUse: { ...p.toolUse!, status: 'success' as const } }
-              : p
-          )
-        )
-        immediateFlush()
-      } catch (err) {
-        toast.error(`Plan approve error: ${err instanceof Error ? err.message : String(err)}`)
-        useSessionStore.getState().setPendingPlan(sessionId, pendingBeforeAction)
-        useWorktreeStatusStore.getState().setSessionStatus(sessionId, 'plan_ready')
-      }
-      return
-    }
-
-    // OpenCode sessions: legacy non-blocking behavior.
-    await useSessionStore.getState().setSessionMode(sessionId, 'build')
-    lastSendMode.set(sessionId, 'build')
-    await handleSend('Implement')
-  }, [
-    sessionId,
-    handleSend,
-    worktreePath,
-    pendingPlan,
-    isClaudeCode,
-    sessionRecord?.agent_sdk,
-    updateStreamingPartsRef,
-    immediateFlush
-  ])
-
   const handlePlanReject = useCallback(
     async (feedback: string) => {
       if (!pendingPlan) return
@@ -4894,6 +4805,11 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
       opencodeSessionId,
       pendingPlan
     ]
+  )
+
+  const handlePlanReadyImplement = useCallback(
+    async (override: HandoffSelectionOverride) => handlePlanReadyHandoff(override),
+    [handlePlanReadyHandoff]
   )
 
   const handlePlanReadyCopyPlan = useCallback(async () => {
@@ -5723,6 +5639,7 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
         const chunk = samples.splice(0, force ? samples.length : chunkSize)
         if (!chunk.length) return
         setIsTranscribingVoice(true)
+        voiceTranscriptionPendingCountRef.current += 1
         voiceQueueRef.current = voiceQueueRef.current.then(async () => {
           const result = await window.voiceTranscriptionOps.transcribe(samplesToWav(chunk, context.sampleRate))
           if (!result.success) {
@@ -5743,7 +5660,13 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
             }
             typeNext()
           })
-        }).catch((error) => toast.error(error instanceof Error ? error.message : 'Falha ao transcrever')).finally(() => setIsTranscribingVoice(false))
+        }).catch((error) => toast.error(error instanceof Error ? error.message : 'Falha ao transcrever')).finally(() => {
+          voiceTranscriptionPendingCountRef.current = Math.max(
+            0,
+            voiceTranscriptionPendingCountRef.current - 1
+          )
+          setIsTranscribingVoice(false)
+        })
       }
       processor.onaudioprocess = (event) => { samples.push(...event.inputBuffer.getChannelData(0)); flush() }
       source.connect(processor); processor.connect(silent); silent.connect(context.destination)

@@ -19,7 +19,7 @@ function MnemonicLabel({ letter, label }: { letter: string; label: string }): Re
 }
 
 interface PlanReadyImplementFabProps {
-  onImplement: () => void
+  onImplement: (override: HandoffSelectionOverride) => void
   onImplementWithTemplate?: (templateBody: string) => void
   onHandoff: (override: HandoffSelectionOverride) => void
   onCopyPlan: () => void
@@ -124,7 +124,7 @@ export function PlanReadyImplementFab({
         </button>
       )}
       <button
-        onClick={onImplement}
+        onClick={() => onImplement({ agentSdk: effective.agentSdk, model: effective.model })}
         className={cn(
           'h-8 rounded-full px-3',
           'text-xs font-medium',

@@ -662,7 +662,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return Array.from(this.sessions.values(), ({ session }) => ({ ...session }))
   }
 
-  async startRealtimeWebrtc(threadId: string, sdp: string): Promise<void> {
+  async startRealtimeWebrtc(
+    threadId: string,
+    sdp: string,
+    realtimeStartInstructions?: string
+  ): Promise<void> {
     const context = this.sessions.get(threadId)
     if (!context?.session.threadId) throw new Error('No active Codex thread for voice session')
     if (!sdp.trim()) throw new Error('WebRTC offer SDP is empty')
@@ -674,6 +678,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       model: 'gpt-live-1-codex',
       outputModality: 'audio',
       version: 'v3',
+      ...(realtimeStartInstructions ? { realtimeStartInstructions } : {}),
       transport: { type: 'webrtc', sdp }
     }, 30_000)
   }

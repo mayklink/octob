@@ -18,6 +18,8 @@ import { logCodexLifecycleEvent } from './codex-debug-logger'
 import { generateCodexSessionTitle } from './codex-session-title'
 import { emitAgentStreamEvent, type AgentStreamEvent } from './agent-event-bus'
 import { getConfiguredCodexMcpServers } from './mcp-settings'
+import { isAssistantWorkspacePath } from './assistant-mcp-service'
+import { GLOBAL_ASSISTANT_INSTRUCTIONS } from '../../shared/global-assistant-context'
 import type { DatabaseService } from '../db/database'
 import type { SessionMessageCreate } from '../db/types'
 import { notificationService } from './notification-service'
@@ -1326,7 +1328,11 @@ export class CodexImplementer implements AgentSdkImplementer {
 
   async startVoice(agentSessionId: string, sdp: string): Promise<{ success: boolean; error?: string }> {
     try {
-      await this.manager.startRealtimeWebrtc(agentSessionId, sdp)
+      const session = this.findSessionByThreadId(agentSessionId)
+      const realtimeStartInstructions = session && isAssistantWorkspacePath(session.worktreePath)
+        ? GLOBAL_ASSISTANT_INSTRUCTIONS
+        : undefined
+      await this.manager.startRealtimeWebrtc(agentSessionId, sdp, realtimeStartInstructions)
       return { success: true }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) }

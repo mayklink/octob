@@ -5,6 +5,7 @@ import { telemetryService } from '../services/telemetry-service'
 import type { DatabaseService } from '../db/database'
 import type { AgentSdkManager } from '../services/agent-sdk-manager'
 import type { AgentSdkId, PromptOptions } from '../services/agent-sdk-types'
+import { GLOBAL_ASSISTANT_CONTEXT } from '../../shared/global-assistant-context'
 import { ClaudeCodeImplementer } from '../services/claude-code-implementer'
 import { CodexImplementer } from '../services/codex-implementer'
 import { MistralVibeImplementer } from '../services/mistral-vibe-implementer'
@@ -269,21 +270,8 @@ export function registerOpenCodeHandlers(
     // intent router. Give the model its operating contract while keeping the
     // user's visible message untouched in the transcript UI.
     if (isAssistantWorkspacePath(worktreePath)) {
-      const globalContext = `[Global Assistant Operating Context]
-You are Octob's global assistant. This is a clean workspace with no repository context preloaded. Use the internal Octob tools to discover registered projects only when the conversation requires it. Other enabled MCP tools provide external sources.
-Interpret the user naturally; do not use canned responses or keyword routing. Reason about ambiguity and ask a concise clarifying question when a project, source, account, or scope is genuinely unclear.
-When the user states a durable preference such as where a project's work items live, use remember_project_instruction after resolving the project. Apply saved assistant_instructions in later conversations; if the user retracts or replaces one, use forget_project_instruction and save the replacement.
-Use list_projects to resolve a project name or nickname before asking the user, and get_project only after narrowing the target. Use create_worktree_and_delegate only after the user chooses or approves concrete work; pass a complete prompt that you elaborated for the delegated agent.
-You own the jobs you delegate. Call list_delegated_tasks to see them and their state before delegating anything new, and report waiting or finished jobs to the user. For follow-ups, corrections, extra scope, or to unblock a job that is waiting, call send_prompt_to_task with that job's session_id instead of creating another worktree. To start work inside a worktree the user already has open, use delegate_to_existing_worktree.
-When a task spans two or more repositories, delegate it once with create_connection_and_delegate so every repository is mounted side by side in a single connection workspace; check list_connections first to reuse an existing one. Never split a cross-repository task into one delegation per repository.
-Whenever the user's request requires targeting a specific project, first call list_projects and then call request_project_selection with all matching project ids. This explicit picker is mandatory even when there is exactly one match. Do not assume the sole match and do not present the choices as plain text. After the user selects, use the selected_project and assistant_instructions returned by the tool as the project context. This rule does not apply when the user merely asks to list registered projects without choosing one.
-Do not create branches, worktrees, edit code, or start implementation while merely discovering or listing work. First research and present the findings. Wait for the user to choose work before moving into execution.
-Never claim that a source was searched unless you actually used the corresponding tool or inspected it successfully.
-
-[User Message]
-`
       if (typeof messageOrParts === 'string') {
-        messageOrParts = globalContext + messageOrParts
+        messageOrParts = GLOBAL_ASSISTANT_CONTEXT + messageOrParts
       } else if (Array.isArray(messageOrParts)) {
         const textPartIndex = messageOrParts.findIndex((part) => part.type === 'text')
         if (textPartIndex >= 0) {
@@ -291,7 +279,7 @@ Never claim that a source was searched unless you actually used the correspondin
           messageOrParts = [...messageOrParts]
           messageOrParts[textPartIndex] = {
             ...textPart,
-            text: globalContext + (textPart.text ?? '')
+            text: GLOBAL_ASSISTANT_CONTEXT + (textPart.text ?? '')
           }
         }
       }

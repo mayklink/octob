@@ -631,7 +631,7 @@ export async function startAssistantMcpService(
     })
 
     server.registerTool('list_projects', {
-      description: 'List projects registered in Octob. Use this before asking the user which repository a nickname refers to.',
+      description: 'List projects registered in Octob to resolve project names or inspect project context. Do not open the project picker for general discussion, research, or questions.',
       inputSchema: {}
     }, async () => {
       return text(db.getAllProjects().map((project) => ({
@@ -663,7 +663,7 @@ export async function startAssistantMcpService(
     })
 
     server.registerTool('request_project_selection', {
-      description: 'Show the user an Octob project picker and wait for an explicit selection. When project-scoped work is requested, call list_projects first, then call this tool with every matching project id. This confirmation is mandatory even when there is exactly one match. Do not print a plain-text project list instead. The selected project and its saved assistant memory are returned together.',
+      description: 'Show the user an Octob project picker and wait for one selection. First call list_projects to resolve the target ids. Use this only after deciding to delegate a task, immediately before creating the delegated work. For a task spanning repositories, call once for each repository. Do not use this for general discussion, research, or questions. The selected project and its saved assistant memory are returned together.',
       inputSchema: {
         project_ids: z.array(z.string()).min(1),
         question: z.string().min(1).optional()
@@ -678,7 +678,7 @@ export async function startAssistantMcpService(
 
       const request: AssistantProjectSelectionRequest = {
         id: randomUUID(),
-        question: question?.trim() || 'Sobre qual projeto você quer falar?',
+        question: question?.trim() || 'Qual projeto voce quer selecionar para esta tarefa delegada?',
         projects: projects.map((project) => ({
           id: project.id,
           name: project.name,
@@ -735,7 +735,7 @@ export async function startAssistantMcpService(
     })
 
     server.registerTool('create_worktree_and_delegate', {
-      description: 'Create an isolated worktree for a user-approved task, create an agent session in it, and send the elaborated prompt. Do not call this while merely listing or researching tasks. For follow-up work on a job you already delegated, use send_prompt_to_task instead of creating another worktree.',
+      description: 'Create an isolated worktree for a task the user asked you to perform, create an agent session in it, and send the elaborated prompt. The user request authorizes the task; do not ask separate permission to delegate. Call request_project_selection immediately before this tool so the user chooses the repository at delegation time. Do not call this while merely listing or researching tasks. For follow-up work on a job you already delegated, use send_prompt_to_task instead of creating another worktree.',
       inputSchema: {
         project_id: z.string(),
         title: z.string(),
@@ -821,7 +821,7 @@ export async function startAssistantMcpService(
     })
 
     server.registerTool('delegate_to_existing_worktree', {
-      description: 'Start a delegated agent inside a worktree that is already open in Octob, instead of creating a new one. Use this when the user points at work in progress ("continue in that branch"). Find worktree ids with get_project.',
+      description: 'Start a delegated agent inside a worktree that is already open in Octob, instead of creating a new one. Use this when the user points at work in progress ("continue in that branch"). The user request authorizes the task; do not ask separate permission to delegate. Call request_project_selection at delegation time, then find the selected repository worktree with get_project.',
       inputSchema: {
         worktree_id: z.string(),
         title: z.string(),
@@ -879,7 +879,7 @@ export async function startAssistantMcpService(
     })
 
     server.registerTool('create_connection_and_delegate', {
-      description: 'Delegate cross-repository work. Pass two or more project ids to open a fresh worktree in each and join them in one connection workspace, or pass existing worktree ids, or reuse an existing connection with connection_id. The delegated agent runs once, with every repository mounted side by side. Use this whenever a task spans more than one repository; do not delegate the same task separately per repository.',
+      description: 'Delegate work spanning repositories. Use request_project_selection only after deciding to delegate, so the user chooses the repositories for this task. Then pass the selected project ids to open fresh worktrees and join them in one connection workspace, or pass selected existing worktree ids, or reuse an existing connection with connection_id. The delegated agent runs once, with every repository mounted side by side. Do not ask separate permission to delegate a task the user requested; do not delegate while merely listing or researching.',
       inputSchema: {
         project_ids: z.array(z.string()).optional().describe('Projects that need a new worktree for this task'),
         worktree_ids: z.array(z.string()).optional().describe('Existing worktrees to include as-is'),

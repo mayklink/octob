@@ -27,6 +27,7 @@ import { handleAttachmentRoute } from './routes/attachments'
 import { handleWatcherRoute } from './routes/watchers'
 import { handleVoiceRoute } from './routes/voice'
 import { handleAssistantRoute } from './routes/assistant'
+import { handleCapabilityStudioRoute } from './routes/capability-studio'
 import { handleUsageRoute } from './routes/usage'
 import { handleLoggingRoute } from './routes/logging'
 import { runtimeWatchers } from './watcher-runtime'
@@ -149,6 +150,7 @@ async function handleRequest(
   if (await handleWatcherRoute(request, response, url, context)) return
   if (await handleVoiceRoute(request, response, url, context)) return
   if (await handleAssistantRoute(request, response, url, context)) return
+  if (await handleCapabilityStudioRoute(request, response, url, context)) return
   if (await handleLoggingRoute(request, response, url, context)) return
   if (await handleUsageRoute(request, response, url, context)) return
 

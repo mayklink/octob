@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertCircle, ArrowRight, Bell, Bot, CheckCircle2, CircleCheckBig, FileText, FolderGit2, GitPullRequest, HelpCircle, Lightbulb, Link2, Loader2, MessageSquare, MessageSquarePlus, MoreHorizontal, Play, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -26,6 +26,7 @@ import {
 import type {
   AssistantProjectSelectionRequest,
   AssistantTask,
+  AssistantTaskState,
   AssistantTaskWaitingReason
 } from '@shared/types/assistant'
 
@@ -59,6 +60,23 @@ const assistantExamples = [
   'Investigue falhas nos jobs do CI dos últimos 7 dias.',
   'Mostre tarefas pendentes atribuídas a mim.'
 ]
+
+const AGENT_SDK_LABELS: Record<string, string> = {
+  opencode: 'OpenCode',
+  'claude-code': 'Claude Code',
+  codex: 'Codex',
+  'mistral-vibe': 'Mistral Vibe',
+  'cursor-cli': 'Cursor CLI',
+  antigravity: 'Google Antigravity',
+  terminal: 'Terminal'
+}
+
+const TASK_STATE_PRIORITY: Record<AssistantTaskState, number> = {
+  waiting_input: 0,
+  error: 1,
+  completed: 2,
+  running: 3
+}
 
 function AssistantWelcome({ onSelect }: { onSelect: (prompt: string) => void }): React.JSX.Element {
   return (
@@ -127,6 +145,14 @@ function taskLocationLabel(task: AssistantTask): string {
     return task.targets.map((target) => target.projectName).join(' + ')
   }
   return worktreeName(task.worktreePath)
+}
+
+function taskAgentLabel(task: AssistantTask): string | null {
+  // Older persisted tasks do not have an agentSdk field.
+  const sdk = task.agentSdk?.trim()
+  if (!sdk) return null
+
+  return AGENT_SDK_LABELS[sdk] ?? sdk
 }
 
 async function createAssistantSession(projectId: string) {
@@ -374,6 +400,24 @@ export function GlobalAssistantView(): React.JSX.Element {
   const activeProjectSelection = projectSelectionRequests[0] ?? null
 
   const attentionCount = countAssistantTasksNeedingAttention(tasks, sessionStatuses)
+  const sortedTasks = useMemo(() => tasks
+    .map((task, index) => {
+      const { state } = resolveAssistantTaskState(task, sessionStatuses[task.sessionId]?.status)
+      const updatedAt = Date.parse(task.updatedAt)
+      const createdAt = Date.parse(task.createdAt)
+      return {
+        task,
+        index,
+        priority: TASK_STATE_PRIORITY[state],
+        recency: Number.isFinite(updatedAt)
+          ? updatedAt
+          : Number.isFinite(createdAt)
+            ? createdAt
+            : 0
+      }
+    })
+    .sort((a, b) => a.priority - b.priority || b.recency - a.recency || a.index - b.index)
+    .map(({ task }) => task), [tasks, sessionStatuses])
 
   const handleProjectSelection = async (projectId: string | null): Promise<void> => {
     if (!activeProjectSelection || resolvingProjectId) return
@@ -584,13 +628,14 @@ export function GlobalAssistantView(): React.JSX.Element {
                 Novo trabalho
               </Button>
             </div>
-          ) : tasks.map((task) => {
+          ) : sortedTasks.map((task) => {
             const status = sessionStatuses[task.sessionId]?.status
             const { state, waitingReason } = resolveAssistantTaskState(task, status)
             const done = state === 'completed'
             const waiting = state === 'waiting_input'
             const failed = state === 'error'
             const location = taskLocationLabel(task)
+            const agentLabel = taskAgentLabel(task)
             const openLabel = task.kind === 'connection' ? 'Abrir conexão' : 'Abrir worktree'
             return (
               <article
@@ -624,6 +669,16 @@ export function GlobalAssistantView(): React.JSX.Element {
                     <h3 className="mt-1 line-clamp-2 text-xs font-semibold leading-relaxed">
                       {task.title}
                     </h3>
+                    {agentLabel && (
+                      <span
+                        className="mt-1.5 inline-flex max-w-full items-center rounded-md border border-border/70 bg-muted/45 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+                        aria-label={`Agente: ${agentLabel}`}
+                        title={`Agente: ${agentLabel}`}
+                        translate="no"
+                      >
+                        <span className="truncate">{agentLabel}</span>
+                      </span>
+                    )}
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                     {waiting ? (

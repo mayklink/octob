@@ -19,9 +19,21 @@ import { ProjectDashboard } from '@/components/projects/ProjectDashboard'
 import { WorkspaceFocusView } from './WorkspaceFocusView'
 import { GlobalAssistantView } from '@/components/assistant/GlobalAssistantView'
 import { useGlobalAssistantStore } from '@/stores/useGlobalAssistantStore'
+import { useCapabilityStudioStore } from '@/stores/useCapabilityStudioStore'
+import { CapabilityStudioView } from '@/components/capabilities/CapabilityStudioView'
+import { CapabilityStudioAgent } from '@/components/capabilities/CapabilityStudioAgent'
+import { DevToolsView } from '@/components/devtools/DevToolsView'
+import { DevToolsMiniPanel } from '@/components/devtools/DevToolsMiniPanel'
+import { useDevToolsStore } from '@/components/devtools/useDevToolsStore'
 
 const SESSION_TERMINAL_VIEW_IDLE_UNMOUNT_MS = 60_000
 const MAX_MOUNTED_SESSION_TERMINAL_VIEWS = 2
+const DEV_TOOLS_FLOATING_POSITIONS: Record<string, string> = {
+  'top-left': 'left-4 top-28',
+  'top-right': 'right-4 top-28',
+  'bottom-left': 'bottom-4 left-4',
+  'bottom-right': 'bottom-4 right-4'
+}
 
 const MonacoDiffView = lazy(() => import('@/components/diff/MonacoDiffView'))
 const WorktreeContextEditor = lazy(() =>
@@ -54,9 +66,27 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
   const displayLayout = useLayoutStore((state) => state.displayLayout)
   const workspaceMode = useLayoutStore((state) => state.workspaceMode)
   const terminalPosition = useSettingsStore((s) => s.terminalPosition)
+  const devToolsPanelVisible = useSettingsStore((s) => s.devToolsPanelVisible)
+  const devToolsPanelPosition = useSettingsStore((s) => s.devToolsPanelPosition)
+  const devToolsPanelTransparency = useSettingsStore((s) => s.devToolsPanelTransparency)
   const settingsOpen = useSettingsStore((s) => s.isOpen)
   const globalAssistantOpen = useGlobalAssistantStore((s) => s.isOpen)
+  const capabilityStudioOpen = useCapabilityStudioStore((s) => s.isOpen)
+  const devToolsOpen = useDevToolsStore((s) => s.isOpen)
   const selectedProjectId = useProjectStore((state) => state.selectedProjectId)
+  const previousLocation = useRef({ selectedProjectId, selectedWorktreeId, selectedConnectionId })
+  useEffect(() => {
+    const previous = previousLocation.current
+    if (capabilityStudioOpen && (
+      previous.selectedProjectId !== selectedProjectId ||
+      previous.selectedWorktreeId !== selectedWorktreeId ||
+      previous.selectedConnectionId !== selectedConnectionId ||
+      settingsOpen
+    )) {
+      useCapabilityStudioStore.getState().close()
+    }
+    previousLocation.current = { selectedProjectId, selectedWorktreeId, selectedConnectionId }
+  }, [capabilityStudioOpen, globalAssistantOpen, settingsOpen, selectedProjectId, selectedWorktreeId, selectedConnectionId])
   const selectedWorktreePath = useMemo(() => {
     if (!selectedWorktreeId) return null
     for (const worktrees of useWorktreeStore.getState().worktreesByProject.values()) {
@@ -234,6 +264,23 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
       return <SettingsView />
     }
 
+    if (devToolsOpen) {
+      return <DevToolsView />
+    }
+
+    if (capabilityStudioOpen) {
+      return (
+        <div className="flex min-h-0 min-w-0 flex-1">
+          <div className="flex min-h-0 min-w-0 flex-1 border-r border-border">
+            <CapabilityStudioAgent />
+          </div>
+          <div className="flex min-h-0 min-w-0 flex-1">
+            <CapabilityStudioView compact />
+          </div>
+        </div>
+      )
+    }
+
     if (globalAssistantOpen) {
       return <GlobalAssistantView />
     }
@@ -406,21 +453,28 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
       data-testid="main-pane"
     >
       <PRNotificationStack />
-      {!settingsOpen && !globalAssistantOpen && (selectedWorktreeId || selectedConnectionId) && (
+      {!settingsOpen && !globalAssistantOpen && !capabilityStudioOpen && !devToolsOpen && (selectedWorktreeId || selectedConnectionId) && (
         <SessionTabs />
       )}
-      <div className="flex-1 flex flex-col min-h-0">
+      <div className="relative flex-1 flex flex-col min-h-0">
         {renderContent()}
         {renderedTerminalSessionIds.map((sessionId) => {
-          const isActive = !settingsOpen && visibleTerminalId === sessionId
+          const isActive = !settingsOpen && !capabilityStudioOpen && !devToolsOpen && visibleTerminalId === sessionId
           return (
             <div key={sessionId} className={isActive ? 'flex-1 flex flex-col min-h-0' : 'hidden'}>
               <SessionTerminalView sessionId={sessionId} isVisible={isActive} />
             </div>
           )
         })}
+        {devToolsPanelVisible && devToolsPanelPosition !== 'sidebar' && (
+          <div className={`pointer-events-none absolute z-30 ${DEV_TOOLS_FLOATING_POSITIONS[devToolsPanelPosition]}`}>
+            <div className="pointer-events-auto">
+              <DevToolsMiniPanel floating transparency={devToolsPanelTransparency} />
+            </div>
+          </div>
+        )}
       </div>
-      {!settingsOpen && terminalPosition === 'bottom' && <MainPaneTerminalPanel />}
+      {!settingsOpen && !capabilityStudioOpen && !devToolsOpen && terminalPosition === 'bottom' && <MainPaneTerminalPanel />}
     </main>
   )
 }

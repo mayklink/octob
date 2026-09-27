@@ -12,6 +12,8 @@ files:
 extraResources:
   - from: resources/whisper.cpp
     to: whisper.cpp
+  - from: resources/capability-runner.cjs
+    to: capability-runner.cjs
 
 publish:
   provider: generic

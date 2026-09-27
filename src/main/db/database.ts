@@ -213,6 +213,7 @@ export class DatabaseService {
       'TEXT DEFAULT NULL REFERENCES connections(id) ON DELETE SET NULL'
     )
     this.safeAddColumn('sessions', 'agent_sdk', "TEXT NOT NULL DEFAULT 'opencode'")
+    this.safeAddColumn('sessions', 'source_session_id', 'TEXT DEFAULT NULL REFERENCES sessions(id) ON DELETE SET NULL')
     this.safeAddColumn('connections', 'color', 'TEXT DEFAULT NULL')
     this.safeAddColumn('connections', 'custom_name', 'TEXT DEFAULT NULL')
     this.safeAddColumn('worktrees', 'attachments', "TEXT DEFAULT '[]'")
@@ -224,6 +225,7 @@ export class DatabaseService {
 
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_sessions_connection ON sessions(connection_id);
+      CREATE INDEX IF NOT EXISTS idx_sessions_source_session ON sessions(source_session_id);
     `)
 
     db.exec(`
@@ -791,6 +793,7 @@ export class DatabaseService {
     const now = new Date().toISOString()
     const session: Session = {
       id: data.id ?? randomUUID(),
+      source_session_id: null,
       worktree_id: data.worktree_id,
       project_id: data.project_id,
       connection_id: data.connection_id ?? null,
@@ -909,6 +912,22 @@ export class DatabaseService {
     if (data.name !== undefined) {
       updates.push('name = ?')
       values.push(data.name)
+    }
+    if (data.source_session_id !== undefined) {
+      if (data.source_session_id === id) throw new Error('A session cannot hand off to itself')
+      if (data.source_session_id && !this.getSession(data.source_session_id)) {
+        throw new Error('Source session not found')
+      }
+      let ancestorId = data.source_session_id
+      const visited = new Set<string>()
+      while (ancestorId) {
+        if (ancestorId === id) throw new Error('Session handoff cannot create a cycle')
+        if (visited.has(ancestorId)) throw new Error('Source session lineage already contains a cycle')
+        visited.add(ancestorId)
+        ancestorId = this.getSession(ancestorId)?.source_session_id ?? null
+      }
+      updates.push('source_session_id = ?')
+      values.push(data.source_session_id)
     }
     if (data.status !== undefined) {
       updates.push('status = ?')

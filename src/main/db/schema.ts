@@ -1,4 +1,4 @@
-export const CURRENT_SCHEMA_VERSION = 25
+export const CURRENT_SCHEMA_VERSION = 26
 
 export const SCHEMA_SQL = `
 -- Projects table
@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   model_variant TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  completed_at TEXT
+  completed_at TEXT,
+  source_session_id TEXT DEFAULT NULL REFERENCES sessions(id) ON DELETE SET NULL
 );
 
 -- Session messages table (legacy fallback only).
@@ -345,5 +346,11 @@ CREATE INDEX IF NOT EXISTS idx_diff_comments_worktree_file ON diff_comments(work
     down: `DROP INDEX IF EXISTS idx_diff_comments_worktree_file;
 DROP INDEX IF EXISTS idx_diff_comments_worktree;
 DROP TABLE IF EXISTS diff_comments;`
+  },
+  {
+    version: 26,
+    name: 'link_session_handoffs',
+    up: `-- source_session_id and its index are added idempotently by ensureConnectionTables().`,
+    down: `DROP INDEX IF EXISTS idx_sessions_source_session;`
   },
 ]

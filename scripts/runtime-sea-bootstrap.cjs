@@ -22,4 +22,8 @@ if (!process.argv.includes('--no-open')) {
 }
 
 const fileRequire = Module.createRequire(process.execPath)
-fileRequire(bundlePath)
+if (process.argv.includes('--capability-runner')) {
+  fileRequire(path.join(runtimeDir, 'capability-runner.cjs'))
+} else {
+  fileRequire(bundlePath)
+}

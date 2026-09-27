@@ -244,6 +244,17 @@ declare global {
 
 
   interface Window {
+    capabilityOps: {
+      onPreviewRequested: (callback: (id: string) => void) => () => void
+      list: () => Promise<import('../shared/types/capability-studio').CapabilityDraft[]>
+      get: (id: string, version?: number) => Promise<import('../shared/types/capability-studio').CapabilityDetail>
+      validate: (id: string, version?: number) => Promise<import('../shared/types/capability-studio').CapabilityValidation>
+      execute: (id: string, input: unknown, version?: number, executionId?: string) => Promise<unknown>
+      cancelExecution: (executionId: string) => Promise<boolean>
+      install: (id: string, version: number) => Promise<import('../shared/types/capability-studio').CapabilityDraft>
+      deactivate: (id: string) => Promise<import('../shared/types/capability-studio').CapabilityDraft>
+      discard: (id: string) => Promise<void>
+    }
     assistantOps: {
       show: () => Promise<void>
       hide: () => Promise<void>
@@ -371,6 +382,7 @@ declare global {
         update: (
           id: string,
           data: {
+            source_session_id?: string | null
             name?: string | null
             status?: 'active' | 'completed' | 'error'
             opencode_session_id?: string | null
@@ -1496,14 +1508,44 @@ declare global {
       enable: (enabled: boolean) => Promise<void>
       getSnapshot: () => Promise<{
         timestamp: string
+        processScope: 'electron-main' | 'web-runtime'
         uptimeMs: number
         cpu: { userMs: number; systemMs: number; percentSinceLastSample: number }
         memory: { rss: number; heapUsed: number; heapTotal: number; external: number; arrayBuffers: number }
+        electron: {
+          windows: number
+          webContents: number
+          processes: Array<{
+            pid: number
+            type: string
+            name: string | null
+            cpuPercent: number
+            workingSetKb: number
+            privateBytesKb: number | null
+          }>
+        }
         processes: { ptyActive: number; scriptsActive: number; scriptsTotalOpened: number; scriptsTotalClosed: number }
         watchers: { fileTree: number; worktree: number; branch: number }
         sessions: { active: number }
         handles: { active: number; requests: number }
         eventLoopLagMs: number
+      }>
+    }
+    devToolsOps: {
+      listLogs: () => Promise<{
+        files: Array<{ name: string; size: number; modifiedAt: string }>
+      }>
+      readLogs: (args: { fileName: string; before?: number; limit?: number }) => Promise<{
+        entries: Array<{
+          timestamp: string
+          level: string
+          component: string
+          message: string
+          raw: string
+          truncated?: boolean
+        }>
+        nextBefore: number | null
+        fileSize: number
       }>
     }
     codexDebugLoggerOps: {

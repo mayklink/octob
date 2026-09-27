@@ -29,11 +29,13 @@ import {
   registerUsageHandlers,
   registerAccountHandlers,
   registerAttachmentHandlers,
-  registerVoiceTranscriptionHandlers
+  registerVoiceTranscriptionHandlers,
+  registerCapabilityStudioHandlers
 } from './ipc'
 import { buildMenu, updateMenuState, shutdownMenu } from './menu'
 import type { MenuState } from './menu'
 import { createLogger, getLogDir } from './services/logger'
+import { listDevLogFiles, readDevLogPage } from './services/dev-log-reader'
 import { detectAgentSdks } from './services/system-info'
 import { createResponseLog, appendResponseLog } from './services/response-logger'
 import { notificationService } from './services/notification-service'
@@ -238,7 +240,12 @@ function createWindow(): void {
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
     // level: 0=verbose 1=info 2=warning 3=error
     if (level >= 2) {
-      log.error('Renderer console', undefined, { level, message, line, sourceId })
+      const data = { level, message, line, sourceId }
+      if (level === 2) {
+        log.warn('Renderer console', data)
+      } else {
+        log.error('Renderer console', undefined, data)
+      }
     }
   })
 
@@ -617,6 +624,7 @@ app.whenReady().then(async () => {
   // Register IPC handlers
   log.info('Registering IPC handlers')
   registerDatabaseHandlers()
+  registerCapabilityStudioHandlers()
   registerProjectHandlers()
   registerWorktreeHandlers()
   registerSystemHandlers(openCodeLaunchSpec)
@@ -656,6 +664,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('perf-diagnostics:snapshot', () => {
     return perfDiagnostics.getSnapshot()
   })
+
+  ipcMain.handle('devtools:logs:list', () => ({ files: listDevLogFiles(getLogDir()) }))
+  ipcMain.handle(
+    'devtools:logs:read',
+    (_event, args: { fileName: string; before?: number; limit?: number }) =>
+      readDevLogPage(getLogDir(), args.fileName, args.before, args.limit)
+  )
 
   // Codex debug logger IPC
   ipcMain.handle('codex-debug-logger:configure', (_event, enabled: boolean, resetPerSession: boolean) => {

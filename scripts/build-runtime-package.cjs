@@ -63,6 +63,10 @@ buildSync({
 rmSync(packageDir, { recursive: true, force: true })
 mkdirSync(packageDir, { recursive: true })
 copyFileSync(bundlePath, packagedBundle)
+copyFileSync(
+  path.join(root, 'resources', 'capability-runner.cjs'),
+  path.join(packageDir, 'capability-runner.cjs')
+)
 
 const builtWeb = path.join(root, 'out', 'web')
 if (!existsSync(builtWeb)) {
@@ -85,7 +89,7 @@ copyFileSync(
 cpSync(
   path.join(runtimeHost, 'node_modules'),
   path.join(packagedRuntimeHost, 'node_modules'),
-  { recursive: true }
+  { recursive: true, dereference: true }
 )
 
 const whisperSource = path.join(root, 'resources', 'whisper.cpp')

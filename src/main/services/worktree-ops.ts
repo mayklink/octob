@@ -30,6 +30,8 @@ export interface DeleteWorktreeParams {
   branchName: string
   projectPath: string
   archive: boolean // true = Archive (delete branch), false = Unbranch (keep branch)
+  /** Internal rollback path: remove the transient worktree without running user archive hooks. */
+  skipArchiveScript?: boolean
 }
 
 export interface SyncWorktreesParams {
@@ -229,7 +231,7 @@ export async function deleteWorktreeOp(
 
     // Run archive script if configured (before git operations)
     const project = worktree?.project_id ? db.getProject(worktree.project_id) : null
-    if (project?.archive_script) {
+    if (!params.skipArchiveScript && project?.archive_script) {
       // Pass raw script lines -- scriptRunner.parseCommands handles splitting/filtering
       const commands = [project.archive_script]
       log.info('Running archive script before worktree deletion', {

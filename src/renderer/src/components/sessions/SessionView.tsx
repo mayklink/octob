@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle
@@ -47,6 +48,7 @@ import { SlashCommandPopover } from './SlashCommandPopover'
 import { FileMentionPopover } from './FileMentionPopover'
 import { ScrollToBottomFab } from './ScrollToBottomFab'
 import { PlanReadyImplementFab } from './PlanReadyImplementFab'
+import { HandoffSplitButton } from './HandoffSplitButton'
 import { PromptTemplateMenu } from './PromptTemplateMenu'
 import { IndeterminateProgressBar } from './IndeterminateProgressBar'
 import { TaskListWidget } from './TaskListWidget'
@@ -425,6 +427,141 @@ function createLocalMessage(
   }
 }
 
+interface HandoffGitRepositorySnapshot {
+  label: string
+  branch: string | null
+  tracking: string | null
+  ahead: number | null
+  behind: number | null
+  files: Array<{ relativePath: string; status: string; staged: boolean }> | null
+}
+
+interface SessionHandoffPromptInput {
+  messages: OpenCodeMessage[]
+  agentSdk: string
+  unsentDraft: string
+  pendingActions: string[]
+  gitRepositories: HandoffGitRepositorySnapshot[] | null
+  planContent?: string
+}
+
+const HANDOFF_AGENT_LABELS: Record<string, string> = {
+    opencode: 'OpenCode',
+    'claude-code': 'Claude Code',
+    codex: 'Codex',
+    'mistral-vibe': 'Mistral Vibe',
+    'cursor-cli': 'Cursor CLI',
+    antigravity: 'Google Antigravity',
+    terminal: 'Terminal'
+}
+
+function buildSessionHandoffPrompt({
+  messages,
+  agentSdk,
+  unsentDraft,
+  pendingActions,
+  gitRepositories,
+  planContent
+}: SessionHandoffPromptInput): string {
+  const transcript = messages
+    .filter((message) => (message.role === 'user' || message.role === 'assistant') && message.content.trim())
+    .slice(-8)
+    .map((message) => {
+      const content = message.content.trim()
+      const excerpt = content.length > 2200 ? `${content.slice(0, 2200)}\n[…trecho reduzido…]` : content
+      return `${message.role === 'user' ? 'Usuário' : 'Assistente'}:\n${excerpt}`
+    })
+
+  const latestUserMessage = [...messages].reverse().find(
+    (message) => message.role === 'user' && message.content.trim()
+  )?.content.trim()
+  const objective = planContent?.trim()
+    ? `Implementar o plano registrado nesta sessão:\n${planContent.trim()}`
+    : latestUserMessage
+      ? latestUserMessage
+      : 'Desconhecido. Inspecione o histórico da sessão e confirme o objetivo antes de editar.'
+
+    const gitState = gitRepositories?.length
+      ? gitRepositories.map((repository) => {
+        const branch = repository.branch ?? 'Desconhecido; inspecione o branch atual.'
+        const tracking = repository.tracking ?? 'Upstream desconhecido; confira no Git.'
+        const divergence = repository.ahead !== null && repository.behind !== null
+          ? `${repository.ahead} commits à frente, ${repository.behind} atrás`
+          : 'Desconhecido; confira a divergência com o upstream.'
+        return `${repository.label}: branch ${branch}; upstream ${tracking}; ${divergence}.`
+      }).join('\n\n')
+    : 'Desconhecido. Inspecione os repositórios e execute git status antes de editar.'
+
+  const sections = [
+    'Continue o trabalho no mesmo workspace. Confira o estado atual antes de editar. Não presuma fatos marcados como desconhecidos.',
+    `Agente de origem: ${HANDOFF_AGENT_LABELS[agentSdk] ?? agentSdk}`,
+    `## Objetivo\n${objective}`,
+    `## Decisões recentes\nDesconhecidas: não há registro estruturado de decisões disponível. Consulte o histórico recente abaixo e confirme as decisões relevantes.`,
+    `## Arquivos alterados\n${gitRepositories?.some((repository) => repository.files !== null)
+      ? gitRepositories.map((repository) => `${repository.label}: ${repository.files === null
+          ? 'desconhecidos; execute git status.'
+          : repository.files.length === 0
+            ? 'nenhum arquivo alterado reportado pela API.'
+            : repository.files.map((file) => `- ${file.relativePath} (${file.status}${file.staged ? ', staged' : ''})`).join('\n')}`).join('\n')
+      : 'Desconhecidos. Execute git status em cada repositório.'}`,
+    `## Estado do Git\n${gitState}`,
+    `## Ações pendentes\n${pendingActions.length > 0
+      ? pendingActions.map((action) => `- ${action}`).join('\n')
+      : 'Nenhuma pendência exposta pelos estados consultados. Confirme no workspace.'}`,
+    unsentDraft.trim() ? `## Rascunho ainda não enviado\n${unsentDraft.trim()}` : '',
+    transcript.length > 0
+      ? `## Histórico recente\n${transcript.join('\n\n')}`
+      : '## Histórico recente\nDesconhecido. Consulte o histórico da sessão original.'
+  ]
+
+  return sections.filter(Boolean).join('\n\n')
+}
+
+async function readHandoffGitRepositories(
+  worktreePath: string | null,
+  connectionId: string | null
+): Promise<HandoffGitRepositorySnapshot[] | null> {
+  let repositories: Array<{ label: string; path: string }> = []
+  if (connectionId) {
+    try {
+      const result = await window.connectionOps.get(connectionId)
+      if (!result.success || !result.connection) return null
+      repositories = result.connection.members.map((member) => ({
+        label: `${member.project_name} (${member.worktree_name})`,
+        path: member.worktree_path
+      }))
+    } catch {
+      return null
+    }
+  } else if (worktreePath) {
+    repositories = [{ label: 'Worktree atual', path: worktreePath }]
+  }
+
+  if (repositories.length === 0) return null
+
+  return Promise.all(repositories.map(async ({ label, path }) => {
+    const [statusResult, branchResult] = await Promise.allSettled([
+      window.gitOps.getFileStatuses(path),
+      window.gitOps.getBranchInfo(path)
+    ])
+    const statuses = statusResult.status === 'fulfilled' && statusResult.value.success && Array.isArray(statusResult.value.files)
+      ? statusResult.value.files
+      : null
+    const branch = branchResult.status === 'fulfilled' && branchResult.value.success
+      ? branchResult.value.branch
+      : undefined
+
+    return {
+      label,
+      branch: branch?.name ?? null,
+      tracking: branch?.tracking ?? null,
+      ahead: typeof branch?.ahead === 'number' ? branch.ahead : null,
+      behind: typeof branch?.behind === 'number' ? branch.behind : null,
+      files: statuses
+    }
+  }))
+}
+
 function insertSteeredMessageAtBoundary(
   messages: OpenCodeMessage[],
   steeredMessage: OpenCodeMessage,
@@ -559,6 +696,25 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
   const [inputValue, setInputValue] = useState('')
   const [planTemplatePrompt, setPlanTemplatePrompt] = useState('')
   const [planTemplateDialogOpen, setPlanTemplateDialogOpen] = useState(false)
+  const [handoffPrompt, setHandoffPrompt] = useState('')
+  const [handoffDialogOpen, setHandoffDialogOpen] = useState(false)
+  const [handoffSelectionOverride, setHandoffSelectionOverride] = useState<HandoffSelectionOverride | null>(null)
+  const [handoffPlanContent, setHandoffPlanContent] = useState<string | null>(null)
+  const [isLoadingHandoffContext, setIsLoadingHandoffContext] = useState(false)
+  const [isCreatingHandoff, setIsCreatingHandoff] = useState(false)
+  const handoffCreationLockRef = useRef(false)
+  const pendingHandoffAttemptRef = useRef<{
+    destinationSessionId: string
+    sourceSessionId: string
+    linked: boolean
+    override: HandoffSelectionOverride
+    prompt: string
+    planContent: string | null
+  } | null>(null)
+  const [sourceSessionId, setSourceSessionId] = useState<string | null>(null)
+  const [isOpeningSourceSession, setIsOpeningSourceSession] = useState(false)
+  const [destinationSessionId, setDestinationSessionId] = useState<string | null>(null)
+  const [isOpeningDestinationSession, setIsOpeningDestinationSession] = useState(false)
   const [viewState, setViewState] = useState<SessionViewState>({ status: 'connecting' })
   const [isSending, setIsSending] = useState(false)
   const [isRecordingVoice, setIsRecordingVoice] = useState(false)
@@ -741,6 +897,68 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
     if (orphaned) return orphaned
     return null
   })
+
+  const sourceLookupSessionRef = useRef<string | null>(null)
+  const inMemorySourceSessionId = (
+    sessionRecord as (typeof sessionRecord & { source_session_id?: string | null }) | null
+  )?.source_session_id
+  useEffect(() => {
+    let cancelled = false
+    if (typeof inMemorySourceSessionId === 'string' && inMemorySourceSessionId) {
+      setSourceSessionId(inMemorySourceSessionId)
+      return () => {
+        cancelled = true
+      }
+    }
+
+    setSourceSessionId(null)
+    if (!sessionRecord || sourceLookupSessionRef.current === sessionId) {
+      return () => {
+        cancelled = true
+      }
+    }
+
+    sourceLookupSessionRef.current = sessionId
+    void window.db.session.get(sessionId).then((session) => {
+      const persistedSession = session as (typeof session & { source_session_id?: string | null }) | null
+      if (!cancelled) setSourceSessionId(persistedSession?.source_session_id ?? null)
+    }).catch(() => {
+      if (!cancelled) setSourceSessionId(null)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId, sessionRecord?.id, inMemorySourceSessionId])
+
+  useEffect(() => {
+    let cancelled = false
+    setDestinationSessionId(null)
+    if (!sessionRecord || sourceSessionId) return
+
+    const parentWorktreeId = sessionRecord.worktree_id ?? worktreeId
+    const parentConnectionId = sessionRecord.connection_id ?? connectionId
+    const loadDestination = async (): Promise<void> => {
+      try {
+        const sessions = parentConnectionId
+          ? await window.db.session.getByConnection(parentConnectionId)
+          : parentWorktreeId
+            ? await window.db.session.getByWorktree(parentWorktreeId)
+            : []
+        const destination = (sessions as Array<(typeof sessions)[number] & { source_session_id?: string | null }>)
+          .filter((candidate) => candidate.source_session_id === sessionId)
+          .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0]
+        if (!cancelled) setDestinationSessionId(destination?.id ?? null)
+      } catch {
+        if (!cancelled) setDestinationSessionId(null)
+      }
+    }
+
+    void loadDestination()
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId, sessionRecord?.id, sessionRecord?.worktree_id, sessionRecord?.connection_id, worktreeId, connectionId, sourceSessionId])
 
   // Check if this is an orphaned (read-only) session
   const isOrphanedSession = useSessionStore((state) => state.orphanedSessions.has(sessionId))
@@ -4727,89 +4945,426 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
     ]
   )
 
+  const prepareHandoffPreview = useCallback(
+    async (planContent?: string, override?: HandoffSelectionOverride) => {
+      const pendingAttempt = pendingHandoffAttemptRef.current
+      if (pendingAttempt) {
+        setHandoffSelectionOverride(pendingAttempt.override)
+        setHandoffPlanContent(pendingAttempt.planContent)
+        setHandoffPrompt(pendingAttempt.prompt)
+        setHandoffDialogOpen(true)
+        return
+      }
+
+      setIsLoadingHandoffContext(true)
+      setHandoffSelectionOverride(override ?? null)
+      setHandoffPlanContent(planContent?.trim() || null)
+      setHandoffPrompt('Lendo o histórico, pendências e estado do Git disponíveis…')
+      setHandoffDialogOpen(true)
+      try {
+        const gitRepositories = await readHandoffGitRepositories(worktreePath, connectionId)
+        const pendingActions: string[] = []
+        if (pendingPlan?.planContent) pendingActions.push(`Plano aguardando decisão:\n${pendingPlan.planContent}`)
+        if (activeQuestion) {
+          pendingActions.push(...activeQuestion.questions.map((item) => `Pergunta aguardando resposta: ${item.question}`))
+        }
+        if (activePermission) {
+          pendingActions.push(`Permissão aguardando decisão: ${activePermission.permission}${activePermission.patterns.length
+            ? ` (${activePermission.patterns.join(', ')})`
+            : ''}`)
+        }
+        if (activeCommandApproval) {
+          pendingActions.push(`Comando aguardando aprovação: ${activeCommandApproval.commandStr}`)
+        }
+        if (queuedMessages.length > 0) {
+          pendingActions.push(...queuedMessages.map((item) => `Mensagem enfileirada: ${item.content}`))
+        }
+
+        setHandoffPrompt(buildSessionHandoffPrompt({
+          messages: messagesRef.current,
+          agentSdk: sessionAgentSdk,
+          unsentDraft: inputValue,
+          pendingActions,
+          gitRepositories,
+          planContent
+        }))
+      } catch {
+        setHandoffPrompt(buildSessionHandoffPrompt({
+          messages: messagesRef.current,
+          agentSdk: sessionAgentSdk,
+          unsentDraft: inputValue,
+          pendingActions: ['Desconhecidas; inspecione os estados pendentes no workspace.'],
+          gitRepositories: null,
+          planContent
+        }))
+      } finally {
+        setIsLoadingHandoffContext(false)
+      }
+    },
+    [
+      worktreePath,
+      connectionId,
+      pendingPlan,
+      activeQuestion,
+      activePermission,
+      activeCommandApproval,
+      queuedMessages,
+      sessionAgentSdk,
+      inputValue
+    ]
+  )
+
   const handlePlanReadyHandoff = useCallback(
     async (override?: HandoffSelectionOverride) => {
+      const planContent = pendingPlan?.planContent ??
+        [...messages].reverse().find((message) => message.role === 'assistant' && message.content.trim())?.content
+      if (!planContent?.trim()) {
+        toast.error('No plan content found to hand off')
+        return
+      }
+      await prepareHandoffPreview(planContent.trim(), override)
+    },
+    [pendingPlan, messages, prepareHandoffPreview]
+  )
+
+  const handleContinueWithAnotherAgent = useCallback(
+    async (override: HandoffSelectionOverride) => {
+      if (handoffCreationLockRef.current || isCreatingHandoff) return
+      const pendingAttempt = pendingHandoffAttemptRef.current
+      const prompt = pendingAttempt?.prompt ?? handoffPrompt.trim()
+      if (!prompt) return
+
+      handoffCreationLockRef.current = true
+      const sessionStore = useSessionStore.getState()
+      setIsCreatingHandoff(true)
+      try {
+        let attempt = pendingHandoffAttemptRef.current
+        if (attempt && attempt.sourceSessionId !== sessionId) {
+          toast.error('Há uma transferência pendente de outra sessão. Volte à sessão de origem para retomá-la.')
+          return
+        }
+
+        if (attempt && !attempt.linked) {
+          const persistedDestination = await window.db.session.get(attempt.destinationSessionId) as
+            (Awaited<ReturnType<typeof window.db.session.get>> & { source_session_id?: string | null }) | null
+          if (!persistedDestination) {
+            pendingHandoffAttemptRef.current = null
+            attempt = null
+          } else if (persistedDestination.source_session_id === sessionId) {
+            attempt.linked = true
+          } else if (persistedDestination.source_session_id) {
+            toast.error('A sessão de destino já está vinculada a outra origem. A sessão original foi mantida.')
+            return
+          }
+        }
+
+        if (!attempt) {
+          let destinationSessionId: string
+
+          if (connectionId) {
+            const result = await sessionStore.createConnectionSession(
+              connectionId,
+              override.agentSdk,
+              'build',
+              { autoFocus: false, modelOverride: override.model }
+            )
+            if (!result.success || !result.session) {
+              toast.error(result.error ?? 'Não foi possível criar a sessão de destino.')
+              return
+            }
+            destinationSessionId = result.session.id
+          } else {
+            if (!worktreeId || !sessionRecord?.project_id) {
+              toast.error('Esta sessão não tem um workspace disponível para continuar.')
+              return
+            }
+
+            const result = await sessionStore.createSession(
+              worktreeId,
+              sessionRecord.project_id,
+              override.agentSdk,
+              'build',
+              { autoFocus: false, modelOverride: override.model }
+            )
+            if (!result.success || !result.session) {
+              toast.error(result.error ?? 'Não foi possível criar a sessão de destino.')
+              return
+            }
+            destinationSessionId = result.session.id
+          }
+
+          attempt = {
+            destinationSessionId,
+            sourceSessionId: sessionId,
+            linked: false,
+            override,
+            prompt,
+            planContent: handoffPlanContent
+          }
+          pendingHandoffAttemptRef.current = attempt
+        }
+
+        if (!attempt.linked) {
+          let linkedSession: Awaited<ReturnType<typeof window.db.session.update>> = null
+          for (let retry = 0; retry < 2 && !linkedSession; retry++) {
+            try {
+              linkedSession = await window.db.session.update(attempt.destinationSessionId, {
+                source_session_id: sessionId
+              })
+            } catch {
+              // Retry once to absorb a transient persistence failure without creating another session.
+            }
+          }
+          if (!linkedSession) {
+            setHandoffSelectionOverride(attempt.override)
+            setHandoffPrompt(attempt.prompt)
+            setHandoffPlanContent(attempt.planContent)
+            setHandoffDialogOpen(true)
+            toast.error('A sessão de destino já foi criada, mas não foi possível registrar a origem. Tente novamente para concluir sem criar outra sessão.')
+            return
+          }
+          attempt.linked = true
+        }
+
+        setDestinationSessionId(attempt.destinationSessionId)
+        void window.analyticsOps.track('session_handoff_created', {
+          source_agent_sdk: sessionAgentSdk,
+          destination_agent_sdk: attempt.override.agentSdk,
+          scope: connectionId ? 'connection' : 'worktree'
+        }).catch(() => {})
+        sessionStore.setPendingMessage(attempt.destinationSessionId, attempt.prompt)
+        await sessionStore.setSessionMode(attempt.destinationSessionId, 'build')
+        if (connectionId) {
+          sessionStore.setActiveConnectionSession(attempt.destinationSessionId)
+        } else {
+          sessionStore.setActiveSession(attempt.destinationSessionId)
+        }
+
+        setHandoffDialogOpen(false)
+
+        if (attempt.planContent) {
+          sessionStore.clearPendingPlan(sessionId)
+          useWorktreeStatusStore.getState().clearSessionStatus(sessionId)
+          lastSendMode.delete(sessionId)
+          await sessionStore.setSessionMode(sessionId, 'build')
+        }
+
+        // Stop an active source only after the destination exists and has its context.
+        if ((attempt.planContent || isStreaming || isSending) && worktreePath && opencodeSessionId) {
+          useCommandApprovalStore.getState().clearSession(sessionId)
+          try {
+            await window.opencodeOps.abort(worktreePath, opencodeSessionId)
+          } catch {
+            toast.warning('A nova sessão foi criada, mas a sessão original ainda pode estar ativa.')
+          }
+        }
+        pendingHandoffAttemptRef.current = null
+      } catch (cause) {
+        toast.error(cause instanceof Error ? cause.message : 'Não foi possível continuar com outro agente.')
+      } finally {
+        handoffCreationLockRef.current = false
+        setIsCreatingHandoff(false)
+      }
+    },
+    [
+      handoffPrompt,
+      isCreatingHandoff,
+      connectionId,
+      worktreeId,
+      sessionRecord?.project_id,
+      isStreaming,
+      isSending,
+      handoffPlanContent,
+      worktreePath,
+      opencodeSessionId,
+      sessionId,
+      sessionAgentSdk
+    ]
+  )
+
+  const openHandoffPreview = useCallback(() => {
+    void prepareHandoffPreview()
+  }, [prepareHandoffPreview])
+
+  const handleOpenSourceSession = useCallback(async () => {
+    if (!sourceSessionId || isOpeningSourceSession) return
+
+    setIsOpeningSourceSession(true)
+    try {
+      const sourceSession = await window.db.session.get(sourceSessionId)
+      if (!sourceSession) {
+        toast.error('A sessão de origem não está mais disponível.')
+        return
+      }
+
+      const sessionStore = useSessionStore.getState()
+      if (sourceSession.connection_id) {
+        useConnectionStore.getState().selectConnection(sourceSession.connection_id)
+        sessionStore.setActiveConnection(sourceSession.connection_id)
+        const sessions = sessionStore.sessionsByConnection.get(sourceSession.connection_id) ?? []
+        if (!sessions.some((session) => session.id === sourceSession.id)) {
+          await sessionStore.loadConnectionSessions(sourceSession.connection_id)
+        }
+        const loadedSessions = useSessionStore.getState().sessionsByConnection.get(sourceSession.connection_id) ?? []
+        if (!loadedSessions.some((session) => session.id === sourceSession.id)) {
+          useSessionStore.setState((state) => {
+            const sessionsByConnection = new Map(state.sessionsByConnection)
+            sessionsByConnection.set(sourceSession.connection_id!, [
+              sourceSession,
+              ...(sessionsByConnection.get(sourceSession.connection_id!) ?? [])
+            ])
+            const tabOrderByConnection = new Map(state.tabOrderByConnection)
+            const order = tabOrderByConnection.get(sourceSession.connection_id!) ?? []
+            tabOrderByConnection.set(sourceSession.connection_id!, [sourceSession.id, ...order])
+            const modeBySession = new Map(state.modeBySession)
+            modeBySession.set(sourceSession.id, sourceSession.mode || 'build')
+            return { sessionsByConnection, tabOrderByConnection, modeBySession }
+          })
+        }
+        useSessionStore.getState().setActiveConnectionSession(sourceSession.id)
+      } else if (sourceSession.worktree_id) {
+        useProjectStore.getState().selectProject(sourceSession.project_id)
+        useWorktreeStore.getState().selectWorktree(sourceSession.worktree_id)
+        sessionStore.setActiveWorktree(sourceSession.worktree_id)
+        const sessions = sessionStore.sessionsByWorktree.get(sourceSession.worktree_id) ?? []
+        if (!sessions.some((session) => session.id === sourceSession.id)) {
+          await sessionStore.loadSessions(sourceSession.worktree_id, sourceSession.project_id)
+        }
+        const loadedSessions = useSessionStore.getState().sessionsByWorktree.get(sourceSession.worktree_id) ?? []
+        if (!loadedSessions.some((session) => session.id === sourceSession.id)) {
+          useSessionStore.setState((state) => {
+            const sessionsByWorktree = new Map(state.sessionsByWorktree)
+            sessionsByWorktree.set(sourceSession.worktree_id!, [
+              sourceSession,
+              ...(sessionsByWorktree.get(sourceSession.worktree_id!) ?? [])
+            ])
+            const tabOrderByWorktree = new Map(state.tabOrderByWorktree)
+            const order = tabOrderByWorktree.get(sourceSession.worktree_id!) ?? []
+            tabOrderByWorktree.set(sourceSession.worktree_id!, [sourceSession.id, ...order])
+            const modeBySession = new Map(state.modeBySession)
+            modeBySession.set(sourceSession.id, sourceSession.mode || 'build')
+            return { sessionsByWorktree, tabOrderByWorktree, modeBySession }
+          })
+        }
+        useSessionStore.getState().setActiveSession(sourceSession.id)
+      } else {
+        toast.error('A sessão de origem não tem uma worktree ou Connection disponível.')
+      }
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'Não foi possível abrir a sessão de origem.')
+    } finally {
+      setIsOpeningSourceSession(false)
+    }
+  }, [sourceSessionId, isOpeningSourceSession])
+
+  const handleOpenDestinationSession = useCallback(async () => {
+    if (!destinationSessionId || isOpeningDestinationSession) return
+
+    setIsOpeningDestinationSession(true)
+    try {
+      const destinationSession = await window.db.session.get(destinationSessionId)
+      if (!destinationSession) {
+        toast.error('A sessão de destino não está mais disponível.')
+        return
+      }
+
+      const sessionStore = useSessionStore.getState()
+      if (destinationSession.connection_id) {
+        useConnectionStore.getState().selectConnection(destinationSession.connection_id)
+        sessionStore.setActiveConnection(destinationSession.connection_id)
+        const current = sessionStore.sessionsByConnection.get(destinationSession.connection_id) ?? []
+        if (!current.some((session) => session.id === destinationSession.id)) {
+          await sessionStore.loadConnectionSessions(destinationSession.connection_id)
+        }
+        const loaded = useSessionStore.getState().sessionsByConnection.get(destinationSession.connection_id) ?? []
+        if (!loaded.some((session) => session.id === destinationSession.id)) {
+          useSessionStore.setState((state) => {
+            const sessionsByConnection = new Map(state.sessionsByConnection)
+            sessionsByConnection.set(destinationSession.connection_id!, [
+              destinationSession,
+              ...(sessionsByConnection.get(destinationSession.connection_id!) ?? [])
+            ])
+            const tabOrderByConnection = new Map(state.tabOrderByConnection)
+            const order = tabOrderByConnection.get(destinationSession.connection_id!) ?? []
+            tabOrderByConnection.set(destinationSession.connection_id!, [destinationSession.id, ...order])
+            const modeBySession = new Map(state.modeBySession)
+            modeBySession.set(destinationSession.id, destinationSession.mode || 'build')
+            return { sessionsByConnection, tabOrderByConnection, modeBySession }
+          })
+        }
+        useSessionStore.getState().setActiveConnectionSession(destinationSession.id)
+      } else if (destinationSession.worktree_id) {
+        useProjectStore.getState().selectProject(destinationSession.project_id)
+        useWorktreeStore.getState().selectWorktree(destinationSession.worktree_id)
+        sessionStore.setActiveWorktree(destinationSession.worktree_id)
+        const current = sessionStore.sessionsByWorktree.get(destinationSession.worktree_id) ?? []
+        if (!current.some((session) => session.id === destinationSession.id)) {
+          await sessionStore.loadSessions(destinationSession.worktree_id, destinationSession.project_id)
+        }
+        const loaded = useSessionStore.getState().sessionsByWorktree.get(destinationSession.worktree_id) ?? []
+        if (!loaded.some((session) => session.id === destinationSession.id)) {
+          useSessionStore.setState((state) => {
+            const sessionsByWorktree = new Map(state.sessionsByWorktree)
+            sessionsByWorktree.set(destinationSession.worktree_id!, [
+              destinationSession,
+              ...(sessionsByWorktree.get(destinationSession.worktree_id!) ?? [])
+            ])
+            const tabOrderByWorktree = new Map(state.tabOrderByWorktree)
+            const order = tabOrderByWorktree.get(destinationSession.worktree_id!) ?? []
+            tabOrderByWorktree.set(destinationSession.worktree_id!, [destinationSession.id, ...order])
+            const modeBySession = new Map(state.modeBySession)
+            modeBySession.set(destinationSession.id, destinationSession.mode || 'build')
+            return { sessionsByWorktree, tabOrderByWorktree, modeBySession }
+          })
+        }
+        useSessionStore.getState().setActiveSession(destinationSession.id)
+      } else {
+        toast.error('A sessão de destino não tem uma worktree ou Connection disponível.')
+      }
+    } catch (cause) {
+      toast.error(cause instanceof Error ? cause.message : 'Não foi possível abrir a sessão de destino.')
+    } finally {
+      setIsOpeningDestinationSession(false)
+    }
+  }, [destinationSessionId, isOpeningDestinationSession])
+
+  const handlePlanReadyImplement = useCallback(
+    async (_override: HandoffSelectionOverride) => {
+      // The Implement action continues this session. Cross-session/provider
+      // transfer remains available through the separate Handoff control.
+      if (isClaudeCode && pendingPlan && worktreePath) {
+        const plan = pendingPlan
+        const result = await window.opencodeOps.planApprove(
+          worktreePath,
+          sessionId,
+          plan.requestId
+        )
+        if (!result.success) {
+          toast.error(`Plan approval failed: ${result.error ?? 'unknown'}`)
+          return
+        }
+        useSessionStore.getState().clearPendingPlan(sessionId)
+        useWorktreeStatusStore.getState().clearSessionStatus(sessionId)
+        await useSessionStore.getState().setSessionMode(sessionId, 'build')
+        return
+      }
+
       const planContent =
         pendingPlan?.planContent ??
         [...messages].reverse().find((m) => m.role === 'assistant' && m.content.trim().length > 0)
           ?.content
-      if (!planContent) {
-        toast.error('No plan content found to hand off')
+      if (!planContent?.trim()) {
+        toast.error('No plan content found to implement')
         return
       }
 
       useSessionStore.getState().clearPendingPlan(sessionId)
       useWorktreeStatusStore.getState().clearSessionStatus(sessionId)
       lastSendMode.delete(sessionId)
-
-      // Abort the original backend session so it stops spinning
-      if (worktreePath && opencodeSessionId) {
-        useCommandApprovalStore.getState().clearSession(sessionId)
-        await window.opencodeOps.abort(worktreePath, opencodeSessionId)
-      }
-
-      if (connectionId) {
-        const handoffPrompt = `Implement the following plan\n${planContent}`
-        const sessionStore = useSessionStore.getState()
-        const result = await sessionStore.createConnectionSession(
-          connectionId,
-          override?.agentSdk,
-          undefined,
-          { modelOverride: override?.model }
-        )
-        if (!result.success || !result.session) {
-          toast.error(result.error ?? 'Failed to create handoff session')
-          return
-        }
-        const setModePromise = sessionStore.setSessionMode(result.session.id, 'build')
-        sessionStore.setPendingMessage(result.session.id, handoffPrompt)
-        sessionStore.setActiveConnectionSession(result.session.id)
-        await setModePromise
-        return
-      }
-
-      const currentWorktreeId = worktreeId
-      const currentProjectId = sessionRecord?.project_id
-      if (!currentWorktreeId || !currentProjectId) {
-        toast.error('Could not start handoff session')
-        return
-      }
-
-      const handoffPrompt = `Implement the following plan\n${planContent}`
-
-      const sessionStore = useSessionStore.getState()
-      const result = await sessionStore.createSession(
-        currentWorktreeId,
-        currentProjectId,
-        override?.agentSdk,
-        undefined,
-        { modelOverride: override?.model }
-      )
-      if (!result.success || !result.session) {
-        toast.error(result.error ?? 'Failed to create handoff session')
-        return
-      }
-
-      const setModePromise = sessionStore.setSessionMode(result.session.id, 'build')
-      sessionStore.setPendingMessage(result.session.id, handoffPrompt)
-      sessionStore.setActiveSession(result.session.id)
-      await setModePromise
+      await useSessionStore.getState().setSessionMode(sessionId, 'build')
+      await handleSend(`Implement the following plan\n${planContent}`)
     },
-    [
-      messages,
-      worktreeId,
-      sessionRecord?.project_id,
-      connectionId,
-      sessionId,
-      worktreePath,
-      opencodeSessionId,
-      pendingPlan
-    ]
-  )
-
-  const handlePlanReadyImplement = useCallback(
-    async (override: HandoffSelectionOverride) => handlePlanReadyHandoff(override),
-    [handlePlanReadyHandoff]
+    [isClaudeCode, pendingPlan, worktreePath, sessionId, messages, handleSend]
   )
 
   const handlePlanReadyCopyPlan = useCallback(async () => {
@@ -5876,9 +6431,9 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
       }
     }
 
-    // Interleave bash runs as synthetic messages
-    if (bashRuns.length === 0) return filtered
-
+    // Realtime Codex voice delivers transcript and activity events on separate
+    // channels. Sort by their event timestamps so late transcript updates do
+    // not get appended after newer activity or completion messages.
     const bashMessages: OpenCodeMessage[] = bashRuns.map((run) => ({
       id: `bash-${run.id}`,
       role: 'bash' as const,
@@ -5888,9 +6443,12 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
       bashOutput: run.output
     }))
 
-    return [...filtered, ...bashMessages].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-    )
+    return [...filtered, ...bashMessages].sort((a, b) => {
+      const timeA = Date.parse(a.timestamp)
+      const timeB = Date.parse(b.timestamp)
+      if (!Number.isFinite(timeA) || !Number.isFinite(timeB)) return 0
+      return timeA - timeB
+    })
   }, [messages, revertMessageID, bashRuns])
 
   const revertedUserCount = useMemo(() => {
@@ -6367,9 +6925,57 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
             )}
           >
             {/* Top row: mode toggle */}
-            <div className="px-3 pt-2.5 pb-1 flex items-center gap-1.5">
-              <ModeToggle sessionId={sessionId} />
-              <SuperToggle sessionId={sessionId} />
+            <div className="flex items-center justify-between gap-2 px-3 pb-1 pt-2.5">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <ModeToggle sessionId={sessionId} />
+                <SuperToggle sessionId={sessionId} />
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                {sourceSessionId && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => void handleOpenSourceSession()}
+                    disabled={isOpeningSourceSession}
+                    title="Abrir a conversa de origem desta sessão"
+                    data-testid="open-source-session"
+                  >
+                    {isOpeningSourceSession ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                    Sessão de origem
+                  </Button>
+                )}
+                {destinationSessionId && !sourceSessionId && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => void handleOpenDestinationSession()}
+                    disabled={isOpeningDestinationSession}
+                    title="Abrir a sessão criada a partir desta conversa"
+                    data-testid="open-destination-session"
+                  >
+                    {isOpeningDestinationSession ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                    Sessão de destino
+                  </Button>
+                )}
+                {layoutVariant !== 'global-assistant' && !isOrphanedSession && (connectionId || worktreeId) && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-xs"
+                    onClick={openHandoffPreview}
+                    disabled={isCreatingHandoff || isLoadingHandoffContext}
+                    data-testid="continue-with-another-agent"
+                  >
+                    {isLoadingHandoffContext ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                    {isLoadingHandoffContext ? 'Lendo contexto…' : 'Continuar com outro agente'}
+                  </Button>
+                )}
+              </div>
             </div>
 
             {/* Attachment previews */}
@@ -6607,6 +7213,82 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
           </div>
         </div>
       </div>
+
+      <Dialog
+        open={handoffDialogOpen}
+        onOpenChange={(open) => {
+          if (!isCreatingHandoff) setHandoffDialogOpen(open)
+        }}
+      >
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Continuar com outro agente</DialogTitle>
+            <DialogDescription>
+              Revise e edite o contexto antes de criar a sessão no mesmo workspace. Informações indisponíveis aparecem como desconhecidas e devem ser conferidas pelo agente de destino.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={handoffPrompt}
+            onChange={(event) => {
+              const prompt = event.target.value
+              setHandoffPrompt(prompt)
+              const pendingAttempt = pendingHandoffAttemptRef.current
+              if (pendingAttempt) pendingAttempt.prompt = prompt
+            }}
+            rows={14}
+            disabled={isCreatingHandoff || isLoadingHandoffContext}
+            aria-label="Contexto para o outro agente"
+            className="resize-y font-mono text-xs leading-relaxed"
+            data-testid="session-handoff-prompt"
+          />
+          {isLoadingHandoffContext && (
+            <p className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />Lendo o contexto disponível…
+            </p>
+          )}
+          {pendingHandoffAttemptRef.current && (
+            <p className="text-xs text-amber-600 dark:text-amber-400" role="status">
+              A sessão de destino já existe. Tente novamente para concluir o vínculo sem criar outra sessão.
+            </p>
+          )}
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={isCreatingHandoff || isLoadingHandoffContext}
+              onClick={() => setHandoffDialogOpen(false)}
+            >
+              Cancelar
+            </Button>
+            {handoffSelectionOverride ? (
+              <Button
+                type="button"
+                onClick={() => void handleContinueWithAnotherAgent(handoffSelectionOverride)}
+                disabled={isCreatingHandoff || isLoadingHandoffContext || !handoffPrompt.trim()}
+                data-testid="session-handoff-confirm"
+              >
+                {pendingHandoffAttemptRef.current
+                  ? 'Tentar novamente'
+                  : `Criar sessão com ${HANDOFF_AGENT_LABELS[handoffSelectionOverride.agentSdk] ?? handoffSelectionOverride.agentSdk}`}
+              </Button>
+            ) : (
+              <div className={isCreatingHandoff ? 'pointer-events-none opacity-60' : undefined}>
+                <HandoffSplitButton
+                  worktreeId={worktreeId ?? undefined}
+                  onHandoff={(override) => void handleContinueWithAnotherAgent(override)}
+                  testIdPrefix="session"
+                  disabled={isCreatingHandoff || isLoadingHandoffContext || !handoffPrompt.trim()}
+                />
+              </div>
+            )}
+          </DialogFooter>
+          {isCreatingHandoff && (
+            <p className="flex items-center justify-center gap-2 text-xs text-muted-foreground" role="status">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />Criando a sessão de destino…
+            </p>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={planTemplateDialogOpen} onOpenChange={setPlanTemplateDialogOpen}>
         <DialogContent className="sm:max-w-2xl">

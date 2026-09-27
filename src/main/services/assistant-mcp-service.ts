@@ -8,11 +8,19 @@ import { z } from 'zod/v4'
 import type { DatabaseService } from '../db/database'
 import type { Session } from '../db/types'
 import type { AgentSdkId, AgentSdkImplementer } from './agent-sdk-types'
-import { createWorktreeOp } from './worktree-ops'
-import { createConnectionOp } from './connection-ops'
-import { APP_SETTINGS_DB_KEY } from '@shared/types/settings'
+import { createWorktreeOp, deleteWorktreeOp } from './worktree-ops'
+import { createConnectionOp, deleteConnectionOp } from './connection-ops'
+import { AssistantProjectSelectionManager } from './assistant-project-selection'
+import {
+  DELEGATION_AGENT_SDKS,
+  isDelegationAgentSdk,
+  resolveDelegationAgentSdk,
+  type DelegationAgentSdk
+} from './assistant-agent-routing'
 import { createLogger } from './logger'
+import { telemetryService } from './telemetry-service'
 import { openCodeService } from './opencode-service'
+import { getCapabilityStudio } from './capability-studio'
 import { onAgentStreamEvent, type AgentStreamEvent } from './agent-event-bus'
 import type {
   AssistantProjectSelectionRequest,
@@ -27,13 +35,7 @@ const ASSISTANT_PROJECT_INSTRUCTIONS_KEY = 'assistant_project_instructions_v1'
 const ASSISTANT_TASKS_KEY = 'assistant_delegated_tasks_v1'
 let assistantMcpUrl: string | null = null
 let taskTrackingDisposer: (() => void) | null = null
-const pendingProjectSelections = new Map<
-  string,
-  {
-    request: AssistantProjectSelectionRequest
-    resolve: (projectId: string | null) => void
-  }
->()
+const projectSelections = new AssistantProjectSelectionManager()
 
 export interface AssistantWindowLike {
   isDestroyed: () => boolean
@@ -62,44 +64,40 @@ export function getAssistantMcpUrl(): string | null {
 }
 
 export function getPendingAssistantProjectSelections(): AssistantProjectSelectionRequest[] {
-  return Array.from(pendingProjectSelections.values(), (entry) => entry.request)
+  return projectSelections.listPending()
 }
 
 export function resolveAssistantProjectSelection(
   requestId: string,
   projectId: string | null
 ): boolean {
-  const pending = pendingProjectSelections.get(requestId)
-  if (!pending) return false
-  if (projectId && !pending.request.projects.some((project) => project.id === projectId)) {
-    return false
-  }
-  pendingProjectSelections.delete(requestId)
-  pending.resolve(projectId)
-  return true
+  return projectSelections.resolve(requestId, projectId)
 }
 
-function waitForAssistantProjectSelection(
-  request: AssistantProjectSelectionRequest,
-  mainWindow: AssistantWindowLike
-): Promise<string | null> {
-  return new Promise((resolveSelection) => {
-    pendingProjectSelections.set(request.id, { request, resolve: resolveSelection })
-    if (!mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('assistant:project-selection-requested', request)
+type CreatedWorktree = {
+  project: NonNullable<ReturnType<DatabaseService['getProject']>>
+  worktree: NonNullable<Awaited<ReturnType<typeof createWorktreeOp>>['worktree']>
+}
+
+async function rollbackCreatedWorktrees(db: DatabaseService, created: CreatedWorktree[]): Promise<void> {
+  for (const { project, worktree } of [...created].reverse()) {
+    try {
+      const result = await deleteWorktreeOp(db, {
+        worktreeId: worktree.id,
+        worktreePath: worktree.path,
+        branchName: worktree.branch_name,
+        projectPath: project.path,
+        archive: true,
+        skipArchiveScript: true
+      })
+      if (!result.success) throw new Error(result.error || 'Worktree rollback failed')
+    } catch (error) {
+      log.warn('Could not roll back a worktree created for assistant delegation', {
+        worktreeId: worktree.id,
+        error: error instanceof Error ? error.message : String(error)
+      })
     }
-  })
-}
-
-function readDefaultAgentSdk(db: DatabaseService): AgentSdkId {
-  try {
-    const raw = db.getSetting(APP_SETTINGS_DB_KEY)
-    const value = raw ? (JSON.parse(raw) as Record<string, unknown>).defaultAgentSdk : null
-    if (value === 'claude-code' || value === 'codex' || value === 'mistral-vibe' || value === 'cursor-cli' || value === 'antigravity' || value === 'opencode') return value
-  } catch {
-    // Use the stable default below.
   }
-  return 'opencode'
 }
 
 function text(value: unknown): { content: Array<{ type: 'text'; text: string }> } {
@@ -157,6 +155,9 @@ const WAITING_REASONS: AssistantTaskWaitingReason[] = [
   'question',
   'command_approval'
 ]
+const delegationAgentSdkSchema = z.enum(DELEGATION_AGENT_SDKS).optional().describe(
+  'Coding agent explicitly requested by the user. Omit to use the current Octob default agent.'
+)
 
 /**
  * Accept both the current task shape and the earlier persisted shape, which had
@@ -217,6 +218,7 @@ function normalizeAssistantTask(value: unknown): AssistantTask | null {
           }
         ],
     sessionId: raw.sessionId,
+    agentSdk: isDelegationAgentSdk(raw.agentSdk) ? raw.agentSdk : undefined,
     title: raw.title,
     state: waitingReason && state === 'running' ? 'waiting_input' : state,
     waitingReason: state === 'waiting_input' ? waitingReason : null,
@@ -443,6 +445,7 @@ function startAssistantTaskTracking(db: DatabaseService): void {
 
 interface DelegationRunner {
   connect: (workspacePath: string, octobSessionId: string) => Promise<{ sessionId: string }>
+  disconnect?: (workspacePath: string, agentSessionId: string) => Promise<void>
   reconnect?: (
     workspacePath: string,
     agentSessionId: string,
@@ -473,7 +476,7 @@ function resolveSessionAgentSdk(db: DatabaseService, session: Session): AgentSdk
   ) {
     return candidate
   }
-  return readDefaultAgentSdk(db)
+  return resolveDelegationAgentSdk(db)
 }
 
 /**
@@ -527,6 +530,7 @@ async function promptExistingSession(
 function summarizeTask(task: AssistantTask): Record<string, unknown> {
   return {
     session_id: task.sessionId,
+    agent_sdk: task.agentSdk,
     kind: task.kind,
     title: task.title,
     state: task.state,
@@ -562,9 +566,11 @@ export async function startAssistantMcpService(
     connectionId: string | null
     targets: AssistantTaskTarget[]
     projectName?: string
+    agentSdk?: DelegationAgentSdk
   }): Promise<AssistantTask> => {
     const [primary] = params.targets
-    const agentSdk = readDefaultAgentSdk(db)
+    const agentSdk = resolveDelegationAgentSdk(db, params.agentSdk)
+    const implementer = getImplementer(sdkManager, agentSdk)
     const session = db.createSession({
       worktree_id: params.kind === 'connection' ? null : primary.worktreeId,
       project_id: primary.projectId,
@@ -573,9 +579,18 @@ export async function startAssistantMcpService(
       agent_sdk: agentSdk,
       mode: 'plan'
     })
-    const implementer = getImplementer(sdkManager, agentSdk)
-    const connected = await implementer.connect(params.workspacePath, session.id)
-    db.updateSession(session.id, { opencode_session_id: connected.sessionId })
+    let backendSessionId: string | null = null
+    try {
+      const connected = await implementer.connect(params.workspacePath, session.id)
+      backendSessionId = connected.sessionId
+      db.updateSession(session.id, { opencode_session_id: connected.sessionId })
+    } catch (error) {
+      if (backendSessionId) {
+        await implementer.disconnect?.(params.workspacePath, backendSessionId).catch(() => {})
+      }
+      db.deleteSession(session.id)
+      throw error
+    }
 
     const now = new Date().toISOString()
     const task: AssistantTask = {
@@ -590,6 +605,7 @@ export async function startAssistantMcpService(
       connectionId: params.connectionId,
       targets: params.targets,
       sessionId: session.id,
+      agentSdk,
       title: params.title,
       state: 'running',
       waitingReason: null,
@@ -602,9 +618,14 @@ export async function startAssistantMcpService(
     // The MCP call must return immediately so the global assistant remains
     // responsive while the delegated agent continues in the background.
     recordAssistantTask(db, task)
+    telemetryService.track('assistant_task_delegated', {
+      agent_sdk: agentSdk,
+      agent_selection: params.agentSdk ? 'explicit' : 'default',
+      kind: params.kind
+    })
     mainWindow.webContents.send('assistant:task-created', task)
     notifyAssistantTasksChanged(db)
-    void implementer.prompt(params.workspacePath, connected.sessionId, params.prompt).catch((error) => {
+    void implementer.prompt(params.workspacePath, backendSessionId!, params.prompt).catch((error) => {
       log.error(
         'Delegated assistant task failed',
         error instanceof Error ? error : new Error(String(error)),
@@ -628,6 +649,55 @@ export async function startAssistantMcpService(
     const server = new McpServer({
       name: 'octob-internal-tools',
       version: process.env.npm_package_version ?? '1.0.0'
+    })
+
+    const capabilitySpecSchema = z.object({
+      name: z.string(), description: z.string(), provider: z.string().optional(),
+      screens: z.array(z.string()), actions: z.array(z.string()),
+      requiredSecrets: z.array(z.string()), externalWrites: z.array(z.string()),
+      timeoutMs: z.number().int().positive().optional()
+    })
+    const capabilityArtifactSchema = z.object({
+      html: z.string().describe('HTML fragment for the capability screen, without script tags'),
+      css: z.string(),
+      javascript: z.string().describe('Browser JavaScript. Use window.capability.call(input) to execute real backend actions.'),
+      handler: z.string().describe('Node.js code: an async function expression (input, api) => result or CommonJS source exporting a function. Normal Node APIs including require, process, filesystem, child_process and fetch are available. The user may provide any HTTP destination at runtime.'),
+      files: z.record(z.string(), z.string()).optional().describe('Optional versioned source and data files. The handler can require relative JavaScript or JSON files.'),
+      tests: z.array(z.object({ name: z.string(), input: z.unknown(), expected: z.unknown(), httpMocks: z.array(z.object({ url: z.string(), method: z.string().optional(), status: z.number().int().optional(), body: z.unknown().optional(), headers: z.record(z.string(), z.string()).optional() })).optional() }))
+    })
+
+    server.registerTool('capability_create_draft', {
+      description: 'Start a new experimental Octob capability from the user request. Resolve ambiguity first. Produce a specific name, screens, actions and external effects. The user must decide whether to install it after testing.',
+      inputSchema: { request: z.string().min(1), spec: capabilitySpecSchema }
+    }, async ({ request, spec }) => text(getCapabilityStudio().create(request, spec)))
+
+    server.registerTool('capability_add_version', {
+      description: 'Generate or revise the UI and real Node.js backend of a capability draft. Supply HTML, CSS, browser JavaScript, handler, optional files and contract tests. Use httpMocks to stub fetch in tests; other Node APIs remain real. Preview execution uses real network and Node APIs. Then call capability_validate. This does not install it.',
+      inputSchema: { draft_id: z.string(), artifact: capabilityArtifactSchema, spec: capabilitySpecSchema.optional() }
+    }, async ({ draft_id, artifact, spec }) => text(getCapabilityStudio().addVersion(draft_id, artifact, spec)))
+
+    server.registerTool('capability_validate', {
+      description: 'Build and test an experimental capability version. Report failed checks and revise until ready. The user tests the resulting screen in Experimentos and chooses whether to keep it.',
+      inputSchema: { draft_id: z.string(), version: z.number().int().positive().optional() }
+    }, async ({ draft_id, version }) => text(await getCapabilityStudio().validate(draft_id, version)))
+
+    server.registerTool('capability_list', {
+      description: 'List experimental and installed capabilities in Octob.', inputSchema: {}
+    }, async () => text(getCapabilityStudio().list()))
+
+    server.registerTool('capability_get', {
+      description: 'Inspect a capability draft, version and validation before revising it.',
+      inputSchema: { draft_id: z.string(), version: z.number().int().positive().optional() }
+    }, async ({ draft_id, version }) => text(getCapabilityStudio().get(draft_id, version)))
+
+    server.registerTool('capability_open_preview', {
+      description: 'Open a validated capability in the Experimentos screen so the user can test it and decide whether to keep it. This never installs the capability.',
+      inputSchema: { draft_id: z.string() }
+    }, async ({ draft_id }) => {
+      const detail = getCapabilityStudio().get(draft_id)
+      if (!detail.versions.some((item) => item.status === 'ready')) return text({ error: 'Validate a version before opening its preview' })
+      if (!mainWindow.isDestroyed()) mainWindow.webContents.send('assistant:capability-preview-requested', draft_id)
+      return text({ success: true, draft_id, message: 'Preview opened in Experimentos. The user must decide whether to keep it.' })
     })
 
     server.registerTool('list_projects', {
@@ -663,36 +733,44 @@ export async function startAssistantMcpService(
     })
 
     server.registerTool('request_project_selection', {
-      description: 'Show the user an Octob project picker and wait for one selection. First call list_projects to resolve the target ids. Use this only after deciding to delegate a task, immediately before creating the delegated work. For a task spanning repositories, call once for each repository. Do not use this for general discussion, research, or questions. The selected project and its saved assistant memory are returned together.',
+      description: 'Show the user an Octob project picker and wait for one selection. First call list_projects to resolve the target ids. Use this only after deciding to delegate a task, immediately before creating the delegated work. For a task spanning repositories, call once for each repository. Do not use this for general discussion, research, or questions. Pass the returned selection_token to the matching delegation tool; it is bound to the selected project and can be used once. The selected project and its saved assistant memory are returned together.',
       inputSchema: {
         project_ids: z.array(z.string()).min(1),
         question: z.string().min(1).optional()
       }
-    }, async ({ project_ids, question }) => {
+    }, async ({ project_ids, question }, extra) => {
       const uniqueIds = Array.from(new Set(project_ids))
-      const projects = uniqueIds
-        .map((projectId) => db.getProject(projectId))
-        .filter((project): project is NonNullable<typeof project> => Boolean(project))
+      const projects = uniqueIds.map((projectId) => db.getProject(projectId))
 
-      if (projects.length === 0) return text({ error: 'No matching registered projects found' })
+      if (projects.length === 0 || projects.some((project) => !project)) {
+        return text({ error: 'One or more projects are not registered in Octob' })
+      }
 
       const request: AssistantProjectSelectionRequest = {
         id: randomUUID(),
         question: question?.trim() || 'Qual projeto voce quer selecionar para esta tarefa delegada?',
         projects: projects.map((project) => ({
-          id: project.id,
-          name: project.name,
-          description: project.description,
-          language: project.language
+          id: project!.id,
+          name: project!.name,
+          description: project!.description,
+          language: project!.language
         }))
       }
-      const selectedProjectId = await waitForAssistantProjectSelection(request, mainWindow)
-      if (!selectedProjectId) return text({ cancelled: true })
+      const selected = await projectSelections.request(
+        request,
+        (selectionRequest) => {
+          if (mainWindow.isDestroyed()) throw new Error('Assistant window is closed')
+          mainWindow.webContents.send('assistant:project-selection-requested', selectionRequest)
+        },
+        { signal: extra.signal }
+      )
+      if (!selected) return text({ cancelled: true })
 
-      const selectedProject = db.getProject(selectedProjectId)
+      const selectedProject = db.getProject(selected.projectId)
       if (!selectedProject) return text({ error: 'Selected project no longer exists' })
       return text({
         selected_project: selectedProject,
+        selection_token: selected.selectionToken,
         assistant_instructions: readProjectInstructions(db)[selectedProject.id] ?? []
       })
     })
@@ -735,15 +813,20 @@ export async function startAssistantMcpService(
     })
 
     server.registerTool('create_worktree_and_delegate', {
-      description: 'Create an isolated worktree for a task the user asked you to perform, create an agent session in it, and send the elaborated prompt. The user request authorizes the task; do not ask separate permission to delegate. Call request_project_selection immediately before this tool so the user chooses the repository at delegation time. Do not call this while merely listing or researching tasks. For follow-up work on a job you already delegated, use send_prompt_to_task instead of creating another worktree.',
+      description: 'Create an isolated worktree for a task the user asked you to perform, create an agent session in it, and send the elaborated prompt. Set agent_sdk when the user explicitly chooses an agent; omit it to use the Octob default. Pass the one-time selection_token returned by request_project_selection for this project. Do not call this while merely listing or researching tasks. For follow-up work on a job you already delegated, use send_prompt_to_task instead of creating another worktree.',
       inputSchema: {
         project_id: z.string(),
+        selection_token: z.string().uuid(),
         title: z.string(),
+        agent_sdk: delegationAgentSdkSchema,
         prompt: z.string().describe('Complete implementation or investigation prompt for the delegated agent')
       }
-    }, async ({ project_id, title, prompt }) => {
+    }, async ({ project_id, selection_token, title, agent_sdk, prompt }) => {
       const project = db.getProject(project_id)
       if (!project) return text({ error: 'Project not found' })
+      if (!projectSelections.consume([selection_token], [project.id])) {
+        return text({ error: 'Select this project in Octob before delegating' })
+      }
       const result = await createWorktreeOp(db, {
         projectId: project.id,
         projectPath: project.path,
@@ -751,30 +834,37 @@ export async function startAssistantMcpService(
       })
       if (!result.success || !result.worktree) return text({ error: result.error || 'Worktree creation failed' })
 
-      const task = await delegate({
-        kind: 'worktree',
-        title,
-        prompt,
-        workspacePath: result.worktree.path,
-        connectionId: null,
-        projectName: project.name,
-        targets: [
-          {
-            projectId: project.id,
-            projectName: project.name,
-            worktreeId: result.worktree.id,
-            worktreePath: result.worktree.path
-          }
-        ]
-      })
+      try {
+        const task = await delegate({
+          kind: 'worktree',
+          title,
+          agentSdk: agent_sdk,
+          prompt,
+          workspacePath: result.worktree.path,
+          connectionId: null,
+          projectName: project.name,
+          targets: [
+            {
+              projectId: project.id,
+              projectName: project.name,
+              worktreeId: result.worktree.id,
+              worktreePath: result.worktree.path
+            }
+          ]
+        })
 
-      return text({
-        success: true,
-        project_id: project.id,
-        worktree_id: result.worktree.id,
-        session_id: task.sessionId,
-        message: 'The delegated agent is running in the new worktree.'
-      })
+        return text({
+          success: true,
+          project_id: project.id,
+          worktree_id: result.worktree.id,
+          session_id: task.sessionId,
+          agent_sdk: task.agentSdk,
+          message: 'The delegated agent is running in the new worktree.'
+        })
+      } catch (error) {
+        await rollbackCreatedWorktrees(db, [{ project, worktree: result.worktree }])
+        return text({ error: error instanceof Error ? error.message : String(error) })
+      }
     })
 
     server.registerTool('list_delegated_tasks', {
@@ -821,41 +911,52 @@ export async function startAssistantMcpService(
     })
 
     server.registerTool('delegate_to_existing_worktree', {
-      description: 'Start a delegated agent inside a worktree that is already open in Octob, instead of creating a new one. Use this when the user points at work in progress ("continue in that branch"). The user request authorizes the task; do not ask separate permission to delegate. Call request_project_selection at delegation time, then find the selected repository worktree with get_project.',
+      description: 'Start a delegated agent inside a worktree that is already open in Octob, instead of creating a new one. Set agent_sdk when the user explicitly chooses an agent; omit it to use the Octob default. Pass the one-time selection_token returned by request_project_selection for this worktree project.',
       inputSchema: {
         worktree_id: z.string(),
+        selection_token: z.string().uuid(),
         title: z.string(),
+        agent_sdk: delegationAgentSdkSchema,
         prompt: z.string().min(1)
       }
-    }, async ({ worktree_id, title, prompt }) => {
+    }, async ({ worktree_id, selection_token, title, agent_sdk, prompt }) => {
       const worktree = db.getWorktree(worktree_id)
       if (!worktree || worktree.status !== 'active') return text({ error: 'Active worktree not found' })
       const project = db.getProject(worktree.project_id)
       if (!project) return text({ error: 'Project not found' })
+      if (!projectSelections.consume([selection_token], [project.id])) {
+        return text({ error: 'Select this project in Octob before delegating' })
+      }
 
-      const task = await delegate({
-        kind: 'worktree',
-        title,
-        prompt,
-        workspacePath: worktree.path,
-        connectionId: null,
-        projectName: project.name,
-        targets: [
-          {
-            projectId: project.id,
-            projectName: project.name,
-            worktreeId: worktree.id,
-            worktreePath: worktree.path
-          }
-        ]
-      })
+      try {
+        const task = await delegate({
+          kind: 'worktree',
+          title,
+          agentSdk: agent_sdk,
+          prompt,
+          workspacePath: worktree.path,
+          connectionId: null,
+          projectName: project.name,
+          targets: [
+            {
+              projectId: project.id,
+              projectName: project.name,
+              worktreeId: worktree.id,
+              worktreePath: worktree.path
+            }
+          ]
+        })
 
-      return text({
-        success: true,
-        session_id: task.sessionId,
-        worktree_id: worktree.id,
-        message: 'The delegated agent is running in the existing worktree.'
-      })
+        return text({
+          success: true,
+          session_id: task.sessionId,
+          agent_sdk: task.agentSdk,
+          worktree_id: worktree.id,
+          message: 'The delegated agent is running in the existing worktree.'
+        })
+      } catch (error) {
+        return text({ error: error instanceof Error ? error.message : String(error) })
+      }
     })
 
     server.registerTool('list_connections', {
@@ -879,79 +980,124 @@ export async function startAssistantMcpService(
     })
 
     server.registerTool('create_connection_and_delegate', {
-      description: 'Delegate work spanning repositories. Use request_project_selection only after deciding to delegate, so the user chooses the repositories for this task. Then pass the selected project ids to open fresh worktrees and join them in one connection workspace, or pass selected existing worktree ids, or reuse an existing connection with connection_id. The delegated agent runs once, with every repository mounted side by side. Do not ask separate permission to delegate a task the user requested; do not delegate while merely listing or researching.',
+      description: 'Delegate work spanning repositories. Set agent_sdk when the user explicitly chooses an agent; omit it to use the Octob default. Select each repository in Octob immediately before delegating and pass every one-time selection_token returned by request_project_selection. The token set must exactly match the projects in the resulting connection. The delegated agent runs once with every repository mounted side by side.',
       inputSchema: {
         project_ids: z.array(z.string()).optional().describe('Projects that need a new worktree for this task'),
         worktree_ids: z.array(z.string()).optional().describe('Existing worktrees to include as-is'),
         connection_id: z.string().optional().describe('Reuse this existing connection instead of creating one'),
+        selection_tokens: z.array(z.string().uuid()).min(1),
         title: z.string(),
+        agent_sdk: delegationAgentSdkSchema,
         prompt: z.string().min(1)
       }
-    }, async ({ project_ids, worktree_ids, connection_id, title, prompt }) => {
-      const createdWorktreeIds: string[] = []
-
-      if (!connection_id) {
-        for (const projectId of project_ids ?? []) {
-          const project = db.getProject(projectId)
-          if (!project) return text({ error: `Project not found: ${projectId}` })
-          const result = await createWorktreeOp(db, {
-            projectId: project.id,
-            projectPath: project.path,
-            projectName: project.name
-          })
-          if (!result.success || !result.worktree) {
-            return text({ error: result.error || `Worktree creation failed for ${project.name}` })
-          }
-          createdWorktreeIds.push(result.worktree.id)
-        }
+    }, async ({ project_ids, worktree_ids, connection_id, selection_tokens, title, agent_sdk, prompt }) => {
+      if (connection_id && ((project_ids?.length ?? 0) > 0 || (worktree_ids?.length ?? 0) > 0)) {
+        return text({ error: 'Pass connection_id by itself when reusing a connection' })
       }
-
-      const memberWorktreeIds = [
-        ...new Set([...(connection_id ? [] : worktree_ids ?? []), ...createdWorktreeIds])
-      ]
 
       let connection = connection_id ? db.getConnection(connection_id) : null
       if (connection_id && !connection) return text({ error: 'Connection not found' })
 
-      if (!connection) {
-        if (memberWorktreeIds.length < 2) {
-          return text({
-            error: 'A connection needs at least two worktrees. Pass two or more project_ids or worktree_ids, or reuse a connection_id.'
-          })
+      const selectedProjectIds: string[] = []
+      const existingWorktrees: NonNullable<ReturnType<DatabaseService['getWorktree']>>[] = []
+      const projectsToCreate: NonNullable<ReturnType<DatabaseService['getProject']>>[] = []
+
+      if (connection) {
+        for (const member of connection.members) selectedProjectIds.push(member.project_id)
+      } else {
+        for (const projectId of new Set(project_ids ?? [])) {
+          const project = db.getProject(projectId)
+          if (!project) return text({ error: `Project not found: ${projectId}` })
+          projectsToCreate.push(project)
+          selectedProjectIds.push(project.id)
         }
-        const result = await createConnectionOp(db, memberWorktreeIds)
-        if (!result.success || !result.connection) {
-          return text({ error: result.error || 'Connection creation failed' })
+        for (const worktreeId of new Set(worktree_ids ?? [])) {
+          const worktree = db.getWorktree(worktreeId)
+          if (!worktree || worktree.status !== 'active') return text({ error: `Active worktree not found: ${worktreeId}` })
+          const project = db.getProject(worktree.project_id)
+          if (!project) return text({ error: `Project not found for worktree ${worktree.id}` })
+          existingWorktrees.push(worktree)
+          selectedProjectIds.push(project.id)
         }
-        connection = result.connection
       }
 
-      const targets: AssistantTaskTarget[] = connection.members.map((member) => ({
-        projectId: member.project_id,
-        projectName: member.project_name,
-        worktreeId: member.worktree_id,
-        worktreePath: member.worktree_path
-      }))
+      const targetProjectIds = [...new Set(selectedProjectIds)]
+      if (targetProjectIds.length === 0) return text({ error: 'Select at least one registered project before delegating' })
+      if (!projectSelections.consume(selection_tokens, targetProjectIds)) {
+        return text({ error: 'Select every project in Octob before delegating' })
+      }
 
-      if (targets.length === 0) return text({ error: 'Connection has no members' })
+      const createdWorktrees: CreatedWorktree[] = []
+      let createdConnectionId: string | null = null
+      try {
+        if (!connection) {
+          for (const project of projectsToCreate) {
+            const result = await createWorktreeOp(db, {
+              projectId: project.id,
+              projectPath: project.path,
+              projectName: project.name
+            })
+            if (!result.success || !result.worktree) throw new Error(result.error || `Worktree creation failed for ${project.name}`)
+            createdWorktrees.push({ project, worktree: result.worktree })
+          }
 
-      const task = await delegate({
-        kind: 'connection',
-        title,
-        prompt,
-        workspacePath: connection.path,
-        connectionId: connection.id,
-        targets
-      })
+          const memberWorktreeIds = [...new Set([
+            ...existingWorktrees.map((worktree) => worktree.id),
+            ...createdWorktrees.map(({ worktree }) => worktree.id)
+          ])]
+          if (memberWorktreeIds.length < 2) throw new Error('A connection needs at least two worktrees')
 
-      return text({
-        success: true,
-        session_id: task.sessionId,
-        connection_id: connection.id,
-        connection_path: connection.path,
-        repositories: targets.map((target) => target.projectName),
-        message: 'The delegated agent is running in the connection workspace with every repository mounted.'
-      })
+          const result = await createConnectionOp(db, memberWorktreeIds)
+          if (!result.success || !result.connection) throw new Error(result.error || 'Connection creation failed')
+          connection = result.connection
+          createdConnectionId = result.connection.id
+        }
+
+        const targets: AssistantTaskTarget[] = connection.members.map((member) => ({
+          projectId: member.project_id,
+          projectName: member.project_name,
+          worktreeId: member.worktree_id,
+          worktreePath: member.worktree_path
+        }))
+        const actualProjectIds = [...new Set(targets.map((target) => target.projectId))]
+        if (
+          targets.length === 0 ||
+          actualProjectIds.length !== targetProjectIds.length ||
+          targetProjectIds.some((projectId) => !actualProjectIds.includes(projectId))
+        ) throw new Error('The connection projects do not match the selected projects')
+
+        const task = await delegate({
+          kind: 'connection',
+          title,
+          agentSdk: agent_sdk,
+          prompt,
+          workspacePath: connection.path,
+          connectionId: connection.id,
+          targets
+        })
+
+        return text({
+          success: true,
+          session_id: task.sessionId,
+          agent_sdk: task.agentSdk,
+          connection_id: connection.id,
+          connection_path: connection.path,
+          repositories: targets.map((target) => target.projectName),
+          message: 'The delegated agent is running in the connection workspace with every repository mounted.'
+        })
+      } catch (error) {
+        if (createdConnectionId) {
+          const cleanup = await deleteConnectionOp(db, createdConnectionId)
+          if (!cleanup.success) {
+            log.warn('Could not roll back the connection created for assistant delegation', {
+              connectionId: createdConnectionId,
+              error: cleanup.error
+            })
+          }
+        }
+        await rollbackCreatedWorktrees(db, createdWorktrees)
+        return text({ error: error instanceof Error ? error.message : String(error) })
+      }
     })
 
     return server

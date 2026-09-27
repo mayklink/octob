@@ -4,7 +4,7 @@ import { useLayoutStore } from '@/stores/useLayoutStore'
 import { useProjectStore, useConnectionStore, useFilterStore, useSpaceStore } from '@/stores'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { ResizeHandle } from './ResizeHandle'
-import { Bot, ChevronRight, FolderGit2, Link, Loader2, Sparkles } from 'lucide-react'
+import { Activity, Bot, ChevronRight, FolderGit2, Link, Loader2, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   ProjectList,
@@ -21,8 +21,12 @@ import { UsageIndicator } from './UsageIndicator'
 import { PinnedList } from './PinnedList'
 import { RecentList } from './RecentList'
 import { useGlobalAssistantStore } from '@/stores/useGlobalAssistantStore'
+import { useCapabilityStudioStore } from '@/stores/useCapabilityStudioStore'
+import { FlaskConical } from 'lucide-react'
 import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
 import { countAssistantTasksNeedingAttention } from '@/lib/assistant-task-state'
+import { useDevToolsStore } from '@/components/devtools/useDevToolsStore'
+import { DevToolsMiniPanel } from '@/components/devtools/DevToolsMiniPanel'
 
 export function LeftSidebar(): React.JSX.Element {
   const { t } = useTranslation()
@@ -30,12 +34,17 @@ export function LeftSidebar(): React.JSX.Element {
   const projectCount = useProjectStore((s) => s.projects.length)
   const usageIndicatorMode = useSettingsStore((s) => s.usageIndicatorMode)
   const usageIndicatorProviders = useSettingsStore((s) => s.usageIndicatorProviders)
+  const devToolsPanelVisible = useSettingsStore((s) => s.devToolsPanelVisible)
+  const devToolsPanelPosition = useSettingsStore((s) => s.devToolsPanelPosition)
+  const devToolsPanelTransparency = useSettingsStore((s) => s.devToolsPanelTransparency)
   const shouldShowUsageIndicator =
     usageIndicatorMode === 'current-agent' ||
     (usageIndicatorMode === 'specific-providers' && usageIndicatorProviders.length > 0)
   const [filterQuery, setFilterQuery] = useState('')
   const [connectionsExpanded, setConnectionsExpanded] = useState(false)
   const globalAssistantOpen = useGlobalAssistantStore((s) => s.isOpen)
+  const capabilityStudioOpen = useCapabilityStudioStore((s) => s.isOpen)
+  const devToolsOpen = useDevToolsStore((s) => s.isOpen)
   const assistantTasks = useGlobalAssistantStore((s) => s.tasks)
   const sessionStatuses = useWorktreeStatusStore((s) => s.sessionStatuses)
   const assistantAttentionCount = countAssistantTasksNeedingAttention(
@@ -174,7 +183,7 @@ export function LeftSidebar(): React.JSX.Element {
           <div className="border-b border-sidebar-border px-3 pb-3 pt-3">
             <button
               type="button"
-              onClick={() => useGlobalAssistantStore.getState().open()}
+              onClick={() => { useCapabilityStudioStore.getState().close(); useDevToolsStore.getState().close(); useGlobalAssistantStore.getState().open() }}
               className={`flex h-10 w-full items-center gap-3 rounded-lg border px-3 text-sm font-medium transition-all ${
                 globalAssistantOpen
                   ? 'border-primary/20 bg-sidebar-accent text-sidebar-accent-foreground'
@@ -191,6 +200,28 @@ export function LeftSidebar(): React.JSX.Element {
                   {assistantAttentionCount}
                 </span>
               )}
+            </button>
+            <button
+              type="button"
+              onClick={() => { useDevToolsStore.getState().close(); useCapabilityStudioStore.getState().open() }}
+              className={`mt-1 flex h-9 w-full items-center gap-3 rounded-lg px-3 text-sm transition-colors hover:bg-sidebar-accent/70 ${capabilityStudioOpen ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'text-sidebar-foreground'}`}
+            >
+              <FlaskConical className="h-4 w-4 shrink-0 text-violet-400" />
+              <span>Experimentos</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                useSettingsStore.getState().closeSettings()
+                useGlobalAssistantStore.getState().close()
+                useCapabilityStudioStore.getState().close()
+                useDevToolsStore.getState().open()
+              }}
+              aria-current={devToolsOpen ? 'page' : undefined}
+              className={`mt-1 flex h-9 w-full items-center gap-3 rounded-lg px-3 text-sm transition-colors hover:bg-sidebar-accent/70 ${devToolsOpen ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'text-sidebar-foreground'}`}
+            >
+              <Activity className="h-4 w-4 shrink-0 text-sky-400" />
+              <span>Dev Tools</span>
             </button>
             <div className="mt-1 flex h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium text-sidebar-accent-foreground">
               <FolderGit2 className="h-4 w-4 shrink-0" />
@@ -237,6 +268,9 @@ export function LeftSidebar(): React.JSX.Element {
             activeLanguages={activeLanguages}
           />
         </div>
+        {devToolsPanelVisible && devToolsPanelPosition === 'sidebar' && (
+          <DevToolsMiniPanel transparency={devToolsPanelTransparency} />
+        )}
         {!connectionModeActive && (shouldShowUsageIndicator ? <UsageIndicator /> : <SpacesTabBar />)}
       </aside>
       <ResizeHandle onResize={handleResize} direction="left" />

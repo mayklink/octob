@@ -697,6 +697,15 @@ function installSystemBridge(target: any): void {
     },
     getSnapshot: async () => (await octobRuntime.api<{ snapshot: unknown }>('/v1/system/perf-snapshot')).snapshot
   }
+  target.devToolsOps = {
+    listLogs: () => octobRuntime.api('/v1/system/log-files'),
+    readLogs: (args: { fileName: string; before?: number; limit?: number }) => {
+      const params = new URLSearchParams({ fileName: args.fileName })
+      if (args.before !== undefined) params.set('before', String(args.before))
+      if (args.limit !== undefined) params.set('limit', String(args.limit))
+      return octobRuntime.api(`/v1/system/log-read?${params.toString()}`)
+    }
+  }
   target.codexDebugLoggerOps = {
     configure: (enabled: boolean, resetPerSession: boolean) =>
       octobRuntime.api('/v1/system/codex-debug', 'POST', { enabled, resetPerSession })
@@ -735,6 +744,7 @@ function installConnectionBridge(target: any): void {
 const assistantTaskCreatedListeners = new Set<AnyFn>()
 const assistantTasksChangedListeners = new Set<AnyFn>()
 const assistantProjectSelectionListeners = new Set<AnyFn>()
+const capabilityPreviewListeners = new Set<AnyFn>()
 let disposeAssistantStream: (() => void) | null = null
 
 function ensureAssistantStream(): void {
@@ -748,6 +758,8 @@ function ensureAssistantStream(): void {
       for (const listener of assistantTasksChangedListeners) listener(value)
     } else if (event.channel === 'assistant:project-selection-requested') {
       for (const listener of assistantProjectSelectionListeners) listener(value)
+    } else if (event.channel === 'assistant:capability-preview-requested') {
+      for (const listener of capabilityPreviewListeners) listener(value)
     }
   })
 }
@@ -764,6 +776,7 @@ function addAssistantListener(
       assistantTaskCreatedListeners.size === 0 &&
       assistantTasksChangedListeners.size === 0 &&
       assistantProjectSelectionListeners.size === 0
+      && capabilityPreviewListeners.size === 0
     ) {
       disposeAssistantStream?.()
       disposeAssistantStream = null
@@ -772,6 +785,17 @@ function addAssistantListener(
 }
 
 function installAuxiliaryBridge(target: any): void {
+  target.capabilityOps = {
+    onPreviewRequested: (callback: AnyFn) => addAssistantListener(capabilityPreviewListeners, callback),
+    list: () => octobRuntime.api('/v1/capability-studio'),
+    get: (id: string, version?: number) => octobRuntime.api(`/v1/capability-studio/${encodeURIComponent(id)}${version ? `?version=${version}` : ''}`),
+    validate: (id: string, version?: number) => octobRuntime.api(`/v1/capability-studio/${encodeURIComponent(id)}/validate`, 'POST', { version }),
+    execute: (id: string, input: unknown, version?: number, executionId?: string) => octobRuntime.api(`/v1/capability-studio/${encodeURIComponent(id)}/execute`, 'POST', { input, version }, executionId),
+    cancelExecution: (executionId: string) => { octobRuntime.cancelScope(executionId); return Promise.resolve(true) },
+    install: (id: string, version: number) => octobRuntime.api(`/v1/capability-studio/${encodeURIComponent(id)}/install`, 'POST', { version }),
+    deactivate: (id: string) => octobRuntime.api(`/v1/capability-studio/${encodeURIComponent(id)}/deactivate`, 'POST', {}),
+    discard: (id: string) => octobRuntime.api(`/v1/capability-studio/${encodeURIComponent(id)}/discard`, 'POST', {})
+  }
   target.assistantOps = {
     show: async () => window.dispatchEvent(new Event('octob:assistant-show')),
     hide: async () => window.dispatchEvent(new Event('octob:assistant-hide')),

@@ -28,7 +28,16 @@ function localFilePath(href: string | undefined): string | null {
   const decoded = decodeLinkTarget(href)
   if (decoded.startsWith('file://')) {
     try {
-      return new URL(decoded).pathname
+      const url = new URL(decoded)
+      // URL.pathname keeps a leading slash for Windows drive paths
+      // (file:///C:/repo/file.ts), but Electron's file API expects C:\\repo\\file.ts.
+      const pathname = decodeURIComponent(url.pathname)
+      if (/^\/[A-Za-z]:\//.test(pathname)) {
+        return pathname.slice(1).replace(/\//g, '\\')
+      }
+      // Preserve UNC shares encoded as file://server/share/path.
+      if (url.hostname) return `\\\\${url.hostname}${pathname.replace(/\//g, '\\')}`
+      return pathname
     } catch {
       return null
     }

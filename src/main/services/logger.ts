@@ -50,7 +50,7 @@ class LoggerService {
     const homeDir = homedir()
     this.logDir = join(homeDir, '.octob', LOG_DIR_NAME)
     this.ensureLogDir()
-    this.currentLogFile = this.getLogFileName()
+    this.currentLogFile = this.getActiveLogFileName()
     this.minLevel = process.env.NODE_ENV === 'development' ? LogLevel.DEBUG : LogLevel.INFO
     this.cleanOldLogs()
   }
@@ -71,6 +71,29 @@ class LoggerService {
   private getLogFileName(): string {
     const date = new Date().toISOString().split('T')[0]
     return join(this.logDir, `octob-${date}.log`)
+  }
+
+  private getActiveLogFileName(): string {
+    const baseFile = this.getLogFileName()
+    if (!existsSync(baseFile) || statSync(baseFile).size < MAX_LOG_FILE_SIZE) return baseFile
+
+    const date = new Date().toISOString().split('T')[0]
+    const prefix = `octob-${date}-`
+    const segments = readdirSync(this.logDir)
+      .filter((file) => file.startsWith(prefix) && /^octob-\d{4}-\d{2}-\d{2}-\d{3,}\.log$/.test(file))
+      .map((file) => ({
+        file,
+        sequence: Number(file.slice(prefix.length, -'.log'.length))
+      }))
+      .sort((a, b) => b.sequence - a.sequence)
+
+    const latest = segments[0]
+    if (latest) {
+      const latestPath = join(this.logDir, latest.file)
+      if (statSync(latestPath).size < MAX_LOG_FILE_SIZE) return latestPath
+      return join(this.logDir, `${prefix}${String(latest.sequence + 1).padStart(3, '0')}.log`)
+    }
+    return join(this.logDir, `${prefix}001.log`)
   }
 
   private formatEntry(entry: LogEntry): string {
@@ -106,9 +129,7 @@ class LoggerService {
   }
 
   private rotateLog(): void {
-    // Current file naming includes date, so rotation happens naturally
-    // Just update to potentially new date
-    this.currentLogFile = this.getLogFileName()
+    this.currentLogFile = this.getActiveLogFileName()
   }
 
   private cleanOldLogs(): void {
@@ -149,7 +170,11 @@ class LoggerService {
   ): void {
     if (level < this.minLevel) return
 
-    if (this.shouldRotate()) {
+    if (!this.currentLogFile.startsWith(this.getLogFileName().slice(0, -'.log'.length))) {
+      this.currentLogFile = this.getActiveLogFileName()
+    }
+    const rotated = this.shouldRotate()
+    if (rotated) {
       this.rotateLog()
     }
 
@@ -178,6 +203,8 @@ class LoggerService {
       // Fallback to console if file write fails
       console.error('Failed to write to log file:', formatted)
     }
+
+    if (rotated) this.cleanOldLogs()
 
     // Also log to console in development
     if (process.env.NODE_ENV === 'development') {

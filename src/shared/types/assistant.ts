@@ -35,6 +35,8 @@ export interface AssistantTask {
   /** Every repository the delegated agent can touch. */
   targets: AssistantTaskTarget[]
   sessionId: string
+  /** CLI chosen for this task; older persisted tasks may not have this field. */
+  agentSdk?: 'opencode' | 'claude-code' | 'codex' | 'mistral-vibe' | 'cursor-cli' | 'antigravity'
   title: string
   state: AssistantTaskState
   waitingReason: AssistantTaskWaitingReason | null

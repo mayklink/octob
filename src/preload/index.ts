@@ -112,6 +112,7 @@ const db = {
     update: (
       id: string,
       data: {
+        source_session_id?: string | null
         name?: string | null
         status?: 'active' | 'completed' | 'error'
         opencode_session_id?: string | null
@@ -1900,6 +1901,12 @@ const perfDiagnosticsOps = {
   getSnapshot: () => ipcRenderer.invoke('perf-diagnostics:snapshot')
 }
 
+const devToolsOps = {
+  listLogs: () => ipcRenderer.invoke('devtools:logs:list'),
+  readLogs: (args: { fileName: string; before?: number; limit?: number }) =>
+    ipcRenderer.invoke('devtools:logs:read', args)
+}
+
 const codexDebugLoggerOps = {
   configure: (enabled: boolean, resetPerSession: boolean) =>
     ipcRenderer.invoke('codex-debug-logger:configure', enabled, resetPerSession)
@@ -2047,6 +2054,22 @@ const assistantOps = {
   }
 }
 
+const capabilityOps = {
+  onPreviewRequested: (callback: (id: string) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, id: string): void => callback(id)
+    ipcRenderer.on('assistant:capability-preview-requested', handler)
+    return () => ipcRenderer.removeListener('assistant:capability-preview-requested', handler)
+  },
+  list: (): Promise<import('../shared/types/capability-studio').CapabilityDraft[]> => ipcRenderer.invoke('capability:list'),
+  get: (id: string, version?: number): Promise<import('../shared/types/capability-studio').CapabilityDetail> => ipcRenderer.invoke('capability:get', id, version),
+  validate: (id: string, version?: number): Promise<import('../shared/types/capability-studio').CapabilityValidation> => ipcRenderer.invoke('capability:validate', id, version),
+  execute: (id: string, input: unknown, version?: number, executionId?: string): Promise<unknown> => ipcRenderer.invoke('capability:execute', id, input, version, executionId),
+  cancelExecution: (executionId: string): Promise<boolean> => ipcRenderer.invoke('capability:cancel-execution', executionId),
+  install: (id: string, version: number): Promise<import('../shared/types/capability-studio').CapabilityDraft> => ipcRenderer.invoke('capability:install', id, version),
+  deactivate: (id: string): Promise<import('../shared/types/capability-studio').CapabilityDraft> => ipcRenderer.invoke('capability:deactivate', id),
+  discard: (id: string): Promise<void> => ipcRenderer.invoke('capability:discard', id)
+}
+
 // Use `contextBridge` APIs to expose Electron APIs to
 // renderer only if context isolation is enabled, otherwise
 // just add to the DOM global.
@@ -2071,10 +2094,12 @@ if (process.contextIsolated) {
     contextBridge.exposeInMainWorld('accountOps', accountOps)
     contextBridge.exposeInMainWorld('analyticsOps', analyticsOps)
     contextBridge.exposeInMainWorld('perfDiagnosticsOps', perfDiagnosticsOps)
+    contextBridge.exposeInMainWorld('devToolsOps', devToolsOps)
     contextBridge.exposeInMainWorld('codexDebugLoggerOps', codexDebugLoggerOps)
     contextBridge.exposeInMainWorld('bash', bash)
     contextBridge.exposeInMainWorld('updates', updates)
     contextBridge.exposeInMainWorld('assistantOps', assistantOps)
+    contextBridge.exposeInMainWorld('capabilityOps', capabilityOps)
   } catch (error) {
     console.error(error)
   }
@@ -2116,6 +2141,8 @@ if (process.contextIsolated) {
   // @ts-expect-error (define in dts)
   window.perfDiagnosticsOps = perfDiagnosticsOps
   // @ts-expect-error (define in dts)
+  window.devToolsOps = devToolsOps
+  // @ts-expect-error (define in dts)
   window.codexDebugLoggerOps = codexDebugLoggerOps
   // @ts-expect-error (define in dts)
   window.bash = bash
@@ -2123,4 +2150,5 @@ if (process.contextIsolated) {
   window.updates = updates
   // @ts-expect-error (define in dts)
   window.assistantOps = assistantOps
+  window.capabilityOps = capabilityOps
 }

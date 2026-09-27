@@ -7,12 +7,17 @@ import { initPlatform } from '@/lib/platform'
 import { useTipStore } from '@/stores/useTipStore'
 import { useSessionStore } from '@/stores/useSessionStore'
 import { useGlobalAssistantStore } from '@/stores/useGlobalAssistantStore'
+import { useCapabilityStudioStore } from '@/stores/useCapabilityStudioStore'
 import { useAssistantTasksSync } from '@/hooks/useAssistantTasksSync'
 
 function App(): React.JSX.Element {
   const [ready, setReady] = useState(false)
 
   useAssistantTasksSync()
+
+  useEffect(() => window.capabilityOps.onPreviewRequested((id) => {
+    useCapabilityStudioStore.getState().open(id)
+  }), [])
 
   useEffect(() => {
     initPlatform().then(() => {

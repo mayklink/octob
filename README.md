@@ -5,7 +5,7 @@
 <h1 align="center">Octob</h1>
 
 <p align="center">
-  Um workspace desktop para organizar repositórios Git, worktrees, tarefas e sessões paralelas de programação com IA.
+  Um workspace desktop para organizar repositórios Git, worktrees e sessões paralelas de programação com diferentes agentes de IA.
 </p>
 
 ## Sobre o projeto
@@ -92,7 +92,7 @@ Na primeira execução:
 1. escolha uma das CLIs detectadas ou o modo de terminal manual;
 2. adicione a pasta de um repositório Git existente;
 3. selecione a worktree principal ou crie uma nova;
-4. abra uma sessão de IA ou crie uma tarefa no Board.
+4. abra uma sessão de IA ou peça ao assistente global para delegar um trabalho.
 
 Não é necessário criar um arquivo `.env` para o desenvolvimento padrão. Configurações de agentes, integrações, MCPs, terminal e privacidade são gerenciadas pela interface do Octob.
 

@@ -1,5 +1,6 @@
 export interface Session {
   id: string
+  source_session_id: string | null
   worktree_id: string | null
   project_id: string
   connection_id: string | null

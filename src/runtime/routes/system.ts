@@ -7,6 +7,7 @@ import type { DatabaseService } from '../../main/db/database'
 import { detectEditors, detectTerminals } from '../../main/services/settings-detection'
 import { testMcpServer } from '../../main/services/mcp-test-service'
 import { configure as configureCodexDebugLogger } from '../../main/services/codex-debug-logger'
+import { listDevLogFiles, readDevLogPage } from '../../main/services/dev-log-reader'
 import { APP_SETTINGS_DB_KEY } from '../../shared/types/settings'
 import type { McpServerConfig } from '../../shared/types/mcp'
 import { readJsonBody, writeJson, type JsonRecord } from '../http'
@@ -115,6 +116,7 @@ function performanceSnapshot(): Record<string, unknown> {
   const heap = v8.getHeapStatistics()
   return {
     perfVersion: 'v6',
+    processScope: 'web-runtime',
     timestamp: new Date(now).toISOString(),
     uptimeMs: process.uptime() * 1000,
     cpu: {
@@ -140,7 +142,7 @@ function performanceSnapshot(): Record<string, unknown> {
     watchers: { fileTree: -1, worktree: -1, branch: -1 },
     sessions: { active: -1 },
     handles: { active: handles.length, requests: -1, byType },
-    electron: { windows: -1, webContents: -1 },
+    electron: { windows: -1, webContents: -1, processes: [] },
     eventLoopLagMs: -1
   }
 }
@@ -335,6 +337,34 @@ export async function handleSystemRoute(
   const logs = join(userData, 'logs')
   if (request.method === 'GET' && url.pathname === '/v1/system/log-dir') {
     writeJson(request, response, context.allowedOrigins, 200, { path: logs })
+    return true
+  }
+  if (request.method === 'GET' && url.pathname === '/v1/system/log-files') {
+    writeJson(request, response, context.allowedOrigins, 200, { files: listDevLogFiles(logs) })
+    return true
+  }
+  if (request.method === 'GET' && url.pathname === '/v1/system/log-read') {
+    const fileName = url.searchParams.get('fileName')
+    if (!fileName) {
+      writeJson(request, response, context.allowedOrigins, 400, { error: 'fileName_required' })
+      return true
+    }
+    try {
+      const beforeValue = url.searchParams.get('before')
+      const limitValue = url.searchParams.get('limit')
+      const page = readDevLogPage(
+        logs,
+        fileName,
+        beforeValue === null ? undefined : Number(beforeValue),
+        limitValue === null ? undefined : Number(limitValue)
+      )
+      writeJson(request, response, context.allowedOrigins, 200, page)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      writeJson(request, response, context.allowedOrigins, code === 'ENOENT' ? 404 : 400, {
+        error: code === 'ENOENT' ? 'log_file_not_found' : 'invalid_log_request'
+      })
+    }
     return true
   }
   if (request.method === 'GET' && url.pathname === '/v1/system/app-paths') {

@@ -22,6 +22,7 @@ export interface MetricCollectors {
 
 export interface PerfSnapshot {
   perfVersion: string
+  processScope: 'electron-main'
   timestamp: string
   uptimeMs: number
   cpu: {
@@ -66,6 +67,14 @@ export interface PerfSnapshot {
   electron: {
     windows: number
     webContents: number
+    processes: Array<{
+      pid: number
+      type: string
+      name: string | null
+      cpuPercent: number
+      workingSetKb: number
+      privateBytesKb: number | null
+    }>
   }
   eventLoopLagMs: number
 }
@@ -184,24 +193,36 @@ class PerfDiagnosticsService {
     // Native memory estimate: everything in RSS that isn't V8 heap or external
     const nativeEstimate = Math.max(0, mem.rss - mem.heapTotal - mem.external)
 
-    // Electron process counts
+    // Electron process metrics. Working set/private bytes are reported in KiB by Electron;
+    // these describe OS processes, not GPU VRAM or child processes started outside Electron.
     let windowCount = -1
     let webContentsCount = -1
+    let processMetrics: PerfSnapshot['electron']['processes'] = []
     try {
       windowCount = BrowserWindow.getAllWindows().length
       webContentsCount = webContents.getAllWebContents().length
+      processMetrics = app.getAppMetrics().map((metric) => ({
+        pid: metric.pid,
+        type: metric.type,
+        name: metric.name ?? metric.serviceName ?? null,
+        cpuPercent: metric.cpu.percentCPUUsage,
+        workingSetKb: metric.memory.workingSetSize,
+        privateBytesKb: metric.memory.privateBytes ?? null
+      }))
     } catch {
       // May fail during shutdown
     }
+    const mainProcessMetric = processMetrics.find((metric) => metric.pid === process.pid)
 
     return {
       perfVersion: PERF_VERSION,
+      processScope: 'electron-main',
       timestamp: new Date(now).toISOString(),
       uptimeMs: process.uptime() * 1000,
       cpu: {
         userMs: Math.round(cpuUsage.user / 1000),
         systemMs: Math.round(cpuUsage.system / 1000),
-        percentSinceLastSample: Math.round(cpuPercent * 100) / 100
+        percentSinceLastSample: Math.round((mainProcessMetric?.cpuPercent ?? cpuPercent) * 100) / 100
       },
       memory: {
         rss: mem.rss,
@@ -238,7 +259,8 @@ class PerfDiagnosticsService {
       },
       electron: {
         windows: windowCount,
-        webContents: webContentsCount
+        webContents: webContentsCount,
+        processes: processMetrics
       },
       eventLoopLagMs: eventLoopLag
     }

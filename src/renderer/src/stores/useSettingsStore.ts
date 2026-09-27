@@ -27,6 +27,7 @@ export type TerminalOption =
   | 'custom'
 export type EmbeddedTerminalBackend = 'xterm' | 'ghostty'
 export type TerminalPosition = 'sidebar' | 'bottom'
+export type DevToolsPanelPosition = 'sidebar' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
 export type MergeConflictMode = 'build' | 'plan' | 'always-ask'
 
 export interface SelectedModel {
@@ -157,6 +158,9 @@ export interface AppSettings {
 
   // Diagnostics
   perfDiagnosticsEnabled: boolean
+  devToolsPanelVisible: boolean
+  devToolsPanelPosition: DevToolsPanelPosition
+  devToolsPanelTransparency: number
   codexJsonlLoggingEnabled: boolean
   codexJsonlResetPerSession: boolean
 
@@ -233,12 +237,44 @@ const DEFAULT_SETTINGS: AppSettings = {
   mcpServers: [],
   projectMcpServerIds: {},
   perfDiagnosticsEnabled: false,
+  devToolsPanelVisible: true,
+  devToolsPanelPosition: 'sidebar',
+  devToolsPanelTransparency: 8,
   codexJsonlLoggingEnabled: false,
   codexJsonlResetPerSession: true,
   reviewPromptPresetId: DEFAULT_REVIEW_PROMPT_PRESET_ID,
   codeReviewPromptTemplates: [],
   taskSessionPromptTemplates: [],
   lastTaskSessionPromptTemplateId: null,
+}
+
+const DEV_TOOLS_PANEL_POSITIONS: readonly DevToolsPanelPosition[] = [
+  'sidebar',
+  'top-left',
+  'top-right',
+  'bottom-left',
+  'bottom-right'
+]
+
+function normalizeDevToolsPanelPosition(value: unknown): DevToolsPanelPosition {
+  return DEV_TOOLS_PANEL_POSITIONS.includes(value as DevToolsPanelPosition)
+    ? value as DevToolsPanelPosition
+    : DEFAULT_SETTINGS.devToolsPanelPosition
+}
+
+function normalizeDevToolsPanelTransparency(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_SETTINGS.devToolsPanelTransparency
+  }
+  return Math.round(Math.min(100, Math.max(0, value)))
+}
+
+function migrateLegacyPanelOpacity(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_SETTINGS.devToolsPanelTransparency
+  }
+  const legacyOpacity = Math.min(1, Math.max(0.4, value))
+  return Math.round((1 - legacyOpacity) * 100)
 }
 
 interface SettingsState extends AppSettings {
@@ -409,10 +445,19 @@ async function loadSettingsFromDatabase(): Promise<AppSettings | null> {
             ...(parsed.commandFilter || {})
           },
           mcpServers: normalizeMcpServers(parsed.mcpServers),
-          projectMcpServerIds: normalizeProjectMcpServerIds(parsed.projectMcpServerIds)
+          projectMcpServerIds: normalizeProjectMcpServerIds(parsed.projectMcpServerIds),
+          devToolsPanelVisible: typeof parsed.devToolsPanelVisible === 'boolean'
+            ? parsed.devToolsPanelVisible
+            : DEFAULT_SETTINGS.devToolsPanelVisible,
+          devToolsPanelPosition: normalizeDevToolsPanelPosition(parsed.devToolsPanelPosition),
+          devToolsPanelTransparency: typeof parsed.devToolsPanelTransparency === 'number'
+            ? normalizeDevToolsPanelTransparency(parsed.devToolsPanelTransparency)
+            : migrateLegacyPanelOpacity(parsed.devToolsPanelOpacity)
         }
 
         delete (result as Record<string, unknown>).reviewPromptType
+        const hadLegacyPanelOpacity = 'devToolsPanelOpacity' in parsed
+        delete (result as Record<string, unknown>).devToolsPanelOpacity
 
         const validBuiltinReview = getBuiltinReviewPromptType(result.reviewPromptPresetId) !== null
         const validCustomReview = result.codeReviewPromptTemplates.some(
@@ -440,6 +485,10 @@ async function loadSettingsFromDatabase(): Promise<AppSettings | null> {
 
         if (typeof result.customCodexBinaryPath !== 'string') {
           result.customCodexBinaryPath = ''
+        }
+
+        if (hadLegacyPanelOpacity) {
+          await saveToDatabase(result)
         }
 
         if (
@@ -507,6 +556,9 @@ function extractSettings(state: SettingsState): AppSettings {
     mcpServers: state.mcpServers,
     projectMcpServerIds: state.projectMcpServerIds,
     perfDiagnosticsEnabled: state.perfDiagnosticsEnabled,
+    devToolsPanelVisible: state.devToolsPanelVisible,
+    devToolsPanelPosition: state.devToolsPanelPosition,
+    devToolsPanelTransparency: state.devToolsPanelTransparency,
     codexJsonlLoggingEnabled: state.codexJsonlLoggingEnabled,
     codexJsonlResetPerSession: state.codexJsonlResetPerSession,
     reviewPromptPresetId: state.reviewPromptPresetId,
@@ -695,7 +747,9 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: 'octob-settings',
+      version: 1,
       storage: createJSONStorage(() => localStorage),
+      migrate: (persistedState) => persistedState as Partial<SettingsState> & { devToolsPanelOpacity?: unknown },
       partialize: (state) => ({
         uiLocale: state.uiLocale,
         autoStartSession: state.autoStartSession,
@@ -742,13 +796,31 @@ export const useSettingsStore = create<SettingsState>()(
         mcpServers: state.mcpServers,
         projectMcpServerIds: state.projectMcpServerIds,
         perfDiagnosticsEnabled: state.perfDiagnosticsEnabled,
+        devToolsPanelVisible: state.devToolsPanelVisible,
+        devToolsPanelPosition: state.devToolsPanelPosition,
+        devToolsPanelTransparency: state.devToolsPanelTransparency,
         codexJsonlLoggingEnabled: state.codexJsonlLoggingEnabled,
         codexJsonlResetPerSession: state.codexJsonlResetPerSession,
         reviewPromptPresetId: state.reviewPromptPresetId,
         codeReviewPromptTemplates: state.codeReviewPromptTemplates,
         taskSessionPromptTemplates: state.taskSessionPromptTemplates,
         lastTaskSessionPromptTemplateId: state.lastTaskSessionPromptTemplateId
-      })
+      }),
+      merge: (persistedState, currentState) => {
+        const persisted = persistedState as Partial<SettingsState> & { devToolsPanelOpacity?: unknown }
+        const { devToolsPanelOpacity: legacyOpacity, ...persistedSettings } = persisted
+        return {
+          ...currentState,
+          ...persistedSettings,
+          devToolsPanelVisible: typeof persistedSettings.devToolsPanelVisible === 'boolean'
+            ? persistedSettings.devToolsPanelVisible
+            : DEFAULT_SETTINGS.devToolsPanelVisible,
+          devToolsPanelPosition: normalizeDevToolsPanelPosition(persistedSettings.devToolsPanelPosition),
+          devToolsPanelTransparency: typeof persistedSettings.devToolsPanelTransparency === 'number'
+            ? normalizeDevToolsPanelTransparency(persistedSettings.devToolsPanelTransparency)
+            : migrateLegacyPanelOpacity(legacyOpacity)
+        }
+      }
     }
   )
 )

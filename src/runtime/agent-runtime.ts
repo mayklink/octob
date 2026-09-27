@@ -31,6 +31,11 @@ import { resolveOpenCodeLaunchSpec } from '../main/services/opencode-binary-reso
 import { emitAgentStreamEvent } from '../main/services/agent-event-bus'
 import { isAssistantWorkspacePath } from '../main/services/assistant-mcp-service'
 import { GLOBAL_ASSISTANT_CONTEXT } from '../shared/global-assistant-context'
+import {
+  globalAssistantContextSessionKey,
+  hasGlobalAssistantContext,
+  markGlobalAssistantContext
+} from '../main/services/global-assistant-context-state'
 
 type PromptPart =
   | { type: 'text'; text: string }
@@ -58,6 +63,7 @@ const PROBE_ORDER: Exclude<AgentSdkId, 'opencode' | 'terminal'>[] = [
 export class RuntimeAgentService {
   private readonly implementers = new Map<AgentSdkId, AgentSdkImplementer>()
   private readonly promptOperations = new Map<string, PromptOperation>()
+  private readonly globalContextInFlight = new Set<string>()
   private readonly claude: ClaudeCodeImplementer
   private readonly codex: CodexImplementer
   private readonly mistral: MistralVibeImplementer
@@ -215,12 +221,18 @@ export class RuntimeAgentService {
     backendSessionId: string,
     message: string | PromptPart[],
     model?: { providerID: string; modelID: string; variant?: string },
-    options?: PromptOptions
+    options?: PromptOptions,
+    octobSessionId = backendSessionId
   ) {
-    // The desktop IPC path injects this operating contract for the global
-    // assistant. The web runtime sends prompts through this service instead,
-    // so give Codex the same delegation instructions here.
-    const promptMessage = isAssistantWorkspacePath(worktreePath)
+    const sdk = this.sdkForBackend(worktreePath, backendSessionId)
+    if (sdk === 'terminal') return { success: false, error: 'terminal_session' }
+    const globalContextKey = globalAssistantContextSessionKey(worktreePath, octobSessionId)
+    const injectGlobalContext = isAssistantWorkspacePath(worktreePath) &&
+      !hasGlobalAssistantContext(this.db, globalContextKey) &&
+      !this.globalContextInFlight.has(globalContextKey)
+    if (injectGlobalContext) this.globalContextInFlight.add(globalContextKey)
+    const hasTextPart = typeof message === 'string' || message.some((part) => part.type === 'text')
+    const promptMessage = injectGlobalContext && hasTextPart
       ? typeof message === 'string'
         ? GLOBAL_ASSISTANT_CONTEXT + message
         : message.map((part) =>
@@ -229,14 +241,17 @@ export class RuntimeAgentService {
               : part
           )
       : message
-    const sdk = this.sdkForBackend(worktreePath, backendSessionId)
-    if (sdk === 'terminal') return { success: false, error: 'terminal_session' }
-    if (sdk === 'opencode') {
-      await openCodeService.prompt(worktreePath, backendSessionId, promptMessage, model)
+    try {
+      if (sdk === 'opencode') {
+        await openCodeService.prompt(worktreePath, backendSessionId, promptMessage, model)
+      } else {
+        await this.getImplementer(sdk)!.prompt(worktreePath, backendSessionId, promptMessage, model, options)
+      }
+      if (injectGlobalContext && hasTextPart) markGlobalAssistantContext(this.db, globalContextKey)
       return { success: true }
+    } finally {
+      if (injectGlobalContext) this.globalContextInFlight.delete(globalContextKey)
     }
-    await this.getImplementer(sdk)!.prompt(worktreePath, backendSessionId, promptMessage, model, options)
-    return { success: true }
   }
 
   /**
@@ -277,7 +292,7 @@ export class RuntimeAgentService {
     }
     this.promptOperations.set(operation.operationId, operation)
 
-    void this.prompt(worktreePath, backendSessionId, message, model, options)
+    void this.prompt(worktreePath, backendSessionId, message, model, options, octobSessionId)
       .then(() => {
         operation.state = 'completed'
         operation.completedAt = Date.now()

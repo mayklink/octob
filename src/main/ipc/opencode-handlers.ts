@@ -15,6 +15,11 @@ import {
   getAssistantProjectInstructions,
   isAssistantWorkspacePath
 } from '../services/assistant-mcp-service'
+import {
+  globalAssistantContextSessionKey,
+  hasGlobalAssistantContext,
+  markGlobalAssistantContext
+} from '../services/global-assistant-context-state'
 
 const log = createLogger({ component: 'OpenCodeHandlers' })
 
@@ -24,6 +29,7 @@ const log = createLogger({ component: 'OpenCodeHandlers' })
 // SDK ID after the first prompt — using the session ID would cause re-injection
 // when the ID changes.
 const injectedSessions = new Set<string>()
+const globalContextInFlight = new Set<string>()
 
 function sessionInjectionKey(worktreePath: string, sessionId: string): string {
   return `${worktreePath}\u0000${sessionId}`
@@ -85,7 +91,8 @@ export function registerOpenCodeHandlers(
     'opencode:connect',
     async (_event, worktreePath: string, octobSessionId: string, requestedAgentSdk?: AgentSdkId) => {
       log.info('IPC: opencode:connect', { worktreePath, octobSessionId })
-      // New session on this worktree — allow context injection for the first prompt
+      // Reconnection may need to reapply worktree context; the global operating
+      // contract has a separate persisted session marker and remains one-time.
       injectedSessions.delete(sessionInjectionKey(worktreePath, octobSessionId))
       try {
         // SDK-aware dispatch: route non-OpenCode sessions to their implementer
@@ -269,9 +276,19 @@ export function registerOpenCodeHandlers(
     // A global assistant is a real long-lived agent session, not a renderer-side
     // intent router. Give the model its operating contract while keeping the
     // user's visible message untouched in the transcript UI.
-    if (isAssistantWorkspacePath(worktreePath)) {
+    const persistedSessionId = dbService
+      ? dbService.getSessionByOpenCodeSessionId(opencodeSessionId)?.id ?? dbService.getSession(opencodeSessionId)?.id
+      : null
+    const globalContextKey = globalAssistantContextSessionKey(worktreePath, persistedSessionId ?? opencodeSessionId)
+    const injectGlobalContext = isAssistantWorkspacePath(worktreePath) &&
+      (!dbService || !hasGlobalAssistantContext(dbService, globalContextKey)) &&
+      !globalContextInFlight.has(globalContextKey)
+    if (injectGlobalContext) globalContextInFlight.add(globalContextKey)
+    let globalContextWasInjected = false
+    if (injectGlobalContext) {
       if (typeof messageOrParts === 'string') {
         messageOrParts = GLOBAL_ASSISTANT_CONTEXT + messageOrParts
+        globalContextWasInjected = true
       } else if (Array.isArray(messageOrParts)) {
         const textPartIndex = messageOrParts.findIndex((part) => part.type === 'text')
         if (textPartIndex >= 0) {
@@ -281,6 +298,7 @@ export function registerOpenCodeHandlers(
             ...textPart,
             text: GLOBAL_ASSISTANT_CONTEXT + (textPart.text ?? '')
           }
+          globalContextWasInjected = true
         }
       }
     }
@@ -299,12 +317,14 @@ export function registerOpenCodeHandlers(
         if (sdkId && sdkId !== 'opencode' && sdkId !== 'terminal') {
           const impl = sdkManager.getImplementer(sdkId)
           await impl.prompt(worktreePath, opencodeSessionId, messageOrParts, model, options)
+          if (globalContextWasInjected && dbService) markGlobalAssistantContext(dbService, globalContextKey)
           telemetryService.track('prompt_sent', { agent_sdk: sdkId })
           return { success: true }
         }
       }
       // Fall through to existing OpenCode path
       await openCodeService.prompt(worktreePath, opencodeSessionId, messageOrParts, model)
+      if (globalContextWasInjected && dbService) markGlobalAssistantContext(dbService, globalContextKey)
       telemetryService.track('prompt_sent', { agent_sdk: 'opencode' })
       return { success: true }
     } catch (error) {
@@ -313,6 +333,8 @@ export function registerOpenCodeHandlers(
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'
       }
+    } finally {
+      if (injectGlobalContext) globalContextInFlight.delete(globalContextKey)
     }
   })
 

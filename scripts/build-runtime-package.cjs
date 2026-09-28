@@ -67,6 +67,14 @@ copyFileSync(
   path.join(root, 'resources', 'capability-runner.cjs'),
   path.join(packageDir, 'capability-runner.cjs')
 )
+const assistantSkillsSource = path.join(root, 'resources', 'assistant-skills')
+if (existsSync(assistantSkillsSource)) {
+  cpSync(
+    assistantSkillsSource,
+    path.join(packageDir, 'resources', 'assistant-skills'),
+    { recursive: true }
+  )
+}
 
 const builtWeb = path.join(root, 'out', 'web')
 if (!existsSync(builtWeb)) {

@@ -130,6 +130,19 @@ O processo principal concentra o acesso ao sistema de arquivos, Git, terminal, b
 
 O Octob usa as credenciais configuradas no GitHub CLI para criar e trabalhar com pull requests. Servidores MCP também podem ser cadastrados nas configurações e são enviados apenas para novas sessões de agentes compatíveis quando estiverem ativados.
 
+### Skills do assistente global
+
+Adicione skills em **Configurações → Skills**, informando nome, descrição e instruções Markdown, ou peça explicitamente ao assistente global para criar uma skill. O Octob salva skills globais em `~/.octob/skills/nome-da-skill/` e skills de projeto em `<pasta-do-projeto>/.octob/skills/nome-da-skill/`. Também é possível colocar manualmente uma pasta nesses locais com um `SKILL.md` contendo `name` e `description` no front matter YAML. O assistente vê inicialmente apenas nomes e descrições; lê o `SKILL.md` e eventuais arquivos Markdown em `references/` quando precisar. A skill `definir-tarefa` vem incluída no Octob e fica disponível como skill somente leitura. Skills não concedem permissões adicionais ao agente.
+
+```markdown
+---
+name: review-pr
+description: Use esta skill para revisar um pull request e relatar problemas verificáveis.
+---
+
+Leia references/checklist.md quando for revisar mudanças de autenticação.
+```
+
 A telemetria pode ser desativada em **Configurações → Privacidade**. Quando habilitada, registra contagens de uso, versão e plataforma; segundo a implementação atual, não envia nomes de projetos, conteúdo de arquivos, prompts, respostas de IA ou dados Git.
 
 ## Builds e releases

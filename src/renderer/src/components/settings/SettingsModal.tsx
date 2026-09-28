@@ -15,6 +15,7 @@ import {
   ClipboardList,
   RefreshCw,
   FileSearch,
+  BookOpen,
   X
 } from 'lucide-react'
 import { useSettingsStore } from '@/stores/useSettingsStore'
@@ -31,6 +32,7 @@ import { SettingsAdvanced } from './SettingsAdvanced'
 import { SettingsUpdates } from './SettingsUpdates'
 import { SettingsTaskPrompts } from './SettingsTaskPrompts'
 import { SettingsCodeReviewPrompts } from './SettingsCodeReviewPrompts'
+import { SettingsSkills } from './SettingsSkills'
 import { cn } from '@/lib/utils'
 
 type SettingsSectionId =
@@ -39,6 +41,7 @@ type SettingsSectionId =
   | 'models'
   | 'task-prompts'
   | 'code-review-prompts'
+  | 'skills'
   | 'editor'
   | 'terminal'
   | 'mcp'
@@ -61,6 +64,7 @@ function useSettingsSections(): ReadonlyArray<{ id: SettingsSectionId; label: st
           label: t('settings.nav.codeReviewPrompts'),
           icon: FileSearch
         },
+        { id: 'skills' as const, label: t('settings.nav.skills'), icon: BookOpen },
         { id: 'models' as const, label: t('settings.nav.models'), icon: Sparkles },
         { id: 'editor' as const, label: t('settings.nav.editor'), icon: Code },
         { id: 'terminal' as const, label: t('settings.nav.terminal'), icon: Terminal },
@@ -141,6 +145,7 @@ export function SettingsView(): React.JSX.Element {
           {activeSection === 'general' && <SettingsGeneral />}
           {activeSection === 'task-prompts' && <SettingsTaskPrompts />}
           {activeSection === 'code-review-prompts' && <SettingsCodeReviewPrompts />}
+          {activeSection === 'skills' && <SettingsSkills />}
           {activeSection === 'models' && <SettingsModels />}
           {activeSection === 'editor' && <SettingsEditor />}
           {activeSection === 'terminal' && <SettingsTerminal />}

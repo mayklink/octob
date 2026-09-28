@@ -4,7 +4,8 @@
     "src/renderer/src/**/*",
     "src/renderer/src/**/*.tsx",
     "src/preload/*.d.ts",
-    "src/shared/runtime-protocol.ts"
+    "src/shared/runtime-protocol.ts",
+    "src/shared/types/assistant-skill.ts"
   ],
   "compilerOptions": {
     "composite": true,

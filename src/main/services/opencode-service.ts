@@ -9,6 +9,7 @@ import { maybeExtractJsonTitle } from '@shared/title-utils'
 import type { OpenCodeLaunchSpec } from './opencode-binary-resolver'
 import { toError } from './error-utils'
 import { emitAgentStreamEvent } from './agent-event-bus'
+import { bindAssistantMcpToOpenCode } from './assistant-opencode-mcp'
 
 const log = createLogger({ component: 'OpenCodeService' })
 
@@ -68,6 +69,7 @@ interface OpenCodeInstance {
   directorySubscriptions: Map<string, DirectorySubscription>
   // Map of directory-scoped child/subagent OpenCode session keys to parent OpenCode session IDs
   childToParentMap: Map<string, string>
+  assistantMcpBoundUrl?: string
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -274,6 +276,7 @@ class OpenCodeService {
   private mainWindow: BrowserWindow | null = null
   private pendingConnection: Promise<OpenCodeInstance> | null = null
   private openCodeLaunchSpec: OpenCodeLaunchSpec | null = null
+  private assistantMcpConfig: { workspacePath: string; url: string } | null = null
 
   setMainWindow(window: BrowserWindow): void {
     this.mainWindow = window
@@ -281,6 +284,17 @@ class OpenCodeService {
 
   setOpenCodeLaunchSpec(spec: OpenCodeLaunchSpec | null): void {
     this.openCodeLaunchSpec = spec
+  }
+
+  configureAssistantMcp(workspacePath: string, url: string): void {
+    this.assistantMcpConfig = { workspacePath, url }
+  }
+
+  private async ensureAssistantMcp(instance: OpenCodeInstance, worktreePath: string): Promise<void> {
+    const config = this.assistantMcpConfig
+    if (!config || instance.assistantMcpBoundUrl === config.url) return
+    const bound = await bindAssistantMcpToOpenCode(instance.client, worktreePath, config.workspacePath, config.url)
+    if (bound) instance.assistantMcpBoundUrl = config.url
   }
 
   private getSessionMapKey(directory: string, opencodeSessionId: string): string {
@@ -486,6 +500,7 @@ class OpenCodeService {
     log.info('Connecting to OpenCode', { worktreePath, octobSessionId })
 
     const instance = await this.getOrCreateInstance()
+    await this.ensureAssistantMcp(instance, worktreePath)
 
     // Create a new OpenCode session for this directory
     try {
@@ -561,6 +576,7 @@ class OpenCodeService {
 
     try {
       const instance = await this.getOrCreateInstance()
+      await this.ensureAssistantMcp(instance, worktreePath)
       const scopedKey = this.getSessionMapKey(worktreePath, opencodeSessionId)
       this.migrateLegacySessionMapping(instance, worktreePath, opencodeSessionId)
 

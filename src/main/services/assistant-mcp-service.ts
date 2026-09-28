@@ -21,6 +21,7 @@ import { createLogger } from './logger'
 import { telemetryService } from './telemetry-service'
 import { openCodeService } from './opencode-service'
 import { getCapabilityStudio } from './capability-studio'
+import { AssistantSkillService } from './assistant-skill-service'
 import { onAgentStreamEvent, type AgentStreamEvent } from './agent-event-bus'
 import type {
   AssistantProjectSelectionRequest,
@@ -556,6 +557,7 @@ export async function startAssistantMcpService(
   if (assistantMcpUrl) return
 
   startAssistantTaskTracking(db)
+  const skills = new AssistantSkillService(db)
 
   /** Create a delegated session in a workspace, register the task, and fire the prompt. */
   const delegate = async (params: {
@@ -699,6 +701,35 @@ export async function startAssistantMcpService(
       if (!mainWindow.isDestroyed()) mainWindow.webContents.send('assistant:capability-preview-requested', draft_id)
       return text({ success: true, draft_id, message: 'Preview opened in Experimentos. The user must decide whether to keep it.' })
     })
+
+    server.registerTool('list_skills', {
+      description: 'List Octob skills available to the global assistant. Pass project_id to include skills stored in that project. Returns only names and descriptions; use read_skill for instructions.',
+      inputSchema: { project_id: z.string().optional() }
+    }, async ({ project_id }) => text(skills.list(project_id)))
+
+    server.registerTool('read_skill', {
+      description: 'Read an Octob skill after choosing it from list_skills. Pass project_id for a project skill. Read a Markdown reference only when the SKILL.md instructions call for it.',
+      inputSchema: {
+        skill_id: z.string(),
+        project_id: z.string().optional(),
+        reference: z.string().optional()
+      }
+    }, async ({ skill_id, project_id, reference }) => text(skills.read(skill_id, project_id, reference)))
+
+    server.registerTool('create_skill', {
+      description: 'Create a reusable Octob skill only when the user explicitly asks to add one. For a project skill, resolve its project_id first. The name must use lowercase letters, digits and hyphens. Supply focused Markdown instructions; this writes SKILL.md to disk.',
+      inputSchema: {
+        name: z.string(),
+        description: z.string(),
+        instructions: z.string(),
+        project_id: z.string().min(1).optional()
+      }
+    }, async ({ name, description, instructions, project_id }) => text(skills.create({
+      name,
+      description,
+      instructions,
+      ...(project_id ? { projectId: project_id } : {})
+    })))
 
     server.registerTool('list_projects', {
       description: 'List projects registered in Octob to resolve project names or inspect project context. Do not open the project picker for general discussion, research, or questions.',
@@ -1122,6 +1153,7 @@ export async function startAssistantMcpService(
       const address = httpServer.address()
       if (!address || typeof address === 'string') return reject(new Error('Could not bind assistant MCP server'))
       assistantMcpUrl = `http://127.0.0.1:${address.port}/mcp`
+      openCodeService.configureAssistantMcp(getAssistantWorkspacePath(), assistantMcpUrl)
       log.info('Assistant MCP service started', { url: assistantMcpUrl })
       resolveStart()
     })

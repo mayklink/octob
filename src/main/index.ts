@@ -87,6 +87,8 @@ import {
   getAssistantProjectInstructions,
   setAssistantProjectInstructions
 } from './services/assistant-mcp-service'
+import { AssistantSkillService } from './services/assistant-skill-service'
+import type { CreateAssistantSkillInput } from '../shared/types/assistant-skill'
 
 const log = createLogger({ component: 'Main' })
 let activeCodexImplementer: CodexImplementer | null = null
@@ -663,6 +665,18 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('perf-diagnostics:snapshot', () => {
     return perfDiagnostics.getSnapshot()
+  })
+
+  ipcMain.handle('assistant:listSkills', (_event, projectId?: string) => {
+    return new AssistantSkillService(getDatabase()).list(projectId)
+  })
+
+  ipcMain.handle('assistant:createSkill', (_event, input: CreateAssistantSkillInput) => {
+    return new AssistantSkillService(getDatabase()).create(input)
+  })
+
+  ipcMain.handle('assistant:deleteSkill', (_event, skillId: string, projectId?: string) => {
+    new AssistantSkillService(getDatabase()).delete(skillId, projectId)
   })
 
   ipcMain.handle('devtools:logs:list', () => ({ files: listDevLogFiles(getLogDir()) }))

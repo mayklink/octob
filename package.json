@@ -1,6 +1,6 @@
 {
   "name": "octob",
-  "version": "1.0.188",
+  "version": "1.0.189",
   "description": "Cross-platform workspace for Git worktrees and coding sessions with multiple AI agents",
   "main": "./out/main/index.js",
   "private": true,
@@ -89,6 +89,7 @@
     "electron-updater": "^6.8.3",
     "highlight.js": "^11.11.1",
     "i18next": "^24.2.3",
+    "js-yaml": "^4.1.0",
     "lucide-react": "^0.468.0",
     "monaco-editor": "^0.55.1",
     "motion": "^12.38.0",

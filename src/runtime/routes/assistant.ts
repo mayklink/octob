@@ -12,6 +12,8 @@ import {
   setAssistantProjectInstructions
 } from '../../main/services/assistant-mcp-service'
 import { runtimeAssistantWindow } from '../assistant-runtime'
+import { AssistantSkillService } from '../../main/services/assistant-skill-service'
+import type { CreateAssistantSkillInput } from '../../shared/types/assistant-skill'
 import { getAllowedOrigin, readJsonBody, writeJson, type JsonRecord } from '../http'
 
 interface AssistantRouteContext {
@@ -100,6 +102,12 @@ export async function handleAssistantRoute(
     return true
   }
 
+  if (request.method === 'GET' && url.pathname === '/v1/assistant/skills') {
+    const projectId = url.searchParams.get('projectId') || undefined
+    writeJson(request, response, context.allowedOrigins, 200, new AssistantSkillService(context.db).list(projectId))
+    return true
+  }
+
   if (
     request.method === 'GET' &&
     url.pathname === '/v1/assistant/project-selection-requests'
@@ -140,6 +148,31 @@ export async function handleAssistantRoute(
       200,
       removeAssistantTask(context.db, body.sessionId)
     )
+    return true
+  }
+
+  if (url.pathname === '/v1/assistant/skills') {
+    if (typeof body.name !== 'string' || typeof body.description !== 'string' || typeof body.instructions !== 'string') {
+      writeJson(request, response, context.allowedOrigins, 400, { error: 'invalid_skill' })
+      return true
+    }
+    const input: CreateAssistantSkillInput = {
+      name: body.name,
+      description: body.description,
+      instructions: body.instructions,
+      ...(typeof body.projectId === 'string' ? { projectId: body.projectId } : {})
+    }
+    writeJson(request, response, context.allowedOrigins, 200, new AssistantSkillService(context.db).create(input))
+    return true
+  }
+
+  if (url.pathname === '/v1/assistant/skills/delete') {
+    if (typeof body.skillId !== 'string') {
+      writeJson(request, response, context.allowedOrigins, 400, { error: 'skillId_required' })
+      return true
+    }
+    new AssistantSkillService(context.db).delete(body.skillId, typeof body.projectId === 'string' ? body.projectId : undefined)
+    writeJson(request, response, context.allowedOrigins, 200, { deleted: true })
     return true
   }
 

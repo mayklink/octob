@@ -16,7 +16,8 @@ export const settings = {
     advanced: 'Avançado',
     updates: 'Atualizações',
     taskPrompts: 'Prompts de tarefa',
-    codeReviewPrompts: 'Prompts de code review'
+    codeReviewPrompts: 'Prompts de code review',
+    skills: 'Skills'
   },
   appearance: {
     heading: 'Aparência',
@@ -470,5 +471,34 @@ export const settings = {
     },
     supportHint:
       'Somente servidores ativados são enviados para novas sessões/tarefas de agentes compatíveis, incluindo Codex, Claude Code, Cursor CLI e Mistral Vibe. MCPs remotos como GitHub, Notion e Supabase usam OAuth quando o agente solicita autenticação.'
+  },
+  skills: {
+    heading: 'Skills',
+    description: 'Crie instruções reutilizáveis que o assistente pode encontrar e consultar quando uma tarefa precisar delas.',
+    createHeading: 'Adicionar skill',
+    createHint: 'Escreva as instruções em Markdown. Skills globais ficam disponíveis para o assistente global em qualquer projeto; skills de projeto ficam disponíveis no contexto do projeto selecionado.',
+    scopeLabel: 'Disponível em',
+    globalScope: 'Global',
+    builtinScope: 'Incluída no Octob',
+    projectScope: 'Projeto',
+    projectBadge: 'Projeto: {{name}}',
+    nameLabel: 'Nome',
+    namePlaceholder: 'ex.: checklist-de-release',
+    descriptionLabel: 'Descrição',
+    descriptionPlaceholder: 'Quando o assistente deve usar esta skill?',
+    instructionsLabel: 'Instruções (Markdown)',
+    instructionsPlaceholder: 'Descreva o fluxo e as etapas que o assistente deve seguir…',
+    create: 'Adicionar skill',
+    creating: 'Adicionando skill…',
+    listHeading: 'Skills disponíveis',
+    count_one: '{{count}} skill',
+    count_other: '{{count}} skills',
+    loading: 'Carregando skills…',
+    empty: 'Nenhuma skill encontrada neste escopo. Adicione uma acima para começar.',
+    discoveryErrors: 'Não foi possível carregar alguns arquivos de skill:',
+    delete: 'Excluir skill',
+    deleteAria: 'Excluir {{name}}',
+    confirmDelete: 'Excluir “{{name}}” de {{scope}}? Isso remove a pasta da skill e todos os seus arquivos.',
+    projectRequired: 'Selecione um projeto para criar uma skill de projeto.'
   }
 }

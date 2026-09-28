@@ -1,0 +1,23 @@
+{
+  "schema_version": "2.0",
+  "task_id": "TASK-PENDING",
+  "current_candidate_id": "",
+  "evaluated_at": "",
+  "implementer_id": "implementation-agent",
+  "approval": {
+    "contract_sha256": "",
+    "approved_by": "",
+    "approval_ref": ""
+  },
+  "trusted_producers": [],
+  "usage": {
+    "iterations": 0,
+    "elapsed_seconds": 0,
+    "no_progress_iterations": 0,
+    "tokens": null,
+    "cost_usd": null
+  },
+  "stop_reason": "none",
+  "blockers": [],
+  "new_regressions": []
+}

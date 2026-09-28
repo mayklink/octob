@@ -260,6 +260,9 @@ declare global {
       hide: () => Promise<void>
       createSession?: (data: unknown) => Promise<unknown>
       getWorkspacePath: () => Promise<string>
+      listSkills: (projectId?: string) => Promise<import('../shared/types/assistant-skill').AssistantSkillList>
+      createSkill: (input: import('../shared/types/assistant-skill').CreateAssistantSkillInput) => Promise<import('../shared/types/assistant-skill').AssistantSkillSummary>
+      deleteSkill: (skillId: string, projectId?: string) => Promise<void>
       listTasks: () => Promise<import('@shared/types/assistant').AssistantTask[]>
       removeTask: (sessionId: string) => Promise<import('@shared/types/assistant').AssistantTask[]>
       listProjectSelectionRequests: () => Promise<import('@shared/types/assistant').AssistantProjectSelectionRequest[]>

@@ -815,6 +815,13 @@ function installAuxiliaryBridge(target: any): void {
       const result = await octobRuntime.api<any>('/v1/assistant/workspace')
       return result.path
     },
+    listSkills: (projectId?: string) =>
+      octobRuntime.api(`/v1/assistant/skills${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`),
+    createSkill: (input: { name: string; description: string; instructions: string; projectId?: string }) =>
+      octobRuntime.api('/v1/assistant/skills', 'POST', input),
+    deleteSkill: async (skillId: string, projectId?: string) => {
+      await octobRuntime.api('/v1/assistant/skills/delete', 'POST', { skillId, projectId })
+    },
     listTasks: () => octobRuntime.api('/v1/assistant/tasks'),
     removeTask: (sessionId: string) =>
       octobRuntime.api('/v1/assistant/remove-task', 'POST', { sessionId }),

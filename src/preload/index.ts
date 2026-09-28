@@ -2025,6 +2025,12 @@ const assistantOps = {
   show: () => ipcRenderer.invoke('assistant:show'),
   hide: () => ipcRenderer.invoke('assistant:hide'),
   getWorkspacePath: (): Promise<string> => ipcRenderer.invoke('assistant:getWorkspacePath'),
+  listSkills: (projectId?: string): Promise<import('../shared/types/assistant-skill').AssistantSkillList> =>
+    ipcRenderer.invoke('assistant:listSkills', projectId),
+  createSkill: (input: import('../shared/types/assistant-skill').CreateAssistantSkillInput): Promise<import('../shared/types/assistant-skill').AssistantSkillSummary> =>
+    ipcRenderer.invoke('assistant:createSkill', input),
+  deleteSkill: (skillId: string, projectId?: string): Promise<void> =>
+    ipcRenderer.invoke('assistant:deleteSkill', skillId, projectId),
   listTasks: (): Promise<import('@shared/types/assistant').AssistantTask[]> => ipcRenderer.invoke('assistant:listTasks'),
   removeTask: (sessionId: string): Promise<import('@shared/types/assistant').AssistantTask[]> =>
     ipcRenderer.invoke('assistant:removeTask', sessionId),

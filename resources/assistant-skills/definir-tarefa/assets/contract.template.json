@@ -1,0 +1,43 @@
+{
+  "schema_version": "2.0",
+  "task_id": "TASK-PENDING",
+  "revision": 1,
+  "supersedes_sha256": null,
+  "change_reason": "",
+  "objective": {
+    "requested_outcome": "",
+    "target_state": "",
+    "completion_scope": "repository",
+    "source_refs": []
+  },
+  "scope": {
+    "included_paths": [],
+    "excluded_paths": [],
+    "non_goals": [],
+    "environment_ids": []
+  },
+  "sources": [],
+  "unknowns": [],
+  "assumptions": [],
+  "baseline": {
+    "candidate_id": "",
+    "description": "",
+    "artifact": {
+      "path": "",
+      "sha256": ""
+    }
+  },
+  "criteria": [],
+  "verifiers": [],
+  "optimization_metrics": [],
+  "budget": {
+    "max_iterations": 8,
+    "max_elapsed_seconds": 1800,
+    "max_no_progress_iterations": 3,
+    "max_tokens": null,
+    "max_cost_usd": null
+  },
+  "stop_policy": {
+    "optimize_after_acceptance": false
+  }
+}

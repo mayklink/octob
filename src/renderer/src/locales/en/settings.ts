@@ -16,7 +16,8 @@ export const settings = {
     advanced: 'Advanced',
     updates: 'Updates',
     taskPrompts: 'Task prompts',
-    codeReviewPrompts: 'Code review prompts'
+    codeReviewPrompts: 'Code review prompts',
+    skills: 'Skills'
   },
   appearance: {
     heading: 'Appearance',
@@ -461,5 +462,34 @@ export const settings = {
     },
     supportHint:
       'Only enabled servers are sent to new sessions/tasks for compatible agents, including Codex, Claude Code, Cursor CLI, and Mistral Vibe. Remote MCPs such as GitHub, Notion, and Supabase use OAuth when the agent requests authentication.'
+  },
+  skills: {
+    heading: 'Skills',
+    description: 'Create reusable instructions that the assistant can discover and read when a task calls for them.',
+    createHeading: 'Add a skill',
+    createHint: 'Write the instructions in Markdown. Global skills are available to the global assistant across projects; project skills are available in the selected project context.',
+    scopeLabel: 'Available in',
+    globalScope: 'Global',
+    builtinScope: 'Included with Octob',
+    projectScope: 'Project',
+    projectBadge: 'Project: {{name}}',
+    nameLabel: 'Name',
+    namePlaceholder: 'e.g. release-checklist',
+    descriptionLabel: 'Description',
+    descriptionPlaceholder: 'When should the assistant use this skill?',
+    instructionsLabel: 'Instructions (Markdown)',
+    instructionsPlaceholder: 'Describe the workflow and steps the assistant should follow…',
+    create: 'Add skill',
+    creating: 'Adding skill…',
+    listHeading: 'Available skills',
+    count_one: '{{count}} skill',
+    count_other: '{{count}} skills',
+    loading: 'Loading skills…',
+    empty: 'No skills found for this scope. Add one above to get started.',
+    discoveryErrors: 'Some skill files could not be loaded:',
+    delete: 'Delete skill',
+    deleteAria: 'Delete {{name}}',
+    confirmDelete: 'Delete “{{name}}” from {{scope}}? This removes the skill folder and all its files.',
+    projectRequired: 'Select a project to create a project skill.'
   }
 }

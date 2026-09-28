@@ -5182,10 +5182,6 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
     ]
   )
 
-  const openHandoffPreview = useCallback(() => {
-    void prepareHandoffPreview()
-  }, [prepareHandoffPreview])
-
   const handleOpenSourceSession = useCallback(async () => {
     if (!sourceSessionId || isOpeningSourceSession) return
 
@@ -6961,20 +6957,6 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
                     Sessão de destino
                   </Button>
                 )}
-                {layoutVariant !== 'global-assistant' && !isOrphanedSession && (connectionId || worktreeId) && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 px-2 text-xs"
-                    onClick={openHandoffPreview}
-                    disabled={isCreatingHandoff || isLoadingHandoffContext}
-                    data-testid="continue-with-another-agent"
-                  >
-                    {isLoadingHandoffContext ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
-                    {isLoadingHandoffContext ? 'Lendo contexto…' : 'Continuar com outro agente'}
-                  </Button>
-                )}
               </div>
             </div>
 
@@ -7039,7 +7021,7 @@ export function SessionView({ sessionId, workspacePathOverride, emptyState, layo
             <div className="flex items-center justify-between px-3 pb-2.5 @container">
               <div className="flex items-center gap-2 min-w-0 overflow-hidden">
                 <ModelSelector sessionId={sessionId} />
-                {sessionAgentSdk === 'codex' && !sessionRecord?.connection_id && (
+                {sessionAgentSdk === 'codex' && (
                   <CodexFastToggle
                     enabled={codexFastMode}
                     accepted={codexFastModeAccepted}

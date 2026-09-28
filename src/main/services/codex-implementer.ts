@@ -1323,6 +1323,22 @@ export class CodexImplementer implements AgentSdkImplementer {
   // ── Models ───────────────────────────────────────────────────────
 
   async getAvailableModels(): Promise<unknown> {
+    const response = await this.manager.listModels()
+    if (response?.data.length) {
+      const models = response.data.filter((model) => !model.hidden)
+      if (models.length) {
+        return [{
+          id: 'codex',
+          name: 'Codex',
+          models: Object.fromEntries(models.map((model) => [model.model, {
+            id: model.model,
+            name: model.displayName || model.model,
+            limit: { context: 0, output: 0 },
+            variants: Object.fromEntries(model.supportedReasoningEfforts.map((effort) => [effort.reasoningEffort, {}]))
+          }]))
+        }]
+      }
+    }
     return getAvailableCodexModels()
   }
 
@@ -1356,6 +1372,13 @@ export class CodexImplementer implements AgentSdkImplementer {
     name: string
     limit: { context: number; input?: number; output: number }
   } | null> {
+    const response = await this.manager.listModels()
+    const discovered = response?.data.find((model) => model.model === modelId || model.id === modelId)
+    if (discovered) return {
+      id: discovered.model,
+      name: discovered.displayName || discovered.model,
+      limit: { context: 0, output: 0 }
+    }
     return getCodexModelInfo(modelId)
   }
 

@@ -20,6 +20,7 @@ import type { TurnSteerParams } from '@shared/codex-schemas/v2/TurnSteerParams'
 import type { TurnSteerResponse } from '@shared/codex-schemas/v2/TurnSteerResponse'
 import type { TurnInterruptParams } from '@shared/codex-schemas/v2/TurnInterruptParams'
 import type { ThreadReadParams } from '@shared/codex-schemas/v2/ThreadReadParams'
+import type { ModelListResponse } from '@shared/codex-schemas/v2/ModelListResponse'
 import type { ThreadRollbackParams } from '@shared/codex-schemas/v2/ThreadRollbackParams'
 import type { UserInput } from '@shared/codex-schemas/v2/UserInput'
 import type { SandboxMode } from '@shared/codex-schemas/v2/SandboxMode'
@@ -412,6 +413,24 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     super()
     this.idleSweepTimer = setInterval(() => this.stopIdleSessions(), CODEX_IDLE_SWEEP_MS)
     this.idleSweepTimer.unref()
+  }
+
+  async listModels(): Promise<ModelListResponse | null> {
+    const context = [...this.sessions.values()].find((candidate) =>
+      candidate.session.status !== 'closed' && candidate.child.stdin?.writable)
+    if (!context) return null
+    try {
+      return await this.sendRequest<ModelListResponse>(context, 'model/list', {
+        cursor: null,
+        limit: null,
+        includeHidden: false
+      })
+    } catch (error) {
+      log.warn('Could not fetch Codex model catalog from app-server', {
+        error: error instanceof Error ? error.message : String(error)
+      })
+      return null
+    }
   }
 
   private stopIdleSessions(): void {

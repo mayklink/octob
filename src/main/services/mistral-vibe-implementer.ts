@@ -21,6 +21,7 @@ import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclie
 import type { AgentSdkImplementer, PromptOptions } from './agent-sdk-types'
 import { MISTRAL_VIBE_CAPABILITIES } from './agent-sdk-types'
 import { createLogger } from './logger'
+import { getDiscoveredModels, rememberDiscoveredModels, toProviderCatalog } from './discovered-model-catalog'
 import type { DatabaseService } from '../db/database'
 import { getUserEnvironmentVariables } from './env-vars'
 import { getConfiguredMcpServers } from './mcp-settings'
@@ -212,6 +213,7 @@ export class MistralVibeImplementer implements AgentSdkImplementer {
     } else {
       const created = await connection.newSession({ cwd: params.worktreePath, mcpServers })
       acpSessionId = created.sessionId
+      rememberDiscoveredModels('mistral-vibe', created.models?.availableModels)
     }
 
     try {
@@ -668,6 +670,8 @@ export class MistralVibeImplementer implements AgentSdkImplementer {
   }
 
   async getAvailableModels(): Promise<unknown> {
+    const discovered = getDiscoveredModels('mistral-vibe')
+    if (discovered) return toProviderCatalog('mistral-vibe', 'Mistral Vibe', discovered)
     return getAvailableMistralVibeModels()
   }
 
@@ -679,6 +683,8 @@ export class MistralVibeImplementer implements AgentSdkImplementer {
     name: string
     limit: { context: number; input?: number; output: number }
   } | null> {
+    const discovered = getDiscoveredModels('mistral-vibe')?.find((model) => model.id === modelId)
+    if (discovered) return { id: discovered.id, name: discovered.name, limit: discovered.limit }
     const row = getMistralVibeModelInfo(modelId)
     if (!row) {
       return {

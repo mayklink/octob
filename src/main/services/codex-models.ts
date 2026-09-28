@@ -166,6 +166,7 @@ export function normalizeCodexModelSlug(model: string | null | undefined): strin
 export function resolveCodexModelSlug(model: string | null | undefined): string {
   const normalized = normalizeCodexModelSlug(model)
   if (!normalized) return CODEX_DEFAULT_MODEL
-  const valid = CODEX_MODELS.find((m) => m.id === normalized)
-  return valid ? normalized : CODEX_DEFAULT_MODEL
+  // Model catalogs change independently of the Octo-b release. Preserve an
+  // unknown slug from the live Codex app-server so new models remain selectable.
+  return normalized
 }

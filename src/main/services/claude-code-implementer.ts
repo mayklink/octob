@@ -18,6 +18,7 @@ import { Options, PermissionMode, type SDKUserMessage } from '@anthropic-ai/clau
 import { CommandFilterService, type CommandFilterSettings } from './command-filter-service'
 import { APP_SETTINGS_DB_KEY } from '@shared/types/settings'
 import { emitAgentStreamEvent, type AgentStreamEvent } from './agent-event-bus'
+import type { ModelInfo as ClaudeModelInfo } from '@anthropic-ai/claude-agent-sdk'
 
 const log = createLogger({ component: 'ClaudeCodeImplementer' })
 
@@ -58,6 +59,8 @@ const CLAUDE_MODELS = [
   }
 ]
 
+let discoveredClaudeModels: ClaudeModelInfo[] | null = null
+
 export interface ClaudeQuery {
   interrupt(): Promise<void>
   close(): void
@@ -77,6 +80,7 @@ export interface ClaudeQuery {
   supportedCommands?: () => Promise<
     Array<{ name: string; description: string; argumentHint: string }>
   >
+  supportedModels?: () => Promise<ClaudeModelInfo[]>
 }
 
 interface RewindFilesResult {
@@ -610,6 +614,18 @@ export class ClaudeCodeImplementer implements AgentSdkImplementer {
         // SDK sends init as { type: 'system', subtype: 'init' }
         const msgSubtype = (sdkMessage as Record<string, unknown>).subtype as string | undefined
         if (msgType === 'system' && msgSubtype === 'init') {
+          if (session.query?.supportedModels) {
+            session.query
+              .supportedModels()
+              .then((models) => {
+                if (models?.length) discoveredClaudeModels = models
+              })
+              .catch((err) => {
+                log.debug('Could not refresh Claude model catalog from SDK', {
+                  error: err instanceof Error ? err.message : String(err)
+                })
+              })
+          }
           const initMsg = sdkMessage as Record<string, unknown>
           log.info('Prompt: init message received', {
             mcpServers: initMsg.mcp_servers,
@@ -1050,6 +1066,21 @@ export class ClaudeCodeImplementer implements AgentSdkImplementer {
   // ── Models ───────────────────────────────────────────────────────
 
   async getAvailableModels(): Promise<unknown> {
+    if (discoveredClaudeModels?.length) {
+      return [{
+        id: 'claude-code',
+        name: 'Claude Code',
+        models: Object.fromEntries(discoveredClaudeModels.map((model) => [
+          model.value,
+          {
+            id: model.value,
+            name: model.displayName || model.value,
+            limit: { context: 0, output: 0 },
+            variants: Object.fromEntries((model.supportedEffortLevels ?? []).map((effort) => [effort, {}]))
+          }
+        ]))
+      }]
+    }
     return [
       {
         id: 'claude-code',
@@ -1072,6 +1103,9 @@ export class ClaudeCodeImplementer implements AgentSdkImplementer {
     name: string
     limit: { context: number; input?: number; output: number }
   } | null> {
+    const discovered = discoveredClaudeModels?.find((model) =>
+      model.value === modelId || model.resolvedModel === modelId)
+    if (discovered) return { id: modelId, name: discovered.displayName || modelId, limit: { context: 0, output: 0 } }
     const model = CLAUDE_MODELS.find((m) => m.id === modelId)
     if (!model) return null
     return { id: model.id, name: model.name, limit: model.limit }

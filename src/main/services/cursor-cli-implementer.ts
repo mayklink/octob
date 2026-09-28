@@ -25,6 +25,7 @@ import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclie
 import type { AgentSdkImplementer, PromptOptions } from './agent-sdk-types'
 import { CURSOR_CLI_CAPABILITIES } from './agent-sdk-types'
 import { createLogger } from './logger'
+import { getDiscoveredModels, rememberDiscoveredModels, toProviderCatalog } from './discovered-model-catalog'
 import type { DatabaseService } from '../db/database'
 import { getUserEnvironmentVariables } from './env-vars'
 import { getConfiguredMcpServers } from './mcp-settings'
@@ -253,6 +254,7 @@ export class CursorCliImplementer implements AgentSdkImplementer {
     } else {
       const created = await connection.newSession({ cwd: params.worktreePath, mcpServers })
       acpSessionId = created.sessionId
+      rememberDiscoveredModels('cursor-cli', created.models?.availableModels)
     }
 
     try {
@@ -793,6 +795,8 @@ export class CursorCliImplementer implements AgentSdkImplementer {
   }
 
   async getAvailableModels(): Promise<unknown> {
+    const discovered = getDiscoveredModels('cursor-cli')
+    if (discovered) return toProviderCatalog('cursor-cli', 'Cursor CLI', discovered)
     return getAvailableCursorCliModels()
   }
 
@@ -804,6 +808,8 @@ export class CursorCliImplementer implements AgentSdkImplementer {
     name: string
     limit: { context: number; input?: number; output: number }
   } | null> {
+    const discovered = getDiscoveredModels('cursor-cli')?.find((model) => model.id === modelId)
+    if (discovered) return { id: discovered.id, name: discovered.name, limit: discovered.limit }
     const row = getCursorCliModelInfo(modelId, this.cursorAgentBinaryPath)
     if (!row) {
       return {

@@ -281,10 +281,6 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
       )
     }
 
-    if (globalAssistantOpen) {
-      return <GlobalAssistantView />
-    }
-
     if (
       displayLayout === 'overview' &&
       workspaceView === 'projects' &&
@@ -458,6 +454,9 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
       )}
       <div className="relative flex-1 flex flex-col min-h-0">
         {renderContent()}
+        <div className={globalAssistantOpen ? 'absolute inset-0 z-40 flex min-h-0 min-w-0 bg-background' : 'hidden'}>
+          <GlobalAssistantView />
+        </div>
         {renderedTerminalSessionIds.map((sessionId) => {
           const isActive = !settingsOpen && !capabilityStudioOpen && !devToolsOpen && visibleTerminalId === sessionId
           return (

@@ -1,6 +1,6 @@
 {
   "name": "octob",
-  "version": "1.0.189",
+  "version": "1.0.190",
   "description": "Cross-platform workspace for Git worktrees and coding sessions with multiple AI agents",
   "main": "./out/main/index.js",
   "private": true,
